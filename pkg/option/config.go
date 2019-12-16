@@ -143,6 +143,9 @@ const (
 	// EnableK8sExternalIPs enables k8s external IPs feature into Cilium datapath.
 	EnableK8sExternalIPs = "enable-k8s-external-ips"
 
+	// EnableK8sEndpointSliceAutoDetection enables the k8s EndpointSlice feature into Cilium
+	EnableK8sEndpointSliceAutoDetection = "enable-k8s-endpoint-slice-auto-detection"
+
 	// EnableL7Proxy is the name of the option to enable L7 proxy
 	EnableL7Proxy = "enable-l7-proxy"
 
@@ -1232,6 +1235,10 @@ type DaemonConfig struct {
 	// EnableK8sExternalIPs enables k8s external IPs implementation in BPF
 	EnableK8sExternalIPs bool
 
+	// EnableK8sEndpointSliceAutoDetection enables k8s endpoint slice feature that is used
+	// in kubernetes.
+	EnableK8sEndpointSliceAutoDetection bool
+
 	// NodePortMin is the minimum port address for the NodePort range
 	NodePortMin int
 
@@ -1297,36 +1304,37 @@ type DaemonConfig struct {
 var (
 	// Config represents the daemon configuration
 	Config = &DaemonConfig{
-		Opts:                         NewIntOptions(&DaemonOptionLibrary),
-		Monitor:                      &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
-		IPv6ClusterAllocCIDR:         defaults.IPv6ClusterAllocCIDR,
-		IPv6ClusterAllocCIDRBase:     defaults.IPv6ClusterAllocCIDRBase,
-		EnableHostIPRestore:          defaults.EnableHostIPRestore,
-		EnableHealthChecking:         defaults.EnableHealthChecking,
-		EnableEndpointHealthChecking: defaults.EnableEndpointHealthChecking,
-		EnableIPv4:                   defaults.EnableIPv4,
-		EnableIPv6:                   defaults.EnableIPv6,
-		EnableL7Proxy:                defaults.EnableL7Proxy,
-		ToFQDNsMaxIPsPerHost:         defaults.ToFQDNsMaxIPsPerHost,
-		KVstorePeriodicSync:          defaults.KVstorePeriodicSync,
-		KVstoreConnectivityTimeout:   defaults.KVstoreConnectivityTimeout,
-		IPAllocationTimeout:          defaults.IPAllocationTimeout,
-		IdentityChangeGracePeriod:    defaults.IdentityChangeGracePeriod,
-		FixedIdentityMapping:         make(map[string]string),
-		KVStoreOpt:                   make(map[string]string),
-		LogOpt:                       make(map[string]string),
-		SelectiveRegeneration:        defaults.SelectiveRegeneration,
-		LoopbackIPv4:                 defaults.LoopbackIPv4,
-		EndpointInterfaceNamePrefix:  defaults.EndpointInterfaceNamePrefix,
-		BlacklistConflictingRoutes:   defaults.BlacklistConflictingRoutes,
-		ForceLocalPolicyEvalAtSource: defaults.ForceLocalPolicyEvalAtSource,
-		EnableEndpointRoutes:         defaults.EnableEndpointRoutes,
-		AnnotateK8sNode:              defaults.AnnotateK8sNode,
-		K8sServiceCacheSize:          defaults.K8sServiceCacheSize,
-		AutoCreateCiliumNodeResource: defaults.AutoCreateCiliumNodeResource,
-		IdentityAllocationMode:       IdentityAllocationModeKVstore,
-		AllowICMPFragNeeded:          defaults.AllowICMPFragNeeded,
-		EnableWellKnownIdentities:    defaults.EnableEndpointRoutes,
+		Opts:                                NewIntOptions(&DaemonOptionLibrary),
+		Monitor:                             &models.MonitorStatus{Cpus: int64(runtime.NumCPU()), Npages: 64, Pagesize: int64(os.Getpagesize()), Lost: 0, Unknown: 0},
+		IPv6ClusterAllocCIDR:                defaults.IPv6ClusterAllocCIDR,
+		IPv6ClusterAllocCIDRBase:            defaults.IPv6ClusterAllocCIDRBase,
+		EnableHostIPRestore:                 defaults.EnableHostIPRestore,
+		EnableHealthChecking:                defaults.EnableHealthChecking,
+		EnableEndpointHealthChecking:        defaults.EnableEndpointHealthChecking,
+		EnableIPv4:                          defaults.EnableIPv4,
+		EnableIPv6:                          defaults.EnableIPv6,
+		EnableL7Proxy:                       defaults.EnableL7Proxy,
+		ToFQDNsMaxIPsPerHost:                defaults.ToFQDNsMaxIPsPerHost,
+		KVstorePeriodicSync:                 defaults.KVstorePeriodicSync,
+		KVstoreConnectivityTimeout:          defaults.KVstoreConnectivityTimeout,
+		IPAllocationTimeout:                 defaults.IPAllocationTimeout,
+		IdentityChangeGracePeriod:           defaults.IdentityChangeGracePeriod,
+		FixedIdentityMapping:                make(map[string]string),
+		KVStoreOpt:                          make(map[string]string),
+		LogOpt:                              make(map[string]string),
+		SelectiveRegeneration:               defaults.SelectiveRegeneration,
+		LoopbackIPv4:                        defaults.LoopbackIPv4,
+		EndpointInterfaceNamePrefix:         defaults.EndpointInterfaceNamePrefix,
+		BlacklistConflictingRoutes:          defaults.BlacklistConflictingRoutes,
+		ForceLocalPolicyEvalAtSource:        defaults.ForceLocalPolicyEvalAtSource,
+		EnableEndpointRoutes:                defaults.EnableEndpointRoutes,
+		AnnotateK8sNode:                     defaults.AnnotateK8sNode,
+		K8sServiceCacheSize:                 defaults.K8sServiceCacheSize,
+		AutoCreateCiliumNodeResource:        defaults.AutoCreateCiliumNodeResource,
+		IdentityAllocationMode:              IdentityAllocationModeKVstore,
+		AllowICMPFragNeeded:                 defaults.AllowICMPFragNeeded,
+		EnableWellKnownIdentities:           defaults.EnableEndpointRoutes,
+		EnableK8sEndpointSliceAutoDetection: defaults.EnableK8sEndpointSliceAutoDetection,
 	}
 )
 
@@ -1637,6 +1645,7 @@ func (c *DaemonConfig) Populate() {
 	c.EnableEndpointHealthChecking = viper.GetBool(EnableEndpointHealthChecking)
 	c.EnableLocalNodeRoute = viper.GetBool(EnableLocalNodeRoute)
 	c.EnablePolicy = strings.ToLower(viper.GetString(EnablePolicy))
+	c.EnableK8sEndpointSliceAutoDetection = viper.GetBool(EnableK8sEndpointSliceAutoDetection)
 	c.EnableK8sExternalIPs = viper.GetBool(EnableK8sExternalIPs)
 	c.EnableL7Proxy = viper.GetBool(EnableL7Proxy)
 	c.EnableTracing = viper.GetBool(EnableTracing)

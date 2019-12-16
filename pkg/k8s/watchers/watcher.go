@@ -58,10 +58,12 @@ const (
 	k8sAPIGroupCiliumNodeV2                     = "cilium/v2::CiliumNode"
 	k8sAPIGroupCiliumEndpointV2                 = "cilium/v2::CiliumEndpoint"
 	cacheSyncTimeout                            = 3 * time.Minute
+	K8sAPIGroupEndpointSliceV1Beta1Discovery    = "discovery/v1beta1::EndpointSlice"
 
 	metricCNP            = "CiliumNetworkPolicy"
 	metricCCNP           = "CiliumClusterwideNetworkPolicy"
 	metricEndpoint       = "Endpoint"
+	metricEndpointSlice  = "EndpointSlice"
 	metricKNP            = "NetworkPolicy"
 	metricNS             = "Namespace"
 	metricCiliumNode     = "CiliumNode"
@@ -411,7 +413,19 @@ func (k *K8sWatcher) EnableK8sWatcher(queueSize uint) error {
 	// kubernetes endpoints
 	serEps := serializer.NewFunctionQueue(queueSize)
 	swgEps := lock.NewStoppableWaitGroup()
-	k.endpointsInit(k8s.Client(), serEps, swgEps)
+
+	// We only enable either "Endpoints" or "EndpointSlice"
+	switch {
+	case option.Config.EnableK8sEndpointSliceAutoDetection:
+		connected := k.endpointsSlicesInit(k8s.Client(), serEps, swgEps)
+		// the cluster has endpoint slices so we should not check for v1.Endpoints
+		if connected {
+			break
+		}
+		fallthrough
+	default:
+		k.endpointsInit(k8s.Client(), serEps, swgEps)
+	}
 
 	// cilium network policies
 	serCNPs := serializer.NewFunctionQueue(queueSize)
