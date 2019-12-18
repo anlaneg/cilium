@@ -222,6 +222,63 @@ drop_err:
 				      METRIC_INGRESS : METRIC_EGRESS);
 }
 
+struct dst_opt_v6 {
+	__u8 nexthdr;
+	__u8 len;
+	__u8 opt_type;
+	__u8 opt_len;
+	union v6addr addr;
+	__be32 port;
+};
+
+static inline int set_dsr_ext6(struct __sk_buff *skb, struct ipv6hdr *ip6,
+			       union v6addr svc_addr, __be32 svc_port)
+{
+	struct dst_opt_v6 opt = {};
+
+	// TODO(brb) what if it has already extension?
+	opt.nexthdr = ip6->nexthdr;
+	ip6->nexthdr = 60; // Destination Options
+	opt.len = 0x14;
+
+	if (skb_adjust_room(skb, sizeof(opt), BPF_ADJ_ROOM_NET, 0))
+		return DROP_INVALID;
+
+	if (skb_store_bytes(skb, ETH_HLEN + sizeof(*ip6), &opt, sizeof(opt), 0) < 0)
+		return DROP_INVALID;
+
+	////////////////////////////////////////
+	//
+	// 0x00 none
+	//      0x14 len 16 + 4 (ipv6 addr + port)
+	//           ipv6 addr + port
+
+	// craft payload
+	// update
+
+	return 0;
+}
+
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_FOOBAR)
+int tail_nodeport_ipv6_foobar(struct __sk_buff *skb)
+{
+	struct ipv6hdr *ip6;
+	void *data, *data_end;
+	if (!revalidate_data(skb, &data, &data_end, &ip6))
+		return DROP_INVALID;
+
+	__be32 dport = skb->cb[0];
+	union v6addr addr = {};
+	addr.p1 = skb->cb[1];
+	addr.p2 = skb->cb[2];
+	addr.p3 = skb->cb[3];
+	addr.p4 = skb->cb[4];
+	int ret = set_dsr_ext6(skb, ip6, addr, dport);
+	if (ret != 0)
+		return ret;
+	return TC_ACT_OK;
+}
+
 /* See nodeport_lb4(). */
 static inline int nodeport_lb6(struct __sk_buff *skb, __u32 src_identity)
 {
@@ -354,6 +411,10 @@ redo:
 	}
 
 	if (!backend_local) {
+#ifdef ENABLE_DSR
+		ep_tail_call(skb, CILIUM_CALL_IPV6_FOOBAR);
+		return DROP_MISSED_TAIL_CALL;
+#endif /* ENABLE_DSR */
 		skb->cb[CB_NAT] = NAT_DIR_EGRESS;
 		ep_tail_call(skb, CILIUM_CALL_IPV6_NODEPORT_NAT);
 		return DROP_MISSED_TAIL_CALL;
@@ -635,7 +696,7 @@ static inline int set_dsr_opt4(struct __sk_buff *skb, struct iphdr *ip4,
 	if (ip4->protocol == IPPROTO_TCP) {
 		if (skb_load_bytes(skb, ETH_HLEN + sizeof(*ip4) + 12,
 				   &tcp_flags, 2) < 0)
-			return DROP_CT_INVALID_HDR;
+			return DROP_INVALID;
 		// Setting the option is required only for the first packet
 		// (SYN), in the case of TCP, as for further packets of the
 		// same connection a remote node will use a NAT entry to
