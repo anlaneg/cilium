@@ -88,12 +88,14 @@ struct bpf_elf_map __section_maps CIDR6_LMAP_NAME = {
 static __always_inline int check_v4_endpoint(struct xdp_md *xdp,
 					     struct iphdr *ipv4_hdr)
 {
+	/*查询目的ip是否为endpoint*/
 	if (lookup_ip4_endpoint(ipv4_hdr))
 		return XDP_PASS;
 
 	return XDP_DROP;
 }
 
+//ipv4报文检查
 static __always_inline int check_v4(struct xdp_md *xdp)
 {
 	void *data_end = xdp_data_end(xdp);
@@ -101,21 +103,26 @@ static __always_inline int check_v4(struct xdp_md *xdp)
 	struct iphdr *ipv4_hdr = data + sizeof(struct ethhdr);
 	struct lpm_v4_key pfx __maybe_unused;
 
+	//必须要有完整的ipv4头部
 	if (xdp_no_room(ipv4_hdr + 1, data_end))
 		return XDP_DROP;
 
 #ifdef CIDR4_FILTER
+	//按32前缀构造pfx.lpm查询saddr
 	__builtin_memcpy(pfx.lpm.data, &ipv4_hdr->saddr, sizeof(pfx.addr));
 	pfx.lpm.prefixlen = 32;
 
 #ifdef CIDR4_LPM_PREFILTER
+	//查询CIDR4_LMAP_NAME表，命中丢包
 	if (map_lookup_elem(&CIDR4_LMAP_NAME, &pfx))
 		return XDP_DROP;
 	else
 #endif /* CIDR4_LPM_PREFILTER */
+		//查询CIDR4_HMAP_NAME表，命中丢包
 		return map_lookup_elem(&CIDR4_HMAP_NAME, &pfx) ?
 		       XDP_DROP : check_v4_endpoint(xdp, ipv4_hdr);
 #else
+	//查询endpoint表，检查目的ip是否在endpoint表中
 	return check_v4_endpoint(xdp, ipv4_hdr);
 #endif /* CIDR4_FILTER */
 }
@@ -129,6 +136,7 @@ static __always_inline int check_v6_endpoint(struct xdp_md *xdp,
 	return XDP_DROP;
 }
 
+//ipv6报文检查
 static __always_inline int check_v6(struct xdp_md *xdp)
 {
 	void *data_end = xdp_data_end(xdp);
@@ -157,11 +165,13 @@ static __always_inline int check_v6(struct xdp_md *xdp)
 
 static __always_inline int check_filters(struct xdp_md *xdp)
 {
+	//报文终止位置及报文起始地址
 	void *data_end = xdp_data_end(xdp);
 	void *data = xdp_data(xdp);
 	struct ethhdr *eth = data;
 	__u16 proto;
 
+	//报文以太头必须完整
 	if (xdp_no_room(eth + 1, data_end))
 		return XDP_DROP;
 

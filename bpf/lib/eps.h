@@ -23,6 +23,7 @@
 
 #include "maps.h"
 
+//检查是否ipv6 endpoint地址
 static __always_inline struct endpoint_info *
 lookup_ip6_endpoint(struct ipv6hdr *ip6)
 {
@@ -34,6 +35,7 @@ lookup_ip6_endpoint(struct ipv6hdr *ip6)
 	return map_lookup_elem(&ENDPOINTS_MAP, &key);
 }
 
+//检查是否ipv4 endpoint地址
 static __always_inline struct endpoint_info *
 __lookup_ip4_endpoint(uint32_t ip)
 {
