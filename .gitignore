@@ -67,5 +67,9 @@ GIT_VERSION
 
 test/bpf/_results
 
+.cproject
+.project
+.settings/
+
 # generated from make targets
 *.ok
