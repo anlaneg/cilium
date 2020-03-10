@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2018-2019 Authors of Cilium
+
+#include <bpf/ctx/skb.h>
+#include <bpf/api.h>
+
 #include <assert.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "lib/utils.h"
 #include "lib/common.h"
@@ -12,7 +14,7 @@
 #define ntohl bpf_ntohl
 
 /* Declare before lib/conntrack.h or die! */
-static uint32_t __now = 0;
+static __u32 __now = 0;
 #define bpf_ktime_get_sec() __now
 
 #include "lib/conntrack_test.h"

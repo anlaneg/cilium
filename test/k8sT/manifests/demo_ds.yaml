@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: web
-        image: docker.io/cilium/echoserver:1.10
+        image: docker.io/cilium/echoserver:1.10.1
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
@@ -23,6 +23,12 @@ spec:
           httpGet:
             path: /
             port: 80
+      - name: udp
+        image: docker.io/cilium/echoserver-udp:v2020.01.30
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 69
+          protocol: UDP
       terminationGracePeriodSeconds: 0
       tolerations:
       - effect: NoSchedule
@@ -54,14 +60,54 @@ spec:
         args:
           - "1000h"
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-k8s2
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      zgroup: test-k8s2
+  template:
+    metadata:
+      labels:
+        zgroup: test-k8s2
+    spec:
+      containers:
+      - name: web
+        image: docker.io/cilium/echoserver:1.10.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+      - name: udp
+        image: docker.io/cilium/echoserver-udp:v2020.01.30
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 69
+          protocol: UDP
+      terminationGracePeriodSeconds: 0
+      nodeSelector:
+        "cilium.io/ci-node": k8s2
+---
 apiVersion: v1
 kind: Service
 metadata:
   name: testds-service
 spec:
   ports:
-  - port: 80
+  - name: http
+    port: 80
     targetPort: 80
+    protocol: TCP
+  - name: tftp
+    port: 69
+    targetPort: 69
+    protocol: UDP
   selector:
     zgroup: testDS
 ---
@@ -76,6 +122,10 @@ spec:
     targetPort: 80
     protocol: TCP
     name: http
+  - port: 10069
+    targetPort: 69
+    protocol: UDP
+    name: tftp
   selector:
     zgroup: testDS
 ---
@@ -91,8 +141,49 @@ spec:
     targetPort: 80
     protocol: TCP
     name: http
+  - port: 10069
+    targetPort: 69
+    protocol: UDP
+    name: tftp
   selector:
     zgroup: testDS
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-nodeport-local-k8s2
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  ports:
+  - port: 10080
+    targetPort: 80
+    protocol: TCP
+    name: http
+  - port: 10069
+    targetPort: 69
+    protocol: UDP
+    name: tftp
+  selector:
+    zgroup: test-k8s2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-nodeport-k8s2
+spec:
+  type: NodePort
+  ports:
+  - port: 10080
+    targetPort: 80
+    protocol: TCP
+    name: http
+  - port: 10069
+    targetPort: 69
+    protocol: UDP
+    name: tftp
+  selector:
+    zgroup: test-k8s2
 ---
 apiVersion: v1
 kind: Service
@@ -107,3 +198,18 @@ spec:
     name: http
   selector:
     zgroup: testDS
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-lb-local-k8s2
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  selector:
+    zgroup: test-k8s2

@@ -16,7 +16,6 @@ package eppolicymap
 
 import (
 	"fmt"
-	"net"
 	"sync"
 	"unsafe"
 
@@ -61,11 +60,13 @@ var (
 // for testing purposes.
 func CreateWithName(mapName string) error {
 	buildMap.Do(func() {
-		fd, err := bpf.CreateMap(bpf.BPF_MAP_TYPE_HASH,
+		mapType := bpf.MapTypeHash
+		fd, err := bpf.CreateMap(mapType,
 			uint32(unsafe.Sizeof(policymap.PolicyKey{})),
 			uint32(unsafe.Sizeof(policymap.PolicyEntry{})),
 			uint32(policymap.MaxEntries),
-			0, 0, innerMapName)
+			bpf.GetPreAllocateMapFlags(mapType),
+			0, innerMapName)
 
 		if err != nil {
 			log.WithError(err).Warning("unable to create EP to policy map")
@@ -106,13 +107,6 @@ func (v *EPPolicyValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) 
 
 // NewValue returns a new empty instance of the Endpoint Policy fd
 func (k EndpointKey) NewValue() bpf.MapValue { return &EPPolicyValue{} }
-
-// newEndpointKey return a new key from the IP address.
-func newEndpointKey(ip net.IP) *EndpointKey {
-	return &EndpointKey{
-		EndpointKey: bpf.NewEndpointKey(ip),
-	}
-}
 
 func writeEndpoint(keys []*lxcmap.EndpointKey, fd int) error {
 	if option.Config.SockopsEnable == false {

@@ -57,9 +57,8 @@ const (
 	// VM / Test suite constants.
 	K8s     = "k8s"
 	K8s1    = "k8s1"
-	K8s1Ip  = "192.168.36.11"
 	K8s2    = "k8s2"
-	K8s2Ip  = "192.168.36.12"
+	K8s3    = "k8s3"
 	Runtime = "runtime"
 
 	Enabled  = "enabled"
@@ -150,8 +149,10 @@ const (
 	// actually transfer data.
 	CurlMaxTimeout = 8
 
-	DefaultNamespace    = "default"
-	KubeSystemNamespace = "kube-system"
+	DefaultNamespace       = "default"
+	KubeSystemNamespace    = "kube-system"
+	CiliumNamespaceDefault = KubeSystemNamespace
+	CiliumNamespaceGKE     = "cilium"
 
 	TestResultsPath = "test_results/"
 	RunDir          = "/var/run/cilium"
@@ -173,9 +174,12 @@ const (
 	KubectlPolicyNameLabel      = k8sConst.PolicyLabelName
 	KubectlPolicyNameSpaceLabel = k8sConst.PolicyLabelNamespace
 
-	CiliumStableVersion      = "v1.5"
-	CiliumStableImageVersion = "cilium/cilium:" + CiliumStableVersion
-	ciliumDeveloperImage     = "%s/cilium/cilium-dev:latest"
+	// CiliumStableHelmChartVersion should be the chart version that points
+	// to the v1.X branch
+	CiliumStableHelmChartVersion = "1.7-dev"
+	CiliumStableVersion          = "v1.7"
+	CiliumLatestHelmChartVersion = "1.7.90"
+	CiliumLatestImageVersion     = "latest"
 
 	MonitorLogFileName = "monitor.log"
 
@@ -196,14 +200,25 @@ const (
 
 	// Logs messages that should not be in the cilium logs.
 	panicMessage      = "panic:"
-	deadLockHeader    = "POTENTIAL DEADLOCK:"       // from github.com/sasha-s/go-deadlock/deadlock.go:header
-	segmentationFault = "segmentation fault"        // from https://github.com/cilium/cilium/issues/3233
-	NACKreceived      = "NACK received for version" // from https://github.com/cilium/cilium/issues/4003
-	RunInitFailed     = "JoinEP: "                  // from https://github.com/cilium/cilium/pull/5052
-	sizeMismatch      = "size mismatch for BPF map" // from https://github.com/cilium/cilium/issues/7851
+	deadLockHeader    = "POTENTIAL DEADLOCK:"                  // from github.com/sasha-s/go-deadlock/deadlock.go:header
+	segmentationFault = "segmentation fault"                   // from https://github.com/cilium/cilium/issues/3233
+	NACKreceived      = "NACK received for version"            // from https://github.com/cilium/cilium/issues/4003
+	RunInitFailed     = "JoinEP: "                             // from https://github.com/cilium/cilium/pull/5052
+	sizeMismatch      = "size mismatch for BPF map"            // from https://github.com/cilium/cilium/issues/7851
+	emptyBPFInitArg   = "empty argument passed to bpf/init.sh" // from https://github.com/cilium/cilium/issues/10228
 
 	// HelmTemplate is the location of the Helm templates to install Cilium
 	HelmTemplate = "../install/kubernetes/cilium"
+)
+
+var (
+	// CiliumNamespace is where cilium should run. In some deployments this cannot
+	// be kube-system.
+	CiliumNamespace = GetCiliumNamespace(GetCurrentIntegration())
+
+	// LogGathererNamespace is where log-gatherer should run. It follows cilium
+	// for simplicity.
+	LogGathererNamespace = CiliumNamespace
 )
 
 // Re-definitions of stable constants in the API. The re-definition is on
@@ -213,13 +228,15 @@ const (
 	ReservedIdentityHealth = 4
 )
 
-// NightlyStableUpgradesFrom the cilium images to update from in Nightly test.
-var NightlyStableUpgradesFrom = []string{"v1.3"}
+// NightlyStableUpgradesFrom maps the cilium image versions to the helm charts
+// that will be used to run update tests in the Nightly test.
+var NightlyStableUpgradesFrom = map[string]string{"v1.6": "1.6-dev", "v1.7": "1.7-dev"}
 
 var (
 	IsCiliumV1_5 = versioncheck.MustCompile(">=1.4.90 <1.6.0")
 	IsCiliumV1_6 = versioncheck.MustCompile(">=1.5.90 <1.7.0")
 	IsCiliumV1_7 = versioncheck.MustCompile(">=1.6.90 <1.8.0")
+	IsCiliumV1_8 = versioncheck.MustCompile(">=1.7.90 <1.9.0")
 )
 
 // CiliumDefaultDSPatch is the default Cilium DaemonSet patch to be used in all tests.
@@ -241,6 +258,7 @@ var badLogMessages = map[string][]string{
 	NACKreceived:      nil,
 	RunInitFailed:     {"signal: terminated", "signal: killed"},
 	sizeMismatch:      nil,
+	emptyBPFInitArg:   nil,
 }
 
 var ciliumCLICommands = map[string]string{

@@ -5,7 +5,7 @@ set -e
 # Ensure no prompts from apt & co.
 export DEBIAN_FRONTEND=noninteractive
 
-GOLANG_VERSION="1.12.5"
+GOLANG_VERSION="1.14"
 VAGRANT_VERSION="2.2.4"
 PACKER_VERSION="1.3.5"
 VIRTUALBOX_VERSION="6.0"
@@ -39,8 +39,8 @@ dpkg -i vagrant_*.deb
 # this block will attempt to preload required vagrant boxes from the vagrant cache server
 # (it's configuration is in vagrant-cache directory in root of this repo).
 # vagrant cache server is a separate packet box which vagrant-cache.ci.cilium.io points to
-cp /provision/add_vagrant_box /usr/local/bin/
-chmod 755 /usr/local/bin/add_vagrant_box
+cp /provision/add_vagrant_box.sh /usr/local/bin/
+chmod 755 /usr/local/bin/add_vagrant_box.sh
 
 curl -s https://raw.githubusercontent.com/cilium/cilium/master/vagrant_box_defaults.rb > defaults.rb
 /usr/local/bin/add_vagrant_box defaults.rb
@@ -65,7 +65,6 @@ sudo ln -s /usr/local/go/bin/* /usr/local/bin/
 go version
 sudo mkdir /go/
 export GOPATH=/go/
-go get -u github.com/cilium/go-bindata/...
 go get -u github.com/google/gops
 go get -u github.com/onsi/ginkgo/ginkgo
 go get -u github.com/onsi/gomega/...

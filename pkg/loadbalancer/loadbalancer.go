@@ -55,39 +55,74 @@ const (
 type ServiceFlags uint8
 
 const (
-	serviceFlagNone        = 1<<iota - 1 // 0
-	serviceFlagExternalIPs               // 1
+	serviceFlagNone        = 0
+	serviceFlagExternalIPs = 1
+	serviceFlagNodePort    = 2
+	serviceFlagLocalScope  = 4
 )
 
 // CreateSvcFlag returns the ServiceFlags for all given SVCTypes.
-func CreateSvcFlag(svcTypes ...SVCType) ServiceFlags {
+func CreateSvcFlag(svcLocal bool, svcTypes ...SVCType) ServiceFlags {
 	var flags ServiceFlags
 	for _, svcType := range svcTypes {
 		switch svcType {
 		case SVCTypeExternalIPs:
 			flags |= serviceFlagExternalIPs
+		case SVCTypeNodePort:
+			flags |= serviceFlagNodePort
 		}
+	}
+	if svcLocal {
+		flags |= serviceFlagLocalScope
 	}
 	return flags
 }
 
 // IsSvcType returns true if the serviceFlags is the given SVCType.
-func (s ServiceFlags) IsSvcType(svcType SVCType) bool {
-	return s&CreateSvcFlag(svcType) != 0
+func (s ServiceFlags) IsSvcType(svcLocal bool, svcType SVCType) bool {
+	return s != 0 && (s&CreateSvcFlag(svcLocal, svcType) == s)
+}
+
+// SVCType returns a service type from the flags
+func (s ServiceFlags) SVCType() SVCType {
+	switch {
+	case s&serviceFlagExternalIPs != 0:
+		return SVCTypeExternalIPs
+	case s&serviceFlagNodePort != 0:
+		return SVCTypeNodePort
+	default:
+		return SVCTypeClusterIP
+	}
+}
+
+// SVCTrafficPolicy returns a service traffic policy from the flags
+func (s ServiceFlags) SVCTrafficPolicy() SVCTrafficPolicy {
+	switch {
+	case s&serviceFlagLocalScope != 0:
+		return SVCTrafficPolicyLocal
+	default:
+		return SVCTrafficPolicyCluster
+	}
 }
 
 // String returns the string implementation of ServiceFlags.
 func (s ServiceFlags) String() string {
 	var strTypes []string
-	for _, svcType := range []SVCType{SVCTypeExternalIPs} {
-		if s.IsSvcType(svcType) {
+	typeSet := false
+	sType := s & (serviceFlagExternalIPs | serviceFlagNodePort)
+	for _, svcType := range []SVCType{SVCTypeExternalIPs, SVCTypeNodePort} {
+		if sType.IsSvcType(false, svcType) {
 			strTypes = append(strTypes, string(svcType))
+			typeSet = true
 		}
 	}
-	if len(strTypes) != 0 {
-		return strings.Join(strTypes, ", ")
+	if !typeSet {
+		strTypes = append(strTypes, string(SVCTypeClusterIP))
 	}
-	return string(SVCTypeNone)
+	if s&serviceFlagLocalScope != 0 {
+		strTypes = append(strTypes, string(SVCTrafficPolicyLocal))
+	}
+	return strings.Join(strTypes, ", ")
 }
 
 // UInt8 returns the UInt8 representation of the ServiceFlags.
@@ -139,12 +174,13 @@ func (b *Backend) String() string {
 
 // SVC is a structure for storing service details.
 type SVC struct {
-	Frontend      L3n4AddrID       // SVC frontend addr and an allocated ID
-	Backends      []Backend        // List of service backends
-	Type          SVCType          // Service type
-	TrafficPolicy SVCTrafficPolicy // Service traffic policy
-	Name          string           // Service name
-	Namespace     string           // Service namespace
+	Frontend            L3n4AddrID       // SVC frontend addr and an allocated ID
+	Backends            []Backend        // List of service backends
+	Type                SVCType          // Service type
+	TrafficPolicy       SVCTrafficPolicy // Service traffic policy
+	HealthCheckNodePort uint16           // Service health check node port
+	Name                string           // Service name
+	Namespace           string           // Service namespace
 }
 
 func (s *SVC) GetModel() *models.Service {
@@ -163,10 +199,12 @@ func (s *SVC) GetModel() *models.Service {
 		FrontendAddress:  s.Frontend.GetModel(),
 		BackendAddresses: make([]*models.BackendAddress, len(s.Backends)),
 		Flags: &models.ServiceSpecFlags{
-			Type:          string(s.Type),
-			TrafficPolicy: string(s.TrafficPolicy),
-			Name:          s.Name,
-			Namespace:     s.Namespace,
+			Type:                string(s.Type),
+			TrafficPolicy:       string(s.TrafficPolicy),
+			HealthCheckNodePort: s.HealthCheckNodePort,
+
+			Name:      s.Name,
+			Namespace: s.Namespace,
 		},
 	}
 

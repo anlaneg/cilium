@@ -1,26 +1,13 @@
-/*
- *  Copyright (C) 2016-2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 #ifndef __LIB_IPV6__
 #define __LIB_IPV6__
 
 #include <linux/ipv6.h>
 
 #include "dbg.h"
+
 #define IPV6_FLOWINFO_MASK              bpf_htonl(0x0FFFFFFF)
 #define IPV6_FLOWLABEL_MASK             bpf_htonl(0x000FFFFF)
 #define IPV6_FLOWLABEL_STATELESS_FLAG   bpf_htonl(0x00080000)
@@ -48,17 +35,18 @@
 
 #define NEXTHDR_MAX             255
 
-static inline int ipv6_optlen(struct ipv6_opt_hdr *opthdr)
+static __always_inline int ipv6_optlen(struct ipv6_opt_hdr *opthdr)
 {
 	return (opthdr->hdrlen + 1) << 3;
 }
 
-static inline int ipv6_authlen(struct ipv6_opt_hdr *opthdr)
+static __always_inline int ipv6_authlen(struct ipv6_opt_hdr *opthdr)
 {
 	return (opthdr->hdrlen + 2) << 2;
 }
 
-static inline int __inline__ ipv6_hdrlen(struct __sk_buff *skb, int l3_off, __u8 *nexthdr)
+static __always_inline int ipv6_hdrlen(struct __ctx_buff *ctx, int l3_off,
+				       __u8 *nexthdr)
 {
 	int i, len = sizeof(struct ipv6hdr);
 	struct ipv6_opt_hdr opthdr;
@@ -77,7 +65,7 @@ static inline int __inline__ ipv6_hdrlen(struct __sk_buff *skb, int l3_off, __u8
 		case NEXTHDR_ROUTING:
 		case NEXTHDR_AUTH:
 		case NEXTHDR_DEST:
-			if (skb_load_bytes(skb, l3_off + len, &opthdr, sizeof(opthdr)) < 0)
+			if (ctx_load_bytes(ctx, l3_off + len, &opthdr, sizeof(opthdr)) < 0)
 				return DROP_INVALID;
 
 			nh = opthdr.nexthdr;
@@ -97,13 +85,13 @@ static inline int __inline__ ipv6_hdrlen(struct __sk_buff *skb, int l3_off, __u8
 	return DROP_INVALID_EXTHDR;
 }
 
-static inline void ipv6_addr_copy(union v6addr *dst, union v6addr *src)
+static __always_inline void ipv6_addr_copy(union v6addr *dst, union v6addr *src)
 {
 	dst->d1 = src->d1;
 	dst->d2 = src->d2;
 }
 
-static inline __u64 ipv6_addrcmp(union v6addr *a, union v6addr *b)
+static __always_inline __u64 ipv6_addrcmp(union v6addr *a, union v6addr *b)
 {
 	__u64 tmp;
 
@@ -114,7 +102,8 @@ static inline __u64 ipv6_addrcmp(union v6addr *a, union v6addr *b)
 }
 
 // Only works with contiguous masks.
-static inline int ipv6_addr_in_net(union v6addr *addr, union v6addr *net, union v6addr *mask)
+static __always_inline int ipv6_addr_in_net(union v6addr *addr, union v6addr *net,
+					    union v6addr *mask)
 {
 	return ((addr->p1 & mask->p1) == net->p1)
 		&& (!mask->p2
@@ -128,7 +117,8 @@ static inline int ipv6_addr_in_net(union v6addr *addr, union v6addr *net, union 
 	bpf_htonl(prefix <= 0 ? 0 : prefix < 32 ? ((1<<prefix) - 1) << (32-prefix)	\
 			      : 0xFFFFFFFF)
 
-static inline void ipv6_addr_clear_suffix(union v6addr *addr, int prefix)
+static __always_inline void ipv6_addr_clear_suffix(union v6addr *addr,
+						   int prefix)
 {
 	addr->p1 &= GET_PREFIX(prefix);
 	prefix -= 32;
@@ -140,7 +130,8 @@ static inline void ipv6_addr_clear_suffix(union v6addr *addr, int prefix)
 	prefix -= 32;
 }
 
-static inline int ipv6_match_prefix_64(const union v6addr *addr, const union v6addr *prefix)
+static __always_inline int ipv6_match_prefix_64(const union v6addr *addr,
+						const union v6addr *prefix)
 {
 	int tmp;
 
@@ -151,91 +142,100 @@ static inline int ipv6_match_prefix_64(const union v6addr *addr, const union v6a
 	return !tmp;
 }
 
-static inline int ipv6_dec_hoplimit(struct __sk_buff *skb, int off)
+static __always_inline int ipv6_dec_hoplimit(struct __ctx_buff *ctx, int off)
 {
 	__u8 hl;
 
-	skb_load_bytes(skb, off + offsetof(struct ipv6hdr, hop_limit),
+	ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, hop_limit),
 		       &hl, sizeof(hl));
 	if (hl <= 1)
 		return 1;
 	hl--;
-	if (skb_store_bytes(skb, off + offsetof(struct ipv6hdr, hop_limit),
+	if (ctx_store_bytes(ctx, off + offsetof(struct ipv6hdr, hop_limit),
 			    &hl, sizeof(hl), BPF_F_RECOMPUTE_CSUM) < 0)
 		return DROP_WRITE_ERROR;
 	return 0;
 }
 
-static inline int ipv6_load_saddr(struct __sk_buff *skb, int off, union v6addr *dst)
+static __always_inline int ipv6_load_saddr(struct __ctx_buff *ctx, int off,
+					   union v6addr *dst)
 {
-	return skb_load_bytes(skb, off + offsetof(struct ipv6hdr, saddr), dst->addr,
+	return ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, saddr), dst->addr,
 			      sizeof(((struct ipv6hdr *)NULL)->saddr));
 }
 
 /* Assumes that caller fixes checksum csum_diff() and l4_csum_replace() */
-static inline int ipv6_store_saddr(struct __sk_buff *skb, __u8 *addr, int off)
+static __always_inline int ipv6_store_saddr(struct __ctx_buff *ctx, __u8 *addr,
+					    int off)
 {
-	return skb_store_bytes(skb, off + offsetof(struct ipv6hdr, saddr), addr, 16, 0);
+	return ctx_store_bytes(ctx, off + offsetof(struct ipv6hdr, saddr), addr, 16, 0);
 }
 
-static inline int ipv6_load_daddr(struct __sk_buff *skb, int off, union v6addr *dst)
+static __always_inline int ipv6_load_daddr(struct __ctx_buff *ctx, int off,
+					   union v6addr *dst)
 {
-	return skb_load_bytes(skb, off + offsetof(struct ipv6hdr, daddr), dst->addr,
+	return ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, daddr), dst->addr,
 			      sizeof(((struct ipv6hdr *)NULL)->daddr));
 }
 
 /* Assumes that caller fixes checksum csum_diff() and l4_csum_replace() */
-static inline int ipv6_store_daddr(struct __sk_buff *skb, __u8 *addr, int off)
+static __always_inline int ipv6_store_daddr(struct __ctx_buff *ctx, __u8 *addr,
+					    int off)
 {
-	return skb_store_bytes(skb, off + offsetof(struct ipv6hdr, daddr), addr, 16, 0);
+	return ctx_store_bytes(ctx, off + offsetof(struct ipv6hdr, daddr), addr, 16, 0);
 }
 
-static inline int ipv6_load_nexthdr(struct __sk_buff *skb, int off, __u8 *nexthdr)
+static __always_inline int ipv6_load_nexthdr(struct __ctx_buff *ctx, int off,
+					     __u8 *nexthdr)
 {
-	return skb_load_bytes(skb, off + offsetof(struct ipv6hdr, nexthdr), nexthdr,
+	return ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, nexthdr), nexthdr,
 			      sizeof(__u8));
 }
 
 /* Assumes that caller fixes checksum csum_diff() and l4_csum_replace() */
-static inline int ipv6_store_nexthdr(struct __sk_buff *skb, __u8 *nexthdr, int off)
+static __always_inline int ipv6_store_nexthdr(struct __ctx_buff *ctx, __u8 *nexthdr,
+					      int off)
 {
-	return skb_store_bytes(skb, off + offsetof(struct ipv6hdr, nexthdr), nexthdr,
+	return ctx_store_bytes(ctx, off + offsetof(struct ipv6hdr, nexthdr), nexthdr,
 			      sizeof(__u8), 0);
 }
 
-static inline int ipv6_load_paylen(struct __sk_buff *skb, int off, __be16 *len)
+static __always_inline int ipv6_load_paylen(struct __ctx_buff *ctx, int off,
+					    __be16 *len)
 {
-	return skb_load_bytes(skb, off + offsetof(struct ipv6hdr, payload_len),
+	return ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, payload_len),
 			      len, sizeof(*len));
 }
 
 /* Assumes that caller fixes checksum csum_diff() and l4_csum_replace() */
-static inline int ipv6_store_paylen(struct __sk_buff *skb, int off, __be16 *len)
+static __always_inline int ipv6_store_paylen(struct __ctx_buff *ctx, int off,
+					     __be16 *len)
 {
-	return skb_store_bytes(skb, off + offsetof(struct ipv6hdr, payload_len),
+	return ctx_store_bytes(ctx, off + offsetof(struct ipv6hdr, payload_len),
 			       len, sizeof(*len), 0);
 }
 
-static inline int ipv6_store_flowlabel(struct __sk_buff *skb, int off, __be32 label)
+static __always_inline int ipv6_store_flowlabel(struct __ctx_buff *ctx, int off,
+						__be32 label)
 {
 	__be32 old;
 
 	/* use traffic class from packet */
-	if (skb_load_bytes(skb, off, &old, 4) < 0)
+	if (ctx_load_bytes(ctx, off, &old, 4) < 0)
 		return DROP_INVALID;
 
 	old &= IPV6_TCLASS_MASK;
 	old = bpf_htonl(0x60000000) | label | old;
 
-	if (skb_store_bytes(skb, off, &old, 4, BPF_F_RECOMPUTE_CSUM) < 0)
+	if (ctx_store_bytes(ctx, off, &old, 4, BPF_F_RECOMPUTE_CSUM) < 0)
 		return DROP_WRITE_ERROR;
 
 	return 0;
 }
 
-static inline __be32 ipv6_pseudohdr_checksum(struct ipv6hdr *hdr,
-                                             __u8 next_hdr,
-					     __u16 payload_len, __be32 sum)
+static __always_inline __be32 ipv6_pseudohdr_checksum(struct ipv6hdr *hdr,
+						      __u8 next_hdr,
+						      __u16 payload_len, __be32 sum)
 {
 	__be32 len = bpf_htonl((__u32)payload_len);
 	__be32 nexthdr = bpf_htonl((__u32)next_hdr);
@@ -250,7 +250,7 @@ static inline __be32 ipv6_pseudohdr_checksum(struct ipv6hdr *hdr,
 /*
  * Ipv4 mapped address - 0:0:0:0:0:FFFF::/96
  */
-static inline int ipv6_addr_is_mapped(union v6addr *addr)
+static __always_inline int ipv6_addr_is_mapped(union v6addr *addr)
 {
 	return addr->p1 == 0 && addr->p2 == 0 && addr->p3 == 0xFFFF0000;
 }

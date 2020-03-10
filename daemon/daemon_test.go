@@ -75,7 +75,6 @@ func setupTestDirectories() {
 	option.Config.Device = "undefined"
 	option.Config.RunDir = tempRunDir
 	option.Config.StateDir = tempRunDir
-	option.Config.AccessLog = filepath.Join(tempRunDir, "cilium-access.log")
 }
 
 func TestMain(m *testing.M) {
@@ -92,6 +91,7 @@ func TestMain(m *testing.M) {
 	}
 	option.Config.Opts.SetBool(option.DropNotify, true)
 	option.Config.Opts.SetBool(option.TraceNotify, true)
+	option.Config.Opts.SetBool(option.PolicyVerdictNotify, true)
 
 	// Disable restore of host IPs for unit tests. There can be arbitrary
 	// state left on disk.
@@ -116,8 +116,8 @@ func (ds *DaemonSuite) SetUpTest(c *C) {
 	c.Assert(err, IsNil)
 	ds.d = d
 
-	kvstore.DeletePrefix(context.TODO(), common.OperationalPath)
-	kvstore.DeletePrefix(context.TODO(), kvstore.BaseKeyPrefix)
+	kvstore.Client().DeletePrefix(context.TODO(), common.OperationalPath)
+	kvstore.Client().DeletePrefix(context.TODO(), kvstore.BaseKeyPrefix)
 
 	ds.OnGetPolicyRepository = nil
 	ds.OnQueueEndpointBuild = nil
@@ -136,8 +136,8 @@ func (ds *DaemonSuite) TearDownTest(c *C) {
 	}
 
 	if ds.kvstoreInit {
-		kvstore.DeletePrefix(context.TODO(), common.OperationalPath)
-		kvstore.DeletePrefix(context.TODO(), kvstore.BaseKeyPrefix)
+		kvstore.Client().DeletePrefix(context.TODO(), common.OperationalPath)
+		kvstore.Client().DeletePrefix(context.TODO(), kvstore.BaseKeyPrefix)
 	}
 
 	// Restore the policy enforcement mode.

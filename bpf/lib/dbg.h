@@ -1,20 +1,6 @@
-/*
- *  Copyright (C) 2016-2019 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 #ifndef __LIB_DBG__
 #define __LIB_DBG__
 
@@ -92,7 +78,7 @@ enum {
 				 * arg2: src sec-id
 				 * arg3: unused
 				 */
-	DBG_SKIP_PROXY,          /* arg1: skb->tc_index
+	DBG_SKIP_PROXY,          /* arg1: ctx->tc_index
 				  * arg2: unused
 				  */
 	DBG_L4_CREATE,		/* arg1: src sec-id
@@ -114,7 +100,7 @@ enum {
 	DBG_LB_STALE_CT,	/* arg1: svc rev_nat_id
 				   arg2: stale CT rev_nat_id
 				   arg3: unused */
-	DBG_INHERIT_IDENTITY	/* arg1: skb->mark
+	DBG_INHERIT_IDENTITY	/* arg1: ctx->mark
 				 * arg2: unused */
 };
 
@@ -159,9 +145,10 @@ struct debug_msg {
 	__u32		arg3;
 };
 
-static inline void cilium_dbg(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline void cilium_dbg(struct __ctx_buff *ctx, __u8 type,
+				       __u32 arg1, __u32 arg2)
 {
-	uint32_t hash = get_hash_recalc(skb);
+	__u32 hash = get_hash_recalc(ctx);
 	struct debug_msg msg = {
 		.type = CILIUM_NOTIFY_DBG_MSG,
 		.subtype = type,
@@ -171,13 +158,13 @@ static inline void cilium_dbg(struct __sk_buff *skb, __u8 type, __u32 arg1, __u3
 		.arg2 = arg2,
 	};
 
-	skb_event_output(skb, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
+	ctx_event_output(ctx, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
 }
 
-static inline void cilium_dbg3(struct __sk_buff *skb, __u8 type, __u32 arg1,
-			       __u32 arg2, __u32 arg3)
+static __always_inline void cilium_dbg3(struct __ctx_buff *ctx, __u8 type,
+					__u32 arg1, __u32 arg2, __u32 arg3)
 {
-	uint32_t hash = get_hash_recalc(skb);
+	__u32 hash = get_hash_recalc(ctx);
 	struct debug_msg msg = {
 		.type = CILIUM_NOTIFY_DBG_MSG,
 		.subtype = type,
@@ -188,7 +175,7 @@ static inline void cilium_dbg3(struct __sk_buff *skb, __u8 type, __u32 arg1,
 		.arg3 = arg3,
 	};
 
-	skb_event_output(skb, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
+	ctx_event_output(ctx, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
 }
 
 struct debug_capture_msg {
@@ -197,54 +184,57 @@ struct debug_capture_msg {
 	__u32		arg2;
 };
 
-static inline void cilium_dbg_capture2(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline void cilium_dbg_capture2(struct __ctx_buff *ctx, __u8 type,
+						__u32 arg1, __u32 arg2)
 {
-	uint64_t skb_len = (uint64_t)skb->len, cap_len = min((uint64_t)TRACE_PAYLOAD_LEN, (uint64_t)skb_len);
-	uint32_t hash = get_hash_recalc(skb);
+	__u64 ctx_len = (__u64)ctx_full_len(ctx);
+	__u64 cap_len = min((__u64)TRACE_PAYLOAD_LEN, (__u64)ctx_len);
+	__u32 hash = get_hash_recalc(ctx);
 	struct debug_capture_msg msg = {
 		.type = CILIUM_NOTIFY_DBG_CAPTURE,
 		.subtype = type,
 		.source = EVENT_SOURCE,
 		.hash = hash,
-		.len_orig = skb_len,
+		.len_orig = ctx_len,
 		.len_cap = cap_len,
 		.version = NOTIFY_CAPTURE_VER,
 		.arg1 = arg1,
 		.arg2 = arg2,
 	};
 
-	skb_event_output(skb, &EVENTS_MAP,
+	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
 }
 
-static inline void cilium_dbg_capture(struct __sk_buff *skb, __u8 type, __u32 arg1)
+static __always_inline void cilium_dbg_capture(struct __ctx_buff *ctx, __u8 type,
+					       __u32 arg1)
 {
-	cilium_dbg_capture2(skb, type, arg1, 0);
+	cilium_dbg_capture2(ctx, type, arg1, 0);
 }
-
 #else
-
 # define printk(fmt, ...)					\
 		do { } while (0)
 
-static inline void cilium_dbg(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline void cilium_dbg(struct __ctx_buff *ctx, __u8 type,
+				       __u32 arg1, __u32 arg2)
 {
 }
 
-static inline void cilium_dbg3(struct __sk_buff *skb, __u8 type, __u32 arg1,
-			       __u32 arg2, __u32 arg3)
+static __always_inline void cilium_dbg3(struct __ctx_buff *ctx, __u8 type,
+					__u32 arg1, __u32 arg2, __u32 arg3)
 {
 }
 
-static inline void cilium_dbg_capture(struct __sk_buff *skb, __u8 type, __u32 arg1)
+static __always_inline void cilium_dbg_capture(struct __ctx_buff *ctx,
+					       __u8 type, __u32 arg1)
 {
 }
 
-static inline void cilium_dbg_capture2(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline void cilium_dbg_capture2(struct __ctx_buff *ctx, __u8 type,
+						__u32 arg1, __u32 arg2)
 {
 }
 
 #endif
-
 #endif /* __LIB_DBG__ */

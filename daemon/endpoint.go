@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"runtime"
 	"sync"
 
@@ -276,6 +277,8 @@ func (d *Daemon) createEndpoint(ctx context.Context, epTemplate *models.Endpoint
 		}
 	}
 
+	// The following docs describe the cases where the init identity is used:
+	// http://docs.cilium.io/en/latest/policy/lifecycle/#init-identity
 	if len(addLabels) == 0 {
 		// If the endpoint has no labels, give the endpoint a special identity with
 		// label reserved:init so we can generate a custom policy for it until we
@@ -319,6 +322,26 @@ func (d *Daemon) createEndpoint(ctx context.Context, epTemplate *models.Endpoint
 	if err := ep.RegenerateAfterCreation(ctx, epTemplate.SyncBuildEndpoint); err != nil {
 		return d.errorDuringCreation(ep, err)
 	}
+
+	// The endpoint has been successfully created, stop the expiration
+	// timers of all attached IPs
+	if addressing := epTemplate.Addressing; addressing != nil {
+		if uuid := addressing.IPV4ExpirationUUID; uuid != "" {
+			if ip := net.ParseIP(addressing.IPV4); ip != nil {
+				if err := d.ipam.StopExpirationTimer(ip, uuid); err != nil {
+					return d.errorDuringCreation(ep, err)
+				}
+			}
+		}
+		if uuid := addressing.IPV6ExpirationUUID; uuid != "" {
+			if ip := net.ParseIP(addressing.IPV6); ip != nil {
+				if err := d.ipam.StopExpirationTimer(ip, uuid); err != nil {
+					return d.errorDuringCreation(ep, err)
+				}
+			}
+		}
+	}
+
 	return ep, 0, nil
 }
 

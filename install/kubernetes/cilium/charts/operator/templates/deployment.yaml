@@ -21,7 +21,7 @@ spec:
     metadata:
       annotations:
 {{- if and .Values.global.prometheus.enabled (not .Values.global.prometheus.serviceMonitor.enabled) }}
-        prometheus.io/port: "6942"
+        prometheus.io/port: {{ .Values.global.operatorPrometheus.port | quote }}
         prometheus.io/scrape: "true"
 {{- end }}
       labels:
@@ -30,67 +30,25 @@ spec:
     spec:
       containers:
       - args:
+        - --config-dir=/tmp/cilium/config-map
         - --debug=$(CILIUM_DEBUG)
-        - --identity-allocation-mode=$(CILIUM_IDENTITY_ALLOCATION_MODE)
-{{- if .Values.global.prometheus.enabled }}
-        - --enable-metrics
-{{- end }}
-{{- if .Values.global.kubeConfigPath }}
-        - --k8s-kubeconfig-path={{ .Values.global.kubeConfigPath }}
-{{- end }}
         command:
         - cilium-operator
         env:
-        - name: CILIUM_K8S_NAMESPACE
-          valueFrom:
-            fieldRef:
-              apiVersion: v1
-              fieldPath: metadata.namespace
         - name: K8S_NODE_NAME
           valueFrom:
             fieldRef:
               apiVersion: v1
               fieldPath: spec.nodeName
+        - name: CILIUM_K8S_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
         - name: CILIUM_DEBUG
           valueFrom:
             configMapKeyRef:
               key: debug
-              name: cilium-config
-              optional: true
-        - name: CILIUM_CLUSTER_NAME
-          valueFrom:
-            configMapKeyRef:
-              key: cluster-name
-              name: cilium-config
-              optional: true
-        - name: CILIUM_CLUSTER_ID
-          valueFrom:
-            configMapKeyRef:
-              key: cluster-id
-              name: cilium-config
-              optional: true
-        - name: CILIUM_IPAM
-          valueFrom:
-            configMapKeyRef:
-              key: ipam
-              name: cilium-config
-              optional: true
-        - name: CILIUM_DISABLE_ENDPOINT_CRD
-          valueFrom:
-            configMapKeyRef:
-              key: disable-endpoint-crd
-              name: cilium-config
-              optional: true
-        - name: CILIUM_KVSTORE
-          valueFrom:
-            configMapKeyRef:
-              key: kvstore
-              name: cilium-config
-              optional: true
-        - name: CILIUM_KVSTORE_OPT
-          valueFrom:
-            configMapKeyRef:
-              key: kvstore-opt
               name: cilium-config
               optional: true
         - name: AWS_ACCESS_KEY_ID
@@ -111,12 +69,6 @@ spec:
               key: AWS_DEFAULT_REGION
               name: cilium-aws
               optional: true
-        - name: CILIUM_IDENTITY_ALLOCATION_MODE
-          valueFrom:
-            configMapKeyRef:
-              key: identity-allocation-mode
-              name: cilium-config
-              optional: true
 {{- if .Values.global.k8sServiceHost }}
         - name: KUBERNETES_SERVICE_HOST
           value: {{ .Values.global.k8sServiceHost | quote }}
@@ -124,6 +76,26 @@ spec:
 {{- if .Values.global.k8sServicePort }}
         - name: KUBERNETES_SERVICE_PORT
           value: {{ .Values.global.k8sServicePort | quote }}
+{{- end }}
+{{- if .Values.global.azure.subscriptionID }}
+        - name: AZURE_SUBSCRIPTION_ID
+          value: {{ .Values.global.azure.subscriptionID }}
+{{- end }}
+{{- if .Values.global.azure.tenantID }}
+        - name: AZURE_TENANT_ID
+          value: {{ .Values.global.azure.tenantID }}
+{{- end }}
+{{- if .Values.global.azure.resourceGroup }}
+        - name: AZURE_RESOURCE_GROUP
+          value: {{ .Values.global.azure.resourceGroup }}
+{{- end }}
+{{- if .Values.global.azure.clientID }}
+        - name: AZURE_CLIENT_ID
+          value: {{ .Values.global.azure.clientID }}
+{{- end }}
+{{- if .Values.global.azure.clientSecret }}
+        - name: AZURE_CLIENT_SECRET
+          value: {{ .Values.global.azure.clientSecret }}
 {{- end }}
 {{- if contains "/" .Values.image }}
         image: "{{ .Values.image }}"
@@ -134,22 +106,28 @@ spec:
         name: cilium-operator
 {{- if .Values.global.prometheus.enabled }}
         ports:
-        - containerPort: 6942
-          hostPort: 6942
+        - containerPort: {{ .Values.global.operatorPrometheus.port }}
+          hostPort: {{ .Values.global.operatorPrometheus.port }}
           name: prometheus
           protocol: TCP
 {{- end }}
         livenessProbe:
           httpGet:
+{{- if .Values.global.ipv4.enabled }}
+            host: '127.0.0.1'
+{{- else }}
+            host: '[::1]'
+{{- end }}
             path: /healthz
             port: 9234
             scheme: HTTP
           initialDelaySeconds: 60
           periodSeconds: 10
           timeoutSeconds: 3
-{{- if or .Values.global.etcd.enabled .Values.global.kubeConfigPath }}
         volumeMounts:
-{{- end }}
+        - mountPath: /tmp/cilium/config-map
+          name: cilium-config-path
+          readOnly: true
 {{- if .Values.global.etcd.enabled }}
         - mountPath: /var/lib/etcd-config
           name: etcd-config-path
@@ -164,7 +142,11 @@ spec:
         - mountPath: {{ .Values.global.kubeConfigPath }}
           name: kube-config
           readOnly: true
-{{- end}}
+{{- end }}
+{{- if .Values.resources }}
+        resources:
+          {{- toYaml .Values.resources | trim | nindent 10 }}
+{{- end }}
       hostNetwork: true
 {{- if .Values.global.etcd.managed }}
       # In managed etcd mode, Cilium must be able to resolve the DNS name of
@@ -172,11 +154,16 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
 {{- end }}
       restartPolicy: Always
+{{- if and (eq .Release.Namespace "kube-system") (or (gt .Capabilities.KubeVersion.Minor "10") (gt .Capabilities.KubeVersion.Major "1"))}}
+      priorityClassName: system-cluster-critical
+{{- end }}
       serviceAccount: cilium-operator
       serviceAccountName: cilium-operator
-{{- if or .Values.global.etcd.enabled .Values.global.kubeConfigPath }}
       volumes:
-{{- end }}
+        # To read the configuration from the config map
+      - configMap:
+          name: cilium-config
+        name: cilium-config-path
 {{- if .Values.global.etcd.enabled }}
       # To read the etcd config stored in config maps
       - configMap:

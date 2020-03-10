@@ -152,7 +152,7 @@ generate_commit_list_for_pr () {
     entry_id=${entry_array[0]}
     entry_sha=${entry_array[1]}
     entry_sub=${entry_array[@]:2}
-    upstream="$(git log --since="1year" --pretty="%H" --no-merges --grep "$entry_sub" $REMOTE/master)"
+    upstream="$(git log -F --since="1year" --pretty="%H" --no-merges --grep "$entry_sub" $REMOTE/master)"
     upstream="$(git show $upstream | git patch-id)"
     upstream=($upstream)
     if [ "$entry_id" == "${upstream[0]}" ]; then
@@ -201,7 +201,7 @@ if [[ ${#stable_prs[@]} > 0 ]]; then
   echo "$ for pr in ${stable_prs[@]}; do contrib/backporting/set-labels.py \$pr pending ${STABLE_BRANCH}; done"
   if [[ ! -z $SUMMARY_LOG ]]; then
     echo -e "\nOnce this PR is merged, you can update the PR labels via:" >> $SUMMARY_LOG
-    echo "\`\`\`" >> $SUMMARY_LOG
+    echo "\`\`\`upstream-prs" >> $SUMMARY_LOG
     echo "$ for pr in ${stable_prs[@]}; do contrib/backporting/set-labels.py \$pr done ${STABLE_BRANCH}; done" >> $SUMMARY_LOG
     echo "\`\`\`" >> $SUMMARY_LOG
   fi

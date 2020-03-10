@@ -17,6 +17,7 @@
 package k8s
 
 import (
+	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/policy"
@@ -26,7 +27,7 @@ import (
 )
 
 func (s *K8sSuite) TestTranslatorDirect(c *C) {
-	repo := policy.NewPolicyRepository(nil)
+	repo := policy.NewPolicyRepository(nil, nil)
 
 	tag1 := labels.LabelArray{labels.ParseLabel("tag1")}
 	serviceInfo := ServiceID{
@@ -127,7 +128,7 @@ func (s *K8sSuite) TestServiceMatches(c *C) {
 }
 
 func (s *K8sSuite) TestTranslatorLabels(c *C) {
-	repo := policy.NewPolicyRepository(nil)
+	repo := policy.NewPolicyRepository(nil, nil)
 	svcLabels := map[string]string{
 		"app": "tested-service",
 	}
@@ -238,7 +239,7 @@ func (s *K8sSuite) TestPreprocessRules(c *C) {
 
 	epIP := "10.1.1.1"
 
-	cache := NewServiceCache()
+	cache := NewServiceCache(fakeDatapath.NewNodeAddressing())
 
 	endpointInfo := Endpoints{
 		Backends: map[string]*Backend{

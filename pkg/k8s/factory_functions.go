@@ -1,4 +1,4 @@
-// Copyright 2018-2019 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,11 +19,13 @@ import (
 
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/comparator"
+	"github.com/cilium/cilium/pkg/datapath"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/discovery/v1beta1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/client-go/tools/cache"
 )
@@ -53,6 +55,16 @@ func CopyObjToV1Endpoints(obj interface{}) *types.Endpoints {
 	if !ok {
 		log.WithField(logfields.Object, logfields.Repr(obj)).
 			Warn("Ignoring invalid k8s v1 Endpoints")
+		return nil
+	}
+	return ep.DeepCopy()
+}
+
+func CopyObjToV1EndpointSlice(obj interface{}) *types.EndpointSlice {
+	ep, ok := obj.(*types.EndpointSlice)
+	if !ok {
+		log.WithField(logfields.Object, logfields.Repr(obj)).
+			Warn("Ignoring invalid k8s v1 EndpointSlice")
 		return nil
 	}
 	return ep.DeepCopy()
@@ -107,14 +119,14 @@ func EqualV1NetworkPolicy(np1, np2 *types.NetworkPolicy) bool {
 		reflect.DeepEqual(np1.Spec, np2.Spec)
 }
 
-func EqualV1Services(k8sSVC1, k8sSVC2 *types.Service) bool {
+func EqualV1Services(k8sSVC1, k8sSVC2 *types.Service, nodeAddressing datapath.NodeAddressing) bool {
 	// Service annotations are used to mark services as global, shared, etc.
 	if !comparator.MapStringEquals(k8sSVC1.GetAnnotations(), k8sSVC2.GetAnnotations()) {
 		return false
 	}
 
-	svcID1, svc1 := ParseService(k8sSVC1)
-	svcID2, svc2 := ParseService(k8sSVC2)
+	svcID1, svc1 := ParseService(k8sSVC1, nodeAddressing)
+	svcID2, svc2 := ParseService(k8sSVC2, nodeAddressing)
 
 	if svcID1 != svcID2 {
 		return false
@@ -131,6 +143,17 @@ func EqualV1Endpoints(ep1, ep2 *types.Endpoints) bool {
 	return ep1.Name == ep2.Name &&
 		ep1.Namespace == ep2.Namespace &&
 		reflect.DeepEqual(ep1.Subsets, ep2.Subsets)
+}
+
+func EqualV1EndpointSlice(ep1, ep2 *types.EndpointSlice) bool {
+	// We only care about the Name, Namespace and Subsets of a particular
+	// endpoint.
+	// AddressType is omitted because it's immutable after EndpointSlice's
+	// creation.
+	return ep1.Name == ep2.Name &&
+		ep1.Namespace == ep2.Namespace &&
+		reflect.DeepEqual(ep1.Endpoints, ep2.Endpoints) &&
+		reflect.DeepEqual(ep1.Ports, ep2.Ports)
 }
 
 func EqualV2CNP(cnp1, cnp2 *types.SlimCNP) bool {
@@ -334,6 +357,34 @@ func ConvertToK8sEndpoints(obj interface{}) interface{} {
 			Key: concreteObj.Key,
 			Obj: &types.Endpoints{
 				Endpoints: eps,
+			},
+		}
+	default:
+		return obj
+	}
+}
+
+// ConvertToK8sEndpointSlice converts a *v1beta1.EndpointSlice into a
+// *types.Endpoints or a cache.DeletedFinalStateUnknown into
+// a cache.DeletedFinalStateUnknown with a *types.Endpoints in its Obj.
+// If the given obj can't be cast into either *v1.Endpoints
+// nor cache.DeletedFinalStateUnknown, the original obj is returned.
+func ConvertToK8sEndpointSlice(obj interface{}) interface{} {
+	// TODO check which fields we really need
+	switch concreteObj := obj.(type) {
+	case *v1beta1.EndpointSlice:
+		return &types.EndpointSlice{
+			EndpointSlice: concreteObj,
+		}
+	case cache.DeletedFinalStateUnknown:
+		eps, ok := concreteObj.Obj.(*v1beta1.EndpointSlice)
+		if !ok {
+			return obj
+		}
+		return cache.DeletedFinalStateUnknown{
+			Key: concreteObj.Key,
+			Obj: &types.EndpointSlice{
+				EndpointSlice: eps,
 			},
 		}
 	default:

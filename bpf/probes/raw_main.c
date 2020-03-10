@@ -1,24 +1,8 @@
-/*
- *  Copyright (C) 2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2017-2020 Authors of Cilium */
 
 #include <unistd.h>
 #include <stdio.h>
-#include <stdint.h>
 #include <string.h>
 #include <errno.h>
 
@@ -26,19 +10,18 @@
 
 #include "raw_insn.h"
 
-#include "iproute2/bpf_elf.h"
+#include "bpf/ctx/unspec.h"
+#include "bpf/api.h"
 
 #define BPF_MAX_FIXUPS	64
 #define BPF_MAX_INSNS	(2 * BPF_MAXINSNS)
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-
 struct bpf_map_fixup {
 	int off;
 	enum bpf_map_type type;
-	uint32_t size_key;
-	uint32_t size_val;
-	uint32_t flags;
+	__u32 size_key;
+	__u32 size_val;
+	__u32 flags;
 };
 
 struct bpf_test {
@@ -54,9 +37,9 @@ static struct bpf_test tests[] = {
 #include "raw_probe.t"
 };
 
-static uint64_t bpf_ptr_to_u64(const void *ptr)
+static __u64 bpf_ptr_to_u64(const void *ptr)
 {
-	return (uint64_t)(unsigned long)ptr;
+	return (__u64)(unsigned long)ptr;
 }
 
 #ifndef __NR_bpf
@@ -103,9 +86,9 @@ int bpf_prog_load(enum bpf_prog_type type, enum bpf_attach_type attach_type,
 	return bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
 }
 
-static int bpf_map_create(enum bpf_map_type type, uint32_t size_key,
-			  uint32_t size_value, uint32_t max_elem,
-			  uint32_t flags)
+static int bpf_map_create(enum bpf_map_type type, __u32 size_key,
+			  __u32 size_value, __u32 max_elem,
+			  __u32 flags)
 {
 	union bpf_attr attr;
 
@@ -261,7 +244,7 @@ static void bpf_run_test(struct bpf_test *test, int debug_mode)
 			.max_elem	= 1,
 			.flags		= map->flags,
 		};
-	  
+
 		fd = bpf_map_create(map->type, map->size_key,
 				    map->size_val, 1, map->flags);
 		if (fd < 0) {
@@ -274,7 +257,7 @@ static void bpf_run_test(struct bpf_test *test, int debug_mode)
 			/* We fail in verifier eventually. */
 			break;
 		}
-		
+
 		if (bpf_map_selfcheck_pinned(fd, &elf_map, sizeof elf_map, test->type) != 0)
 			break;
 

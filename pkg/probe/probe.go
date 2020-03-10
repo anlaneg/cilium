@@ -19,6 +19,8 @@ import (
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
+
+	"golang.org/x/sys/unix"
 )
 
 type probeKey struct {
@@ -60,5 +62,17 @@ func HaveFullLPM() bool {
 	if err != nil {
 		return false
 	}
+	return true
+}
+
+// HaveIPv6Support tests whether kernel can open an IPv6 socket. This will
+// also implicitly auto-load IPv6 kernel module if available and not yet
+// loaded.
+func HaveIPv6Support() bool {
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0)
+	if err == unix.EAFNOSUPPORT || err == unix.EPROTONOSUPPORT {
+		return false
+	}
+	unix.Close(fd)
 	return true
 }

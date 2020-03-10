@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,21 +33,23 @@ import (
 
 const (
 	// Commands
-	ping         = "ping"
-	ping6        = "ping6"
-	http         = "http"
-	http6        = "http6"
-	httpPrivate  = "http_private"
-	http6Private = "http6_private"
-
-	httpPathRewrite  = "http_path_rewrite"
-	http6PathRewrite = "http6_path_rewrite"
+	ping              = "ping"
+	ping6             = "ping6"
+	http              = "http"
+	http6             = "http6"
+	httpPrivate       = "http_private"
+	http6Private      = "http6_private"
+	httpPrivateToken  = "http_private_token"
+	http6PrivateToken = "http6_private_token"
+	httpPathRewrite   = "http_path_rewrite"
+	http6PathRewrite  = "http6_path_rewrite"
 
 	// Policy files
 	policyJSON                      = "policy.json"
 	invalidJSON                     = "invalid.json"
 	multL7PoliciesJSON              = "Policies-l7-multiple.json"
 	policiesL7JSON                  = "Policies-l7-simple.json"
+	imposePoliciesL7JSON            = "Policies-l7-impose.json"
 	policiesL3JSON                  = "Policies-l3-policy.json"
 	policiesL4Json                  = "Policies-l4-policy.json"
 	policiesL3DependentL7EgressJSON = "Policies-l3-dependent-l7-egress.json"
@@ -111,6 +113,7 @@ var _ = Describe("RuntimePolicies", func() {
 	pingRequests := []string{ping, ping6}
 	httpRequestsPublic := []string{http, http6}
 	httpRequestsPrivate := []string{httpPrivate, http6Private}
+	httpRequestsPrivateToken := []string{httpPrivateToken, http6PrivateToken}
 	httpRequestsPathRewrite := []string{httpPathRewrite, http6PathRewrite}
 	httpRequests := append(httpRequestsPublic, httpRequestsPrivate...)
 	httpRequests = append(httpRequests, httpRequestsPathRewrite...)
@@ -141,9 +144,9 @@ var _ = Describe("RuntimePolicies", func() {
 			case ping6:
 				command = helpers.Ping6(srvIP[helpers.IPv6])
 				dst = srvIP[helpers.IPv6]
-			case http, httpPrivate, httpPathRewrite:
+			case http, httpPrivate, httpPrivateToken, httpPathRewrite:
 				dst = srvIP[helpers.IPv4]
-			case http6, http6Private, http6PathRewrite:
+			case http6, http6Private, http6PrivateToken, http6PathRewrite:
 				dst = fmt.Sprintf("[%s]", srvIP[helpers.IPv6])
 			}
 			switch test {
@@ -163,6 +166,12 @@ var _ = Describe("RuntimePolicies", func() {
 			case http6Private:
 				commandName = "curl private IPv6 URL on"
 				command = helpers.CurlFail("http://%s:80/private", dst)
+			case httpPrivateToken:
+				commandName = "curl private IPv4 URL with an access-token 1234-09AB-5678-CDEF on"
+				command = helpers.CurlFail(`--header "Access-Token: 1234-09AB-5678-CDEF" http://%s:80/private`, dst)
+			case http6PrivateToken:
+				commandName = "curl private IPv6 URL with an access-token 1234-09AB-5678-CDEF on"
+				command = helpers.CurlFail(`--header "Access-Token: 1234-09AB-5678-CDEF" http://%s:80/private`, dst)
 			case httpPathRewrite:
 				commandName = "curl path rewrite IPv4 URL on"
 				command = helpers.CurlFail("http://%s:80/public/../private", dst)
@@ -363,19 +372,40 @@ var _ = Describe("RuntimePolicies", func() {
 		connectivityTest(allRequests, helpers.App1, helpers.Httpd1, true)
 		connectivityTest(allRequests, helpers.App2, helpers.Httpd1, true)
 
+		By("Impose header on Egress, verify on ingress")
+
+		vm.PolicyDelAll()
+		_, err = vm.PolicyImportAndWait(vm.GetFullPath(imposePoliciesL7JSON), helpers.HelperTimeout)
+		Expect(err).Should(BeNil())
+
+		// app1 can connect to public, but not to private
+		connectivityTest(httpRequestsPublic, helpers.App1, helpers.Httpd1, true)
+		connectivityTest(httpRequestsPrivate, helpers.App1, helpers.Httpd1, false)
+
+		// app1 succeeds if the right access token is used
+		connectivityTest(httpRequestsPrivateToken, helpers.App1, helpers.Httpd1, true)
+
+		// app2 can connect to public, and to private due to access token being inserted at egress
+		connectivityTest(httpRequestsPublic, helpers.App2, helpers.Httpd2, true)
+		connectivityTest(httpRequestsPrivate, helpers.App2, helpers.Httpd2, true)
+
 		By("Multiple Ingress")
 
 		vm.PolicyDelAll()
 		_, err = vm.PolicyImportAndWait(vm.GetFullPath(multL7PoliciesJSON), helpers.HelperTimeout)
 		Expect(err).Should(BeNil())
 
-		//APP1 can connnect to public, but no to private
+		//APP1 can connect to public, but no to private
 
 		connectivityTest(httpRequestsPublic, helpers.App1, helpers.Httpd1, true)
 		connectivityTest(httpRequestsPrivate, helpers.App1, helpers.Httpd1, false)
 
 		//App2 can't connect
 		connectivityTest(httpRequestsPublic, helpers.App2, helpers.Httpd1, false)
+
+		By("Multiple Ingress rules on same port")
+		// app1 can connect to /public on httpd2
+		connectivityTest(httpRequestsPublic, helpers.App1, helpers.Httpd2, true)
 
 		By("Multiple Egress")
 		// app2 can connect to /public, but not to /private
@@ -502,31 +532,17 @@ var _ = Describe("RuntimePolicies", func() {
 
 		connectivityTest(httpRequestsPublic, helpers.App3, helpers.Httpd2, true)
 
-		// Since policy allows connectivity on L3 from app3 to httpd2, we expect:
-		// * two more requests to get received by the proxy because even though
-		// only L3 policy applies for connectivity from app3 to httpd2, because
-		// app3 has L7 policy applied to it, all traffic goes through the proxy.
-		// * two more requests to get forwarded by the proxy because policy allows
-		// app3 to talk to httpd2.
-		// * no increase in requests denied by the proxy.
-		// * two more corresponding responses forwarded / received to the aforementioned requests due to policy
-		// allowing connectivity via http / http6.
-		checkProxyStatistics(app3EndpointID, 4, 6, 2, 4, 4)
+		// Since policy allows connectivity on L3 from app3 to httpd2, and such
+		// packets are not forwarded to the proxy, we expect no changes in proxy
+		// stats.
+		checkProxyStatistics(app3EndpointID, 2, 4, 2, 2, 2)
 
 		connectivityTest(httpRequestsPrivate, helpers.App3, helpers.Httpd2, true)
 
-		// Since policy allows connectivity on L3 from app3 to httpd2, we expect:
-		// * two more requests to get received by the proxy because even though
-		// only L3 policy applies for connectivity from app3 to httpd2, because
-		// app3 has L7 policy applied to it, all traffic goes through the proxy.
-		// * two more requests to get forwarded by the proxy because policy allows
-		// app3 to talk to httpd2, even though it's restricted on L7 for connectivity
-		// to httpd1 from app3. This is what tests L3-dependent L7 policy is applied
-		// correctly.
-		// * no increase in requests denied by the proxy.
-		// * two more corresponding responses forwarded / received to the aforementioned requests due to policy
-		// allowing connectivity via http / http6.
-		checkProxyStatistics(app3EndpointID, 6, 8, 2, 6, 6)
+		// Since policy allows connectivity on L3 from app3 to httpd2, and such
+		// packets are not forwarded to the proxy, we expect no changes in proxy
+		// stats.
+		checkProxyStatistics(app3EndpointID, 2, 4, 2, 2, 2)
 	})
 
 	It("Checks CIDR L3 Policy", func() {
@@ -1394,64 +1410,112 @@ var _ = Describe("RuntimePolicies", func() {
 			vm.ContainerRm(initContainer).ExpectSuccess("Container initContainer cannot be deleted")
 		})
 
-		It("Init Ingress Policy Default Drop Test", func() {
-			By("Starting cilium monitor in background")
-			ctx, cancel := context.WithCancel(context.Background())
-			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
-			defer cancel()
-
-			By("Creating an endpoint")
-			res := vm.ContainerCreate(initContainer, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l somelabel")
+		createEndpoint := func(cmdArgs ...string) (endpointID string, endpointIP *models.AddressPair) {
+			res := vm.ContainerCreate(initContainer, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l somelabel", cmdArgs...)
 			res.ExpectSuccess("Failed to create container")
 
 			endpoints, err := vm.GetAllEndpointsIds()
 			Expect(err).Should(BeNil(), "Unable to get IDs of endpoints")
-			endpointID, exists := endpoints[initContainer]
+			var exists bool
+			endpointID, exists = endpoints[initContainer]
 			Expect(exists).To(BeTrue(), "Expected endpoint ID to exist for %s", initContainer)
 			ingressEpModel := vm.EndpointGet(endpointID)
 			Expect(ingressEpModel).NotTo(BeNil(), "nil model returned for endpoint %s", endpointID)
 
-			endpointIP := ingressEpModel.Status.Networking.Addressing[0]
+			endpointIP = ingressEpModel.Status.Networking.Addressing[0]
+			return
+		}
+
+		It("tests ingress", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			By("Starting cilium monitor in background")
+			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
+			defer cancel()
+
+			By("Creating an endpoint")
+			endpointID, endpointIP := createEndpoint()
 
 			// Normally, we start pinging fast enough that the endpoint still has identity "init" / 5,
 			// and we continue pinging as the endpoint changes its identity for label "somelabel".
 			// So these pings will be dropped by the policies for both identity 5 and the new identity
 			// for label "somelabel".
 			By("Testing ingress with ping from host to endpoint")
-			res = vm.Exec(helpers.Ping(endpointIP.IPV4))
+			res := vm.Exec(helpers.Ping(endpointIP.IPV4))
 			res.ExpectFail("Unexpectedly able to ping endpoint with no ingress policy")
 
 			By("Testing cilium monitor output")
-			err = monitorRes.WaitUntilMatch("xx drop (Policy denied")
+			err := monitorRes.WaitUntilMatch("xx drop (Policy denied")
 			Expect(err).To(BeNil(), "Default drop on ingress failed")
 			monitorRes.ExpectDoesNotContain(fmt.Sprintf("-> endpoint %s ", endpointID),
 				"Unexpected ingress traffic to endpoint")
 		})
 
-		It("Init Egress Policy Default Drop Test", func() {
-			hostIP := "10.0.2.15"
-
+		It("tests egress", func() {
 			By("Starting cilium monitor in background")
 			ctx, cancel := context.WithCancel(context.Background())
 			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
 			defer cancel()
 
 			By("Creating an endpoint")
-			res := vm.ContainerCreate(initContainer, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l somelabel", "ping", hostIP)
-			res.ExpectSuccess("Failed to create container")
-
-			endpoints, err := vm.GetAllEndpointsIds()
-			Expect(err).To(BeNil(), "Unable to get IDs of endpoints")
-			endpointID, exists := endpoints[initContainer]
-			Expect(exists).To(BeTrue(), "Expected endpoint ID to exist for %s", initContainer)
-			egressEpModel := vm.EndpointGet(endpointID)
-			Expect(egressEpModel).NotTo(BeNil(), "nil model returned for endpoint %s", endpointID)
+			endpointID, _ := createEndpoint("ping", "10.0.2.15")
 
 			By("Testing cilium monitor output")
-			err = monitorRes.WaitUntilMatch("xx drop (Policy denied")
+			err := monitorRes.WaitUntilMatch("xx drop (Policy denied")
 			Expect(err).To(BeNil(), "Default drop on egress failed")
 			monitorRes.ExpectDoesNotContain(fmt.Sprintf("-> endpoint %s ", endpointID),
 				"Unexpected reply traffic to endpoint")
+		})
+
+		Context("With PolicyAuditMode", func() {
+			BeforeEach(func() {
+				vm.ExecCilium("config PolicyAuditMode=Enabled").ExpectSuccess("unable to change daemon configuration")
+			})
+
+			AfterAll(func() {
+				vm.ExecCilium("config PolicyAuditMode=Disabled").ExpectSuccess("unable to change daemon configuration")
+			})
+
+			It("tests ingress", func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				By("Starting cilium monitor in background")
+				monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace --type policy-verdict")
+				defer cancel()
+
+				By("Creating an endpoint")
+				endpointID, endpointIP := createEndpoint()
+
+				By("Testing ingress with ping from host to endpoint")
+				res := vm.Exec(helpers.Ping(endpointIP.IPV4))
+				res.ExpectSuccess("Not able to ping endpoint with no ingress policy")
+
+				By("Testing cilium monitor output")
+				err := monitorRes.WaitUntilMatch("Policy verdict log")
+				Expect(err).To(BeNil(), "Default policy verdict on ingress failed")
+				monitorRes.ExpectContains(
+					fmt.Sprintf("local EP ID %s, remote ID 1, dst port 0, proto 1, ingress true, action allow", endpointID),
+					"No ingress policy log record",
+				)
+				monitorRes.ExpectContains(fmt.Sprintf("-> endpoint %s ", endpointID), "No ingress traffic to endpoint")
+			})
+
+			It("tests egress", func() {
+				By("Starting cilium monitor in background")
+				ctx, cancel := context.WithCancel(context.Background())
+				monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace --type policy-verdict")
+				defer cancel()
+
+				By("Creating an endpoint")
+				endpointID, _ := createEndpoint("ping", "10.0.2.15")
+
+				By("Testing cilium monitor output")
+				err := monitorRes.WaitUntilMatch("Policy verdict log")
+				Expect(err).To(BeNil(), "Default policy verdict on egress failed")
+				monitorRes.ExpectContains(
+					fmt.Sprintf("ID %s, remote ID 1, dst port 0, proto 1, ingress false, action allow", endpointID),
+					"No egress policy log record",
+				)
+				monitorRes.ExpectContains(fmt.Sprintf("-> endpoint %s ", endpointID), "No reply traffic to endpoint")
+			})
 		})
 	})
 	Context("Init Policy Test", func() {
@@ -1497,7 +1561,7 @@ var _ = Describe("RuntimePolicies", func() {
 			By("Testing cilium monitor output")
 			err = monitorRes.WaitUntilMatchRegexp(fmt.Sprintf(`-> endpoint %s flow [^ ]+ identity 1->`, endpointID))
 			Expect(err).To(BeNil(), "Allow on ingress failed")
-			monitorRes.ExpectDoesNotMatchRegexp(fmt.Sprintf(`xx drop \(Policy denied \([^)]+\)\) flow [^ ]+ to endpoint %s, identity 1->[^0]`, endpointID), "Unexpected drop")
+			monitorRes.ExpectDoesNotMatchRegexp(fmt.Sprintf(`xx drop \(Policy denied\) flow [^ ]+ to endpoint %s, identity 1->[^0]`, endpointID), "Unexpected drop")
 		})
 
 		It("Init Egress Policy Test", func() {
@@ -1522,11 +1586,11 @@ var _ = Describe("RuntimePolicies", func() {
 			By("Testing cilium monitor output")
 			err = monitorRes.WaitUntilMatchRegexp(fmt.Sprintf(`-> endpoint %s flow [^ ]+ identity 1->`, endpointID))
 			Expect(err).To(BeNil(), "Allow on egress failed")
-			monitorRes.ExpectDoesNotMatchRegexp(fmt.Sprintf(`xx drop \(Policy denied \([^)]+\)\) flow [^ ]+ to endpoint %s, identity 1->[^0]`, endpointID), "Unexpected drop")
+			monitorRes.ExpectDoesNotMatchRegexp(fmt.Sprintf(`xx drop \(Policy denied\) flow [^ ]+ to endpoint %s, identity 1->[^0]`, endpointID), "Unexpected drop")
 		})
 	})
 
-	Context("Test Policy Generation for Already-Allocated Identities", func() {
+	Context("Tests for Already-Allocated Identities", func() {
 		var (
 			newContainerName = fmt.Sprintf("%s-already-allocated-id", helpers.Httpd1)
 		)
@@ -1543,7 +1607,7 @@ var _ = Describe("RuntimePolicies", func() {
 			vm.ContainerRm(newContainerName)
 		})
 
-		It("Tests L4 Policy is Generated for Endpoint whose identity has already been allocated", func() {
+		It("Tests L4 policy is generated for endpoint with already-allocated identity", func() {
 			// Create a new container which has labels which have already been
 			// allocated an identity from the key-value store.
 			By("Creating new container with label id.httpd1, which has already " +

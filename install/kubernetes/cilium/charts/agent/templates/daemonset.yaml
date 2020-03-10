@@ -3,12 +3,18 @@ kind: DaemonSet
 metadata:
   labels:
     k8s-app: cilium
+{{- if .Values.keepDeprecatedLabels }}
+    kubernetes.io/cluster-service: "true"
+{{- end }}
   name: cilium
   namespace: {{ .Release.Namespace }}
 spec:
   selector:
     matchLabels:
       k8s-app: cilium
+{{- if .Values.keepDeprecatedLabels }}
+      kubernetes.io/cluster-service: "true"
+{{- end }}
   template:
     metadata:
       annotations:
@@ -23,12 +29,57 @@ spec:
         scheduler.alpha.kubernetes.io/critical-pod: ""
       labels:
         k8s-app: cilium
+{{- if .Values.keepDeprecatedLabels }}
+        kubernetes.io/cluster-service: "true"
+{{- end }}
     spec:
+{{- if .Values.global.affinity }}
+      affinity:
+{{ toYaml .Values.global.affinity | indent 8 }}
+{{- end }}
       containers:
+{{- if .Values.global.sleepAfterInit }}
+      - command: [ "/bin/bash", "-c", "--" ]
+        args: [ "while true; do sleep 30; done;" ]
+        livenessProbe:
+          exec:
+            command:
+            - "true"
+        readinessProbe:
+          exec:
+            command:
+            - "true"
+{{- else }}
       - args:
         - --config-dir=/tmp/cilium/config-map
         command:
         - cilium-agent
+        livenessProbe:
+          exec:
+            command:
+            - cilium
+            - status
+            - --brief
+          failureThreshold: 10
+          # The initial delay for the liveness probe is intentionally large to
+          # avoid an endless kill & restart cycle if in the event that the initial
+          # bootstrapping takes longer than expected.
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - cilium
+            - status
+            - --brief
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 5
+{{- end }}
         env:
         - name: K8S_NODE_NAME
           valueFrom:
@@ -66,6 +117,14 @@ spec:
               key: custom-cni-conf
               name: cilium-config
               optional: true
+{{- if gt (len .Values.global.hubble.listenAddresses) 0 }}
+        # Hubble uses this group for its unix domain sockets.
+        - name: HUBBLE_GROUP_NAME
+          value: "cilium"
+        # Default Hubble gRPC endpoint for observe/status commands.
+        - name: HUBBLE_DEFAULT_SOCKET_PATH
+          value: {{ .Values.global.hubble.listenAddresses | first | quote }}
+{{- end }}
 {{- if .Values.global.k8sServiceHost }}
         - name: KUBERNETES_SERVICE_HOST
           value: {{ .Values.global.k8sServiceHost | quote }}
@@ -92,20 +151,10 @@ spec:
               command:
               - /cni-uninstall.sh
 {{- end }}
-        livenessProbe:
-          exec:
-            command:
-            - cilium
-            - status
-            - --brief
-          failureThreshold: 10
-          # The initial delay for the liveness probe is intentionally large to
-          # avoid an endless kill & restart cycle if in the event that the initial
-          # bootstrapping takes longer than expected.
-          initialDelaySeconds: 120
-          periodSeconds: 30
-          successThreshold: 1
-          timeoutSeconds: 5
+{{- if .Values.resources }}
+        resources:
+          {{- toYaml .Values.resources | trim | nindent 10 }}
+{{- end }}
         name: cilium-agent
 {{- if .Values.global.prometheus.enabled }}
         ports:
@@ -114,17 +163,6 @@ spec:
           name: prometheus
           protocol: TCP
 {{- end }}
-        readinessProbe:
-          exec:
-            command:
-            - cilium
-            - status
-            - --brief
-          failureThreshold: 3
-          initialDelaySeconds: 5
-          periodSeconds: 30
-          successThreshold: 1
-          timeoutSeconds: 5
         securityContext:
           capabilities:
             add:
@@ -179,6 +217,28 @@ spec:
           name: kube-config
           readOnly: true
 {{- end}}
+{{- if .Values.monitor.enabled }}
+      - name: cilium-monitor
+        command: ["cilium"]
+        args:
+        - monitor
+{{- range $type := .Values.monitor.eventTypes }}
+        - --type={{ $type }}
+{{- end }}
+{{- if contains "/" .Values.image }}
+        image: "{{ .Values.image }}"
+{{- else }}
+        image: "{{ .Values.global.registry }}/{{ .Values.image }}:{{ .Values.global.tag }}"
+{{- end }}
+        imagePullPolicy: {{ .Values.global.pullPolicy }}
+        volumeMounts:
+        - mountPath: /var/run/cilium
+          name: cilium-run
+{{- if .Values.monitor.resources }}
+        resources:
+          {{- toYaml .Values.monitor.resources | trim | nindent 10 }}
+{{- end }}
+{{- end }}
 {{- if .Values.global.etcd.managed }}
       # In managed etcd mode, Cilium must be able to resolve the DNS name of
       # the etcd service
@@ -242,6 +302,10 @@ spec:
 {{- end }}
         - mountPath: /var/run/cilium
           name: cilium-run
+{{- if .Values.initResources }}
+        resources:
+          {{- toYaml .Values.initResources | trim | nindent 10 }}
+{{- end }}
       restartPolicy: Always
 {{- if and (eq .Release.Namespace "kube-system") (or (gt .Capabilities.KubeVersion.Minor "10") (gt .Capabilities.KubeVersion.Major "1"))}}
       priorityClassName: system-node-critical

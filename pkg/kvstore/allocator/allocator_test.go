@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,7 +39,9 @@ func Test(t *testing.T) {
 	TestingT(t)
 }
 
-type AllocatorSuite struct{}
+type AllocatorSuite struct {
+	backend string
+}
 
 type AllocatorEtcdSuite struct {
 	AllocatorSuite
@@ -48,12 +50,13 @@ type AllocatorEtcdSuite struct {
 var _ = Suite(&AllocatorEtcdSuite{})
 
 func (e *AllocatorEtcdSuite) SetUpTest(c *C) {
+	e.backend = "etcd"
 	kvstore.SetupDummy("etcd")
 }
 
 func (e *AllocatorEtcdSuite) TearDownTest(c *C) {
-	kvstore.DeletePrefix(context.TODO(), testPrefix)
-	kvstore.Close()
+	kvstore.Client().DeletePrefix(context.TODO(), testPrefix)
+	kvstore.Client().Close()
 }
 
 type AllocatorConsulSuite struct {
@@ -63,20 +66,23 @@ type AllocatorConsulSuite struct {
 var _ = Suite(&AllocatorConsulSuite{})
 
 func (e *AllocatorConsulSuite) SetUpTest(c *C) {
+	e.backend = "consul"
 	kvstore.SetupDummy("consul")
 }
 
 func (e *AllocatorConsulSuite) TearDownTest(c *C) {
-	kvstore.DeletePrefix(context.TODO(), testPrefix)
-	kvstore.Close()
+	kvstore.Client().DeletePrefix(context.TODO(), testPrefix)
+	kvstore.Client().Close()
 }
 
 //FIXME: this should be named better, it implements pkg/allocator.Backend
 type TestAllocatorKey string
 
-func (t TestAllocatorKey) GetKey() string              { return string(t) }
-func (t TestAllocatorKey) GetAsMap() map[string]string { return map[string]string{string(t): string(t)} }
-func (t TestAllocatorKey) String() string              { return string(t) }
+func (t TestAllocatorKey) GetKey() string { return string(t) }
+func (t TestAllocatorKey) GetAsMap() map[string]string {
+	return map[string]string{string(t): string(t)}
+}
+func (t TestAllocatorKey) String() string { return string(t) }
 func (t TestAllocatorKey) PutKey(v string) allocator.AllocatorKey {
 	return TestAllocatorKey(v)
 }
@@ -95,7 +101,7 @@ func randomTestName() string {
 func (s *AllocatorSuite) BenchmarkAllocate(c *C) {
 	allocatorName := randomTestName()
 	maxID := idpool.ID(256 + c.N)
-	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""))
+	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	a, err := allocator.NewAllocator(TestAllocatorKey(""), backend, allocator.WithMax(maxID))
 	c.Assert(err, IsNil)
@@ -111,11 +117,135 @@ func (s *AllocatorSuite) BenchmarkAllocate(c *C) {
 
 }
 
+func (s *AllocatorSuite) TestRunLocksGC(c *C) {
+	allocatorName := randomTestName()
+	maxID := idpool.ID(256 + c.N)
+	// FIXME: Did this previousy use allocatorName := randomTestName() ? so TestAllocatorKey(randomeTestName())
+	backend1, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""), kvstore.Client())
+	c.Assert(err, IsNil)
+	c.Assert(err, IsNil)
+	allocator, err := allocator.NewAllocator(TestAllocatorKey(""), backend1, allocator.WithMax(maxID), allocator.WithoutGC())
+	c.Assert(err, IsNil)
+	shortKey := TestAllocatorKey("1;")
+
+	staleLocks := map[string]kvstore.Value{}
+	staleLocks, err = allocator.RunLocksGC(context.Background(), staleLocks)
+	c.Assert(err, IsNil)
+	c.Assert(len(staleLocks), Equals, 0)
+
+	var (
+		lock1, lock2 kvstore.KVLocker
+		gotLock1     = make(chan struct{})
+		gotLock2     = make(chan struct{})
+	)
+	go func() {
+		var (
+			err error
+		)
+		lock1, err = backend1.Lock(context.Background(), shortKey)
+		c.Assert(err, IsNil)
+		close(gotLock1)
+		var client kvstore.BackendOperations
+		switch s.backend {
+		case "etcd":
+			client, _ = kvstore.NewClient(context.Background(),
+				s.backend,
+				map[string]string{
+					kvstore.EtcdAddrOption: kvstore.EtcdDummyAddress(),
+				},
+				nil,
+			)
+		case "consul":
+			client, _ = kvstore.NewClient(context.Background(),
+				s.backend,
+				map[string]string{
+					kvstore.ConsulAddrOption:   kvstore.ConsulDummyAddress(),
+					kvstore.ConsulOptionConfig: kvstore.ConsulDummyConfigFile(),
+				},
+				nil,
+			)
+		}
+		lock2, err = client.LockPath(context.Background(), allocatorName+"/locks/"+kvstore.Client().Encode([]byte(shortKey.GetKey())))
+		c.Assert(err, IsNil)
+		close(gotLock2)
+	}()
+
+	// Wait until lock1 is gotten.
+	c.Assert(testutils.WaitUntil(func() bool {
+		select {
+		case <-gotLock1:
+			return true
+		default:
+			return false
+		}
+	}, 5*time.Second), IsNil)
+
+	// wait until client2, in line 160, tries to grab the lock.
+	// We can't detect when that actually happen so we have to assume it will
+	// happen within one second.
+	time.Sleep(time.Second)
+
+	// Check which locks are stale, it should be lock1 and lock2
+	staleLocks, err = allocator.RunLocksGC(context.Background(), staleLocks)
+	c.Assert(err, IsNil)
+	switch s.backend {
+	case "consul":
+		// Contrary to etcd, consul does not create a lock in the kvstore
+		// if a lock is already being held.
+		c.Assert(len(staleLocks), Equals, 1)
+	case "etcd":
+		c.Assert(len(staleLocks), Equals, 2)
+	}
+
+	var (
+		oldestRev     uint64
+		oldestLeaseID int64
+		sessionID     string
+	)
+	// Stale locks contains 2 locks, which is expected but we only want to GC
+	// the oldest one so we can unlock all the remaining clients waiting to hold
+	// the lock.
+	for _, v := range staleLocks {
+		if v.ModRevision < oldestRev {
+			oldestRev = v.ModRevision
+			oldestLeaseID = v.LeaseID
+			sessionID = v.SessionID
+		}
+	}
+	staleLocks[allocatorName+"/locks/"+shortKey.GetKey()] = kvstore.Value{
+		ModRevision: oldestRev,
+		LeaseID:     oldestLeaseID,
+		SessionID:   sessionID,
+	}
+
+	// GC lock1 because it's the oldest lock being held.
+	staleLocks, err = allocator.RunLocksGC(context.Background(), staleLocks)
+	c.Assert(err, IsNil)
+	c.Assert(len(staleLocks), Equals, 0)
+
+	// Wait until lock2 is gotten as it should have happen since we have
+	// GC lock1.
+	c.Assert(testutils.WaitUntil(func() bool {
+		select {
+		case <-gotLock2:
+			return true
+		default:
+			return false
+		}
+	}, 10*time.Second), IsNil)
+
+	// Unlock lock1 because we still hold the local locks.
+	err = lock1.Unlock(context.Background())
+	c.Assert(err, IsNil)
+	err = lock2.Unlock(context.Background())
+	c.Assert(err, IsNil)
+}
+
 func (s *AllocatorSuite) TestGC(c *C) {
 	allocatorName := randomTestName()
 	maxID := idpool.ID(256 + c.N)
 	// FIXME: Did this previousy use allocatorName := randomTestName() ? so TestAllocatorKey(randomeTestName())
-	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""))
+	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	allocator, err := allocator.NewAllocator(TestAllocatorKey(""), backend, allocator.WithMax(maxID), allocator.WithoutGC())
 	c.Assert(err, IsNil)
@@ -161,7 +291,7 @@ func (s *AllocatorSuite) TestGC(c *C) {
 }
 
 func testAllocator(c *C, maxID idpool.ID, allocatorName string, suffix string) {
-	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""))
+	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	a, err := allocator.NewAllocator(TestAllocatorKey(""), backend,
 		allocator.WithMax(maxID), allocator.WithoutGC())
@@ -190,7 +320,7 @@ func testAllocator(c *C, maxID idpool.ID, allocatorName string, suffix string) {
 	}
 
 	// Create a 2nd allocator, refill it
-	backend2, err := NewKVStoreBackend(allocatorName, "r", TestAllocatorKey(""))
+	backend2, err := NewKVStoreBackend(allocatorName, "r", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	a2, err := allocator.NewAllocator(TestAllocatorKey(""), backend2,
 		allocator.WithMax(maxID), allocator.WithoutGC())
@@ -218,7 +348,7 @@ func testAllocator(c *C, maxID idpool.ID, allocatorName string, suffix string) {
 	staleKeysPreviousRound, err = a.RunGC(staleKeysPreviousRound)
 	c.Assert(err, IsNil)
 
-	v, err := kvstore.ListPrefix(context.TODO(), path.Join(allocatorName, "id"))
+	v, err := kvstore.Client().ListPrefix(context.TODO(), path.Join(allocatorName, "id"))
 	c.Assert(err, IsNil)
 	c.Assert(len(v), Equals, int(maxID))
 
@@ -233,7 +363,7 @@ func testAllocator(c *C, maxID idpool.ID, allocatorName string, suffix string) {
 	_, err = a.RunGC(staleKeysPreviousRound)
 	c.Assert(err, IsNil)
 
-	v, err = kvstore.ListPrefix(context.TODO(), path.Join(allocatorName, "id"))
+	v, err = kvstore.Client().ListPrefix(context.TODO(), path.Join(allocatorName, "id"))
 	c.Assert(err, IsNil)
 	c.Assert(len(v), Equals, 0)
 
@@ -248,7 +378,7 @@ func (s *AllocatorSuite) TestAllocateCached(c *C) {
 
 func (s *AllocatorSuite) TestKeyToID(c *C) {
 	allocatorName := randomTestName()
-	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""))
+	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	a, err := allocator.NewAllocator(TestAllocatorKey(""), backend)
 	c.Assert(err, IsNil)
@@ -273,7 +403,7 @@ func (s *AllocatorSuite) TestKeyToID(c *C) {
 
 func testGetNoCache(c *C, maxID idpool.ID, suffix string) {
 	allocatorName := randomTestName()
-	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""))
+	backend, err := NewKVStoreBackend(allocatorName, "a", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	allocator, err := allocator.NewAllocator(TestAllocatorKey(""), backend, allocator.WithMax(maxID), allocator.WithoutGC())
 	c.Assert(err, IsNil)
@@ -353,7 +483,7 @@ func (s *AllocatorSuite) TestGetNoCache(c *C) {
 
 func (s *AllocatorSuite) TestRemoteCache(c *C) {
 	testName := randomTestName()
-	backend, err := NewKVStoreBackend(testName, "a", TestAllocatorKey(""))
+	backend, err := NewKVStoreBackend(testName, "a", TestAllocatorKey(""), kvstore.Client())
 	c.Assert(err, IsNil)
 	a, err := allocator.NewAllocator(TestAllocatorKey(""), backend, allocator.WithMax(idpool.ID(256)))
 	c.Assert(err, IsNil)
@@ -391,7 +521,11 @@ func (s *AllocatorSuite) TestRemoteCache(c *C) {
 	}
 
 	// watch the prefix in the same kvstore via a 2nd watcher
-	rc := a.WatchRemoteKVStore(kvstore.Client(), testName)
+	backend2, err := NewKVStoreBackend(testName, "a", TestAllocatorKey(""), kvstore.Client())
+	c.Assert(err, IsNil)
+	a2, err := allocator.NewAllocator(TestAllocatorKey(""), backend2, allocator.WithMax(idpool.ID(256)))
+	c.Assert(err, IsNil)
+	rc := a.WatchRemoteKVStore(a2)
 	c.Assert(rc, Not(IsNil))
 
 	// wait for remote cache to be populated

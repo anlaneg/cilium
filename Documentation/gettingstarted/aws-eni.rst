@@ -27,33 +27,28 @@ EKS cluster using ``eksctl``, see the section :ref:`k8s_install_eks`.
 
    eksctl create cluster -n eni-cluster -N 0
 
-Disable the aws-node DaemonSet (EKS only)
-=========================================
+Disable VPC CNI (``aws-node`` DaemonSet) (EKS only)
+===================================================
 
-If you are running an EKS cluster, disable the ``aws-node`` DaemonSet so it
-does not interfere with the ENIs managed by Cilium:
+If you are running an EKS cluster, you should delete the ``aws-node`` DaemonSet.
 
-.. code:: bash
+.. include:: k8s-install-remove-aws-node.rst
 
-   kubectl -n kube-system set image daemonset/aws-node aws-node=docker.io/spaster/alpine-sleep
-
-Prepare & Deploy Cilium
-=======================
+Deploy Cilium
+=============
 
 .. include:: k8s-install-download-release.rst
 
-Generate the required YAML file and deploy it:
+Deploy Cilium release via Helm:
 
-.. code:: bash
+.. parsed-literal::
 
-   helm template cilium \
-     --namespace kube-system \
-     --set global.eni=true \
-     --set global.egressMasqueradeInterfaces=eth0 \
-     --set global.tunnel=disabled \
-     --set global.nodeinit.enabled=true \
-     > cilium.yaml
-   kubectl create -f cilium.yaml
+   helm install cilium |CHART_RELEASE| \\
+     --namespace kube-system \\
+     --set global.eni=true \\
+     --set global.egressMasqueradeInterfaces=eth0 \\
+     --set global.tunnel=disabled \\
+     --set global.nodeinit.enabled=true
 
 .. note::
 
@@ -67,25 +62,10 @@ Generate the required YAML file and deploy it:
    the security groups for pod ENIs are derived from the primary ENI
    (``eth0``).
 
-Scale up the cluster
-====================
-
-.. code:: bash
-
-    eksctl get nodegroup --cluster eni-cluster
-    CLUSTER			NODEGROUP	CREATED			MIN SIZE	MAX SIZE	DESIRED CAPACITY	INSTANCE TYPE	IMAGE ID
-    test-cluster        	ng-25560078	2019-07-23T06:05:35Z	0		2		0			m5.large	ami-0923e4b35a30a5f53
-
-.. code:: bash
-
-    eksctl scale nodegroup --cluster eni-cluster -n ng-25560078 -N 2
-    [ℹ]  scaling nodegroup stack "eksctl-test-cluster-nodegroup-ng-25560078" in cluster eksctl-test-cluster-cluster
-    [ℹ]  scaling nodegroup, desired capacity from 0 to 2
-
+.. include:: aws-scale-up-cluster.rst
 .. include:: k8s-install-validate.rst
 .. include:: hubble-install.rst
 .. include:: getting-started-next-steps.rst
-
 
 .. _eni_limitations:
 
@@ -96,3 +76,17 @@ Limitations
 * When applying L7 policies at egress, the source identity context is lost as
   it is currently not carried in the packet. This means that traffic will look
   like it is coming from outside of the cluster to the receiving pod.
+
+Troubleshooting
+===============
+
+Make sure to disable DHCP on ENIs
+---------------------------------
+
+Cilium will use both the primary and secondary IP addresses assigned to ENIs.
+Use of the primary IP address optimizes the number of IPs available to pods but
+can conflict with a DHCP agent running on the node and assigning the primary IP
+of the ENI to the interface of the node. A common scenario where this happens
+is if ``NetworkManager`` is running on the node and automatically performing
+DHCP on all network interfaces of the VM. Be sure to disable DHCP on any ENIs
+that get attached to the node or disable ``NetworkManager`` entirely.

@@ -184,7 +184,7 @@ func (m *CachingIdentityAllocator) InitIdentityAllocator(client clientset.Interf
 		switch option.Config.IdentityAllocationMode {
 		case option.IdentityAllocationModeKVstore:
 			log.Debug("Identity allocation backed by KVStore")
-			backend, err = kvstoreallocator.NewKVStoreBackend(m.identitiesPath, owner.GetNodeSuffix(), GlobalIdentity{})
+			backend, err = kvstoreallocator.NewKVStoreBackend(m.identitiesPath, owner.GetNodeSuffix(), GlobalIdentity{}, kvstore.Client())
 			if err != nil {
 				log.WithError(err).Fatal("Unable to initialize kvstore backend for identity allocation")
 			}
@@ -435,7 +435,18 @@ func (m *CachingIdentityAllocator) ReleaseSlice(ctx context.Context, owner Ident
 
 // WatchRemoteIdentities starts watching for identities in another kvstore and
 // syncs all identities to the local identity cache.
-func (m *CachingIdentityAllocator) WatchRemoteIdentities(backend kvstore.BackendOperations) *allocator.RemoteCache {
+func (m *CachingIdentityAllocator) WatchRemoteIdentities(backend kvstore.BackendOperations) (*allocator.RemoteCache, error) {
 	<-m.globalIdentityAllocatorInitialized
-	return m.IdentityAllocator.WatchRemoteKVStore(backend, m.identitiesPath)
+
+	remoteAllocatorBackend, err := kvstoreallocator.NewKVStoreBackend(m.identitiesPath, m.owner.GetNodeSuffix(), GlobalIdentity{}, backend)
+	if err != nil {
+		return nil, fmt.Errorf("Error setting up remote allocator backend: %s", err)
+	}
+
+	remoteAlloc, err := allocator.NewAllocator(GlobalIdentity{}, remoteAllocatorBackend, allocator.WithEvents(m.IdentityAllocator.GetEvents()))
+	if err != nil {
+		return nil, fmt.Errorf("Unable to initialize remote Identity Allocator: %s", err)
+	}
+
+	return m.IdentityAllocator.WatchRemoteKVStore(remoteAlloc), nil
 }

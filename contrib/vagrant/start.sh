@@ -33,9 +33,9 @@ export 'IPV6_INTERNAL_CIDR'=${IPV4+"FD01::"}
 #   worker 1: FD02::1:0:0/96
 export 'CILIUM_IPV6_NODE_CIDR'=${CILIUM_IPV6_NODE_CIDR:-"FD02::"}
 # VM memory
-export 'VM_MEMORY'=${MEMORY:-4096}
+export 'VM_MEMORY'=${VM_MEMORY:-4096}
 # Number of CPUs
-export 'VM_CPUS'=${CPUS:-2}
+export 'VM_CPUS'=${VM_CPUS:-2}
 # VM_BASENAME tag is only set if K8S option is active
 export 'VM_BASENAME'="runtime"
 export 'VM_BASENAME'=${K8S+"k8s"}
@@ -93,7 +93,11 @@ function write_netcfg_header(){
     filename="${3}"
     cat <<EOF > "${filename}"
 #!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
 
+K8S=${K8S:-}
 if [ -n "${K8S}" ]; then
     export K8S="1"
 fi
@@ -175,8 +179,9 @@ function write_k8s_header(){
     filename="${2}"
     cat <<EOF > "${filename}"
 #!/usr/bin/env bash
-
-set -e
+set -o errexit
+set -o nounset
+set -o pipefail
 
 # K8s installation
 sudo apt-get -y install curl
@@ -254,6 +259,10 @@ EOF
 
     cat <<EOF > "${filename_2nd_half}"
 #!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
 # K8s installation 2nd half
 k8s_path="/home/vagrant/go/src/github.com/cilium/cilium/contrib/vagrant/scripts"
 export IPV6_EXT="${IPV6_EXT}"
@@ -339,7 +348,6 @@ EOF
     esac
 
     cilium_options+=" ${TUNNEL_MODE_STRING}"
-    cilium_options+=" --access-log=/var/log/cilium-access.log"
 
 cat <<EOF >> "$filename"
 sleep 2s
@@ -432,9 +440,9 @@ function set_vagrant_env(){
     if [[ -n "${NFS}" ]]; then
         echo "# NFS enabled. don't forget to enable this ports on your host"
         echo "# before starting the VMs in order to have nfs working"
-        echo "# iptables -I INPUT -p udp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 111 -j ACCEPT"
-        echo "# iptables -I INPUT -p udp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 2049 -j ACCEPT"
-        echo "# iptables -I INPUT -p udp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 20048 -j ACCEPT"
+        echo "# iptables -I INPUT -p tcp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 111 -j ACCEPT"
+        echo "# iptables -I INPUT -p tcp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 2049 -j ACCEPT"
+        echo "# iptables -I INPUT -p tcp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 20048 -j ACCEPT"
     fi
 
     temp=$(printf " %s" "${ipv6_public_workers_addrs[@]}")
@@ -601,9 +609,10 @@ elif [ -n "${PROVISION}" ]; then
     vagrant provision
 else
     vagrant up
-    if [ -n "${K8S}" ]; then
-		vagrant ssh k8s1 -- cat /home/vagrant/.kube/config | sed 's;server:.*:6443;server: https://k8s1:7443;g' > vagrant.kubeconfig
-		echo "Add '127.0.0.1 k8s1' to your /etc/hosts to use vagrant.kubeconfig file for kubectl"
-	fi
+    if [ "$?" -eq "0" -a -n "${K8S}" ]; then
+        host_port=$(vagrant port --guest 6443)
+        vagrant ssh k8s1 -- cat /home/vagrant/.kube/config | sed "s;server:.*:6443;server: https://k8s1:$host_port;g" > vagrant.kubeconfig
+        echo "Add '127.0.0.1 k8s1' to your /etc/hosts to use vagrant.kubeconfig file for kubectl"
+    fi
 fi
 

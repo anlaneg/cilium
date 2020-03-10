@@ -21,7 +21,6 @@ import (
 	"os"
 	"runtime"
 	"sort"
-	"syscall"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/common/addressing"
@@ -54,7 +53,6 @@ import (
 	gops "github.com/google/gops/agent"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -121,11 +119,6 @@ func releaseIP(client *client.Client, ip string) {
 	}
 }
 
-func releaseIPs(client *client.Client, addr *models.AddressPair) {
-	releaseIP(client, addr.IPV6)
-	releaseIP(client, addr.IPV4)
-}
-
 func addIPConfigToLink(ip addressing.CiliumIP, routes []route.Route, link netlink.Link, ifName string) error {
 	log.WithFields(logrus.Fields{
 		logfields.IPAddr:    ip,
@@ -135,7 +128,7 @@ func addIPConfigToLink(ip addressing.CiliumIP, routes []route.Route, link netlin
 
 	addr := &netlink.Addr{IPNet: ip.EndpointPrefix()}
 	if ip.IsIPv6() {
-		addr.Flags = syscall.IFA_F_NODAD
+		addr.Flags = unix.IFA_F_NODAD
 	}
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		return fmt.Errorf("failed to add addr to %q: %v", ifName, err)
@@ -318,7 +311,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		return
 	}
 
-	if len(n.NetConf.RawPrevResult) != 0 {
+	if len(n.NetConf.RawPrevResult) != 0 && n.Name != chainingapi.DefaultConfigName {
 		if chainAction := chainingapi.Lookup(n.Name); chainAction != nil {
 			var (
 				res *cniTypesVer.Result
@@ -432,7 +425,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 
 	podName := string(cniArgs.K8S_POD_NAMESPACE) + "/" + string(cniArgs.K8S_POD_NAME)
-	ipam, err = c.IPAMAllocate("", podName)
+	ipam, err = c.IPAMAllocate("", podName, true)
 	if err != nil {
 		err = fmt.Errorf("unable to allocate IP via local cilium agent: %s", err)
 		return
@@ -471,6 +464,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	if ipv6IsEnabled(ipam) {
 		ep.Addressing.IPV6 = ipam.Address.IPV6
+		ep.Addressing.IPV6ExpirationUUID = ipam.IPV6.ExpirationUUID
 
 		ipConfig, routes, err = prepareIP(ep.Addressing.IPV6, true, &state, int(conf.RouteMTU))
 		if err != nil {
@@ -483,6 +477,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	if ipv4IsEnabled(ipam) {
 		ep.Addressing.IPV4 = ipam.Address.IPV4
+		ep.Addressing.IPV4ExpirationUUID = ipam.IPV4.ExpirationUUID
 
 		ipConfig, routes, err = prepareIP(ep.Addressing.IPV4, false, &state, int(conf.RouteMTU))
 		if err != nil {
@@ -491,14 +486,20 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		}
 		res.IPs = append(res.IPs, ipConfig)
 		res.Routes = append(res.Routes, routes...)
+	}
 
-		if conf.IpamMode == option.IPAMENI {
-			err = eniAdd(ipConfig, ipam.IPV4, conf)
-			if err != nil {
-				err = fmt.Errorf("unable to setup ENI datapath: %s", err)
-				return
-			}
+	switch conf.IpamMode {
+	case option.IPAMENI:
+		err = eniAdd(ipConfig, ipam.IPV4, conf)
+		if err != nil {
+			err = fmt.Errorf("unable to setup ENI datapath: %s", err)
+			return
 		}
+
+	case option.IPAMAzure:
+		// No specific action is required. The standard veth based
+		// approach is selected for now. The agent will set up the
+		// routes as necessary.
 	}
 
 	var macAddrStr string
@@ -518,7 +519,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	res.Interfaces = append(res.Interfaces, &cniTypesVer.Interface{
 		Name:    args.IfName,
 		Mac:     macAddrStr,
-		Sandbox: "/proc/" + args.Netns + "/ns/net",
+		Sandbox: args.Netns,
 	})
 
 	// Specify that endpoint must be regenerated synchronously. See GH-4409.
@@ -573,22 +574,24 @@ func cmdDel(args *skel.CmdArgs) error {
 		return fmt.Errorf("unable to connect to Cilium daemon: %s", client.Hint(err))
 	}
 
-	if chainAction := chainingapi.Lookup(n.Name); chainAction != nil {
-		var (
-			ctx = chainingapi.PluginContext{
-				Logger:  logger,
-				Args:    args,
-				CniArgs: cniArgs,
-				NetConf: n,
-				Client:  c,
-			}
-		)
+	if n.Name != chainingapi.DefaultConfigName {
+		if chainAction := chainingapi.Lookup(n.Name); chainAction != nil {
+			var (
+				ctx = chainingapi.PluginContext{
+					Logger:  logger,
+					Args:    args,
+					CniArgs: cniArgs,
+					NetConf: n,
+					Client:  c,
+				}
+			)
 
-		if chainAction.ImplementsDelete() {
-			return chainAction.Delete(context.TODO(), ctx)
+			if chainAction.ImplementsDelete() {
+				return chainAction.Delete(context.TODO(), ctx)
+			}
+		} else {
+			logger.Warnf("Unknown CNI chaining configuration name '%s'", n.Name)
 		}
-	} else {
-		logger.Warnf("Unknown CNI chaining configuration name '%s'", n.Name)
 	}
 
 	id := endpointid.NewID(endpointid.ContainerIdPrefix, args.ContainerID)

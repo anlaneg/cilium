@@ -29,14 +29,16 @@ var _ = Describe("NightlyPolicies", func() {
 
 	var kubectl *helpers.Kubectl
 	var timeout = 10 * time.Minute
+	var ciliumFilename string
 
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
-		DeployCiliumAndDNS(kubectl)
+		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
+		DeployCiliumAndDNS(kubectl, ciliumFilename)
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace,
+		kubectl.CiliumReport(helpers.CiliumNamespace,
 			"cilium endpoint list",
 			"cilium service list")
 	})
@@ -50,6 +52,7 @@ var _ = Describe("NightlyPolicies", func() {
 		kubectl.Exec(fmt.Sprintf(
 			"%s delete pods,svc,cnp -n %s -l test=policygen",
 			helpers.KubectlCmd, helpers.DefaultNamespace))
+		kubectl.DeleteCiliumDS()
 		err := kubectl.WaitCleanAllTerminatingPods(timeout)
 		Expect(err).To(BeNil(), "Cannot clean pods during timeout")
 		kubectl.CloseSSHClient()

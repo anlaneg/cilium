@@ -105,6 +105,10 @@ const (
 	// The file is not re-read after agent start.
 	ToFQDNsPreCache = ""
 
+	// ToFQDNsEnableDNSCompression allows the DNS proxy to compress responses to
+	// endpoints that are larger than 512 Bytes or the EDNS0 option, if present.
+	ToFQDNsEnableDNSCompression = true
+
 	// IdentityChangeGracePeriod is the default value for
 	// option.IdentityChangeGracePeriod
 	IdentityChangeGracePeriod = 5 * time.Second
@@ -132,8 +136,11 @@ const (
 	// EnableL7Proxy is the default value for L7 proxy enablement
 	EnableL7Proxy = true
 
-	// EnableK8sExternalIPs is the default value for k8s externalIPs feature.
-	EnableK8sExternalIPs = true
+	// EnableExternalIPs is the default value for k8s service with externalIPs feature.
+	EnableExternalIPs = true
+
+	// K8sEnableEndpointSlice is the default value for k8s EndpointSlice feature.
+	K8sEnableEndpointSlice = true
 
 	// PreAllocateMaps is the default value for BPF map preallocation
 	PreAllocateMaps = true
@@ -163,6 +170,9 @@ const (
 
 	// DatapathMode is the default value for the datapath mode.
 	DatapathMode = "veth"
+
+	// EnableXTSocketFallback is the default value for EnableXTSocketFallback
+	EnableXTSocketFallback = true
 
 	// EnableLocalNodeRoute default value for EnableLocalNodeRoute
 	EnableLocalNodeRoute = true
@@ -290,14 +300,14 @@ const (
 	// CiliumNode.Spec.ENI.FirstInterfaceIndex if no value is set
 	ENIFirstInterfaceIndex = 1
 
-	// ENIParallelWorkers is the default max number of workers that process ENI operations
-	ENIParallelWorkers = 50
+	// ParallelAllocWorkers is the default max number of parallel workers doing allocation in the operator
+	ParallelAllocWorkers = 50
 
-	// AWSClientBurst is the default burst value for the AWS client
-	AWSClientBurst = 4
+	// IPAMAPIBurst is the default burst value when rate limiting access to external APIs
+	IPAMAPIBurst = 4
 
-	// AWSClientQPSLimit is the default QPS limit for the AWS client
-	AWSClientQPSLimit = 20.0
+	// IPAMAPIQPSLimit is the default QPS limit when rate limiting access to external APIs
+	IPAMAPIQPSLimit = 20.0
 
 	// AutoCreateCiliumNodeResource enables automatic creation of a
 	// CiliumNode resource for the local node
@@ -333,4 +343,15 @@ const (
 	// EnableWellKnownIdentities is enabled by default as this is the
 	// original behavior. New default Helm templates will disable this.
 	EnableWellKnownIdentities = true
+
+	// CertsDirectory is the default directory used to find certificates
+	// specified in the L7 policies.
+	CertsDirectory = RuntimePath + "/certs"
+
+	// EnableRemoteNodeIdentity is the default value for option.EnableRemoteNodeIdentity
+	EnableRemoteNodeIdentity = false
+
+	// IPAMExpiration is the timeout after which an IP subject to expiratio
+	// is being released again if no endpoint is being created in time.
+	IPAMExpiration = 3 * time.Minute
 )

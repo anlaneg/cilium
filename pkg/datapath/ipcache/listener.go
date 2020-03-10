@@ -177,7 +177,7 @@ func (l *BPFListener) OnIPIdentityCacheChange(modType ipcache.CacheModification,
 			}).Warning("unable to update bpf map")
 		}
 	case ipcache.Delete:
-		err := l.bpfMap.Delete(&key)
+		err := l.bpfMap.DeleteWithOverwrite(&key)
 		if err != nil {
 			scopedLog.WithError(err).WithFields(logrus.Fields{
 				"key":                  key.String(),
@@ -248,11 +248,11 @@ func shuffleMaps(realized, backup, pending string) error {
 
 // garbageCollect implements GC of the ipcache map in one of two ways:
 //
-// On Linux 4.9, 4.10 or 4.15 and later:
+// On Linux 4.9, 4.10 or 4.16 and later:
 //   Periodically sweep through every element in the BPF map and check it
 //   against the in-memory copy of the map. If it doesn't exist in memory,
 //   delete the entry.
-// On Linux 4.11 to 4.14:
+// On Linux 4.11 to 4.15:
 //   Create a brand new map, populate it with all of the IPCache entries from
 //   the in-memory cache, delete the old map, and trigger regeneration of all
 //   BPF programs so that they pick up the new map.
@@ -278,7 +278,7 @@ func (l *BPFListener) garbageCollect(ctx context.Context) (*sync.WaitGroup, erro
 		for _, k := range keysToRemove {
 			log.WithFields(logrus.Fields{logfields.BPFMapKey: k}).
 				Debug("deleting from ipcache BPF map")
-			if err := l.bpfMap.Delete(k); err != nil {
+			if err := l.bpfMap.DeleteWithOverwrite(k); err != nil {
 				return nil, fmt.Errorf("error deleting key %s from ipcache BPF map: %s", k, err)
 			}
 		}

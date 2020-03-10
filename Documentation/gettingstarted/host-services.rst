@@ -6,17 +6,12 @@
 
 .. _host-services:
 
-******************************
-Host-Reachable Services (beta)
-******************************
+***********************
+Host-Reachable Services
+***********************
 
-This guide explains how to configure Cilium to enable services to be
-reached from the host namespace.
-
-.. note::
-
-    This is a beta feature. Please provide feedback and file a GitHub issue if
-    you experience any problems.
+This guide explains how to configure Cilium to enable services to be reached
+from the host namespace in addition to pod namespaces.
 
 .. note::
 
@@ -29,25 +24,23 @@ reached from the host namespace.
 
 .. include:: k8s-install-download-release.rst
 
-Generate the required YAML file and deploy it:
+Deploy Cilium release via Helm:
 
-.. code:: bash
+.. parsed-literal::
 
-   helm template cilium \
-     --namespace kube-system \
-     --set global.hostServices.enabled=true \
-     > cilium.yaml
+   helm install cilium |CHART_RELEASE| \\
+     --namespace kube-system \\
+     --set global.hostServices.enabled=true
 
 If you can't run 4.19.57 but have 4.17.0 available you can restrict protocol
 support to TCP only:
 
-.. code:: bash
+.. parsed-literal::
 
-   helm template cilium \
-     --namespace kube-system \
-     --set global.hostServices.enabled=true \
-     --set global.hostServices.protocols=tcp \
-     > cilium.yaml
+   helm install cilium |CHART_RELEASE| \\
+     --namespace kube-system \\
+     --set global.hostServices.enabled=true \\
+     --set global.hostServices.protocols=tcp
 
 Host-reachable services act transparent to Cilium's lower layer datapath
 in that upon connect system call (TCP, connected UDP) or sendmsg as well
@@ -57,11 +50,10 @@ the application is assuming its connection to the service address, the
 corresponding kernel's socket is actually connected to the backend address
 and therefore no additional lower layer NAT is required.
 
-Deploy Cilium:
+Verify that it has come up correctly:
 
 .. code:: bash
 
-    kubectl create -f cilium.yaml
     kubectl -n kube-system get pods -l k8s-app=cilium
     NAME                READY     STATUS    RESTARTS   AGE
     cilium-crf7f        1/1       Running   0          10m
@@ -75,4 +67,7 @@ Limitations
       a BPF hook for rewriting sock addresses before copying them into
       user space in which case the application will see the backend address
       instead of the service address. This limitation will be resolved in
-      future kernels.
+      future kernels. The missing getpeername(2) hook is known to not work
+      in combination with libceph deployments.
+      See `GH issue 9974 <https://github.com/cilium/cilium/issues/9974>`_
+      for further updates.

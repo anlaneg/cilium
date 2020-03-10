@@ -12,13 +12,14 @@ Upgrade Guide
 
 .. _upgrade_general:
 
-This upgrade guide is intended for Cilium running on Kubernetes. If you have
-questions, feel free to ping us on the `Slack channel`.
+This upgrade guide is intended for Cilium running on Kubernetes. Helm
+commands in this guide use helm3 syntax. If you have questions, feel
+free to ping us on the `Slack channel`.
 
 .. warning::
 
-   Do not upgrade to 1.7.0 before reading the section
-   :ref:`1.7_required_changes`.
+   Do not upgrade to 1.8.0 before reading the section
+   :ref:`1.8_required_changes`.
 
 .. _pre_flight:
 
@@ -31,16 +32,29 @@ image. In order to reduce the downtime of the agent, the new image version can
 be pre-pulled. It also verifies that the new image version can be pulled and
 avoids ErrImagePull errors during the rollout.
 
-.. code:: bash
+.. tabs::
+  .. group-tab:: kubectl
 
-    helm template cilium \
-      --namespace=kube-system \
-      --set preflight.enabled=true \
-      --set agent.enabled=false \
-      --set config.enabled=false \
-      --set operator.enabled=false \
-      > cilium-preflight.yaml
-    kubectl create cilium-preflight.yaml
+    .. parsed-literal::
+
+      helm template |CHART_RELEASE| \\
+        --set preflight.enabled=true \\
+        --set agent.enabled=false \\
+        --set config.enabled=false \\
+        --set operator.enabled=false \\
+        > cilium-preflight.yaml
+      kubectl create cilium-preflight.yaml
+
+  .. group-tab:: Helm
+
+    .. parsed-literal::
+
+      helm install cilium-preflight |CHART_RELEASE| \\
+        --namespace=kube-system \\
+        --set preflight.enabled=true \\
+        --set agent.enabled=false \\
+        --set config.enabled=false \\
+        --set operator.enabled=false
 
 After running the cilium-pre-flight.yaml, make sure the number of READY pods
 is the same number of Cilium pods running.
@@ -55,9 +69,18 @@ is the same number of Cilium pods running.
 Once the number of READY pods are the same, you can delete cilium-pre-flight-check
 `DaemonSet` and proceed with the upgrade.
 
-.. code-block:: shell-session
+.. tabs::
+  .. group-tab:: kubectl
+
+    .. parsed-literal::
 
       kubectl delete -f cilium-preflight.yaml
+
+  .. group-tab:: Helm
+
+    .. parsed-literal::
+
+      helm delete cilium-preflight --namespace=kube-system
 
 .. _upgrade_micro:
 
@@ -68,10 +91,19 @@ Micro versions within a particular minor version, e.g. 1.2.x -> 1.2.y, are
 always 100% compatible for both up- and downgrades. Upgrading or downgrading is
 as simple as changing the image tag version in the `DaemonSet` file:
 
-.. code-block:: shell-session
+.. tabs::
+  .. group-tab:: kubectl
 
-    kubectl -n kube-system set image daemonset/cilium cilium-agent=docker.io/cilium/cilium:vX.Y.Z
-    kubectl -n kube-system rollout status daemonset/cilium
+    .. parsed-literal::
+
+      kubectl -n kube-system set image daemonset/cilium cilium-agent=docker.io/cilium/cilium:vX.Y.Z
+      kubectl -n kube-system rollout status daemonset/cilium
+
+  .. group-tab:: Helm
+
+    .. parsed-literal::
+
+      helm upgrade cilium cilium/cilium --version X.Y.Z --reuse-values --namespace=kube-system
 
 Kubernetes will automatically restart all Cilium according to the
 ``UpgradeStrategy`` specified in the `DaemonSet`.
@@ -112,19 +144,30 @@ Kubernetes resources are updated accordingly to version you are upgrading to:
 
 .. include:: ../gettingstarted/k8s-install-download-release.rst
 
-Generate the required YAML file and deploy it:
+.. tabs::
+  .. group-tab:: kubectl
 
-.. code:: bash
+    Generate the required YAML file and deploy it:
 
-   helm template cilium \
-     --namespace kube-system \
-     > cilium.yaml
-   kubectl apply -f cilium.yaml
+    .. parsed-literal::
+
+      helm template |CHART_RELEASE| \\
+        --namespace kube-system \\
+        > cilium.yaml
+      kubectl apply -f cilium.yaml
+
+  .. group-tab:: Helm
+
+    Deploy Cilium release via Helm:
+
+    .. parsed-literal::
+
+      helm upgrade cilium |CHART_RELEASE| --namespace=kube-system
 
 .. note::
 
    Make sure that you are using the same options as for the initial deployment.
-   Instead of using ``--set``, you can also modify the ``values.yaml` in
+   Instead of using ``--set``, you can also modify the ``values.yaml`` in
    ``install/kubernetes/cilium/values.yaml`` and use it to regenerate the YAML
    for the latest version.
 
@@ -141,15 +184,28 @@ configuration options for each minor version.
 
 .. include:: ../gettingstarted/k8s-install-download-release.rst
 
-Generate the required YAML file and deploy it:
+.. tabs::
+  .. group-tab:: kubectl
 
-.. code:: bash
+    Generate the required YAML file and deploy it:
 
-   helm template cilium \
-     --namespace kube-system \
-     --set config.enabled=false \
-     > cilium.yaml
-   kubectl apply -f cilium.yaml
+    .. parsed-literal::
+
+      helm template |CHART_RELEASE| \\
+        --namespace kube-system \\
+        --set config.enabled=false \\
+        > cilium.yaml
+      kubectl apply -f cilium.yaml
+
+  .. group-tab:: Helm
+
+    Deploy Cilium release via Helm:
+
+    .. parsed-literal::
+
+      helm upgrade cilium |CHART_RELEASE| \\
+        --namespace=kube-system \\
+        --set config.enabled=false
 
 .. note::
 
@@ -160,15 +216,24 @@ Generate the required YAML file and deploy it:
    DaemonSet, Deployment and RBAC definitions.
 
 Step 3: Rolling Back
-====================
+--------------------
 
 Occasionally, it may be necessary to undo the rollout because a step was missed
-or something went wrong during upgrade. To undo the rollout, change the image
-tag back to the previous version or undo the rollout using ``kubectl``:
+or something went wrong during upgrade. To undo the rollout run:
 
-.. code-block:: shell-session
+.. tabs::
+  .. group-tab:: kubectl
 
-    $ kubectl rollout undo daemonset/cilium -n kube-system
+    .. parsed-literal::
+
+      kubectl rollout undo daemonset/cilium -n kube-system
+
+  .. group-tab:: Helm
+
+    .. parsed-literal::
+
+      helm history cilium --namespace=kube-system
+      helm rollback cilium [REVISION] --namespace=kube-system
 
 This will revert the latest changes to the Cilium ``DaemonSet`` and return
 Cilium to the state it was in prior to the upgrade.
@@ -226,6 +291,112 @@ Annotations:
    upgrade. Connections should successfully re-establish without requiring
    clients to reconnect.
 
+.. _1.8_upgrade_notes:
+
+1.8 Upgrade Notes
+-----------------
+
+.. _1.8_required_changes:
+
+IMPORTANT: Changes required before upgrading to 1.8.0
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. warning::
+
+   Do not upgrade to 1.8.0 before reading the following section and completing
+   the required steps.
+
+* While operating in direct-routing mode (``--tunnel=disabled``), traffic with
+  a destination address matching a particular CIDR is automatically excluded
+  from being masqueraded. So far, this CIDR consisted of
+  ``<alloc-cidr>/<size>`` where the size could be set with the option
+  ``--ipv4-cluster-cidr-mask-size``. This was not always desirable and
+  limiting, therefore Cilium 1.6 had already introduced the option
+  ``--native-routing-cidr`` allowing to explicitly specify the CIDR for native
+  routing. With Cilium 1.8, the option ``--ipv4-cluster-cidr-mask-size`` is
+  being deprecated and all users must use the option ``--native-routing-cidr``
+  instead.
+
+  .. note:: The ENI IPAM mode automatically derives the native routing CIDR so
+            no action is required.
+
+Deprecated options
+~~~~~~~~~~~~~~~~~~
+
+* ``keep-bpf-templates``: This option no longer has any effect due to the BPF
+  assets not being compiled into the cilium-agent binary anymore. The option is
+  deprecated and will be removed in Cilium 1.9.
+* ``access-log``: L7 access logs have been available via Hubble since Cilium
+  1.6. The ``access-log`` option to log to a file has been removed.
+
+Renamed Metrics
+~~~~~~~~~~~~~~~
+
+The following metrics have been renamed:
+
+* ``cilium_operator_eni_ips`` to ``cilium_operator_ipam_ips``
+* ``cilium_operator_eni_allocation_ops`` to ``cilium_operator_ipam_allocation_ops``
+* ``cilium_operator_eni_interface_creation_ops`` to ``cilium_operator_ipam_interface_creation_ops``
+* ``cilium_operator_eni_available`` to ``cilium_operator_ipam_available``
+* ``cilium_operator_eni_nodes_at_capacity`` to ``cilium_operator_ipam_nodes_at_capacity``
+* ``cilium_operator_eni_resync_total`` to ``cilium_operator_ipam_resync_total``
+* ``cilium_operator_eni_aws_api_duration_seconds`` to ``cilium_operator_ipam_api_duration_seconds``
+* ``cilium_operator_eni_ec2_rate_limit_duration_seconds`` to ``cilium_operator_ipam_api_rate_limit_duration_seconds``
+
+Deprecated cilium-operator options
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* ``metrics-address``: This option is being deprecated and a new flag is
+  introduced to replace its usage. The new option is ``operator-prometheus-serve-addr``.
+  This old option will be removed in Cilium 1.9
+
+* ``ccnp-node-status-gc``: This option is being deprecated. Disabling CCNP node
+  status GC can be done with ``cnp-node-status-gc-interval=0``. (Note that this
+  is not a typo, it is meant to be ``cnp-node-status-gc-interval``).
+  This old option will be removed in Cilium 1.9
+
+* ``cnp-node-status-gc``: This option is being deprecated. Disabling CNP node
+  status GC can be done with ``cnp-node-status-gc-interval=0``.
+  This old option will be removed in Cilium 1.9
+
+* ``cilium-endpoint-gc``: This option is being deprecated. Disabling cilium
+  endpoint GC can be done with ``cilium-endpoint-gc-interval=0``.
+  This old option will be removed in Cilium 1.9
+
+* ``api-server-port``: This option is being deprecated. The API Server address
+  and port can be enabled with ``operator-api-serve-addr=127.0.0.1:9234``
+  or ``operator-api-serve-addr=[::1]:9234`` for IPv6-only clusters.
+  This old option will be removed in Cilium 1.9
+
+* ``eni-parallel-workers``: This option in the Operator has been renamed to
+  ``parallel-alloc-workers``. The obsolete option name ``eni-parallel-workers``
+  has been deprecated and will be removed in v1.9.
+
+* ``aws-client-burst``: This option in the Operator has been renamed to
+  ``limit-ipam-api-burst``. The obsolete option name ``aws-client-burst`` has been
+  deprecated and will be removed in v1.9.
+
+* ``aws-client-qps``: This option in the Operator has been renamed to
+  ``limit-ipam-api-qps``. The obsolete option name ``aws-client-qps`` has been
+  deprecated and will be removed in v1.9.
+
+Removed options
+~~~~~~~~~~~~~~~
+
+* ``enable-legacy-services``: This option was deprecated in Cilium 1.6 and is
+  now removed.
+
+Removed helm options
+~~~~~~~~~~~~~~~~~~~~
+* ``operator.synchronizeK8sNodes``: was removed and replaced with ``global.synchronizeK8sNodes``
+
+Removed resource fields
+~~~~~~~~~~~~~~~~~~~~~~~
+
+* The fields ``CiliumEndpoint.Status.Status``,
+  ``CiliumEndpoint.Status.Spec``, and ``EndpointIdentity.LabelsSHA256``,
+  deprecated in 1.4, have been removed.
+
 .. _1.7_upgrade_notes:
 
 1.7 Upgrade Notes
@@ -244,22 +415,40 @@ IMPORTANT: Changes required before upgrading to 1.7.0
 * Cilium has bumped the minimal kubernetes version supported to v1.11.0.
 
 * The ``kubernetes.io/cluster-service`` label has been removed from the Cilium
-  `DaemonSet` selector. Existing users must remove this label from their
-  `DaemonSet` specification to safely upgrade. If action is not taken to make
-  the selector labels consistent with the upgraded YAMLs, then the new
-  `DaemonSet` YAML which is created during upgrade will fail to apply.
+  `DaemonSet` selector. Existing users must either choose to keep this label in
+  `DaemonSet` specification to safely upgrade or re-create the Cilium `DaemonSet`
+  without the deprecated label. It is advisable to keep the label when doing
+  an upgrade from ``v1.6.x`` to ``v1.7.x`` in the event of having to do a
+  downgrade. The removal of this label should be done after a successful
+  upgrade.
 
-  *Highly recommended:*
+  The helm option ``agent.keepDeprecatedLabels=true`` will keep the
+  ``kubernetes.io/cluster-service`` label in the new `DaemonSet`:
 
-  The below instructions will remove the ``kubernetes.io/cluster-service``
-  label from the existing `DaemonSet` in the cluster without making any other
-  changes.
+.. tabs::
+  .. group-tab:: kubectl
 
-  .. code:: bash
+    .. parsed-literal::
 
-     $ kubectl get ds -n kube-system cilium -o yaml > cilium-ds.yaml
-     $ sed -i '/kubernetes.io\/cluster-service: "true"/d' cilium-ds.yaml
-     $ kubectl apply -f cilium-ds.yaml --force
+      helm template cilium \
+      --namespace=kube-system \
+      ...
+      --set agent.keepDeprecatedLabels=true \
+      ...
+      > cilium.yaml
+      kubectl apply -f cilium.yaml
+
+  .. group-tab:: Helm
+
+    .. parsed-literal::
+
+      helm upgrade cilium --namespace=kube-system \
+      --set agent.keepDeprecatedLabels=true
+
+
+  Trying to upgrade Cilium without this option might result in the following
+  error: ``The DaemonSet "cilium" is invalid: spec.selector: Invalid value: ...: field is immutable``
+
 
 * If ``kvstore`` is setup with ``etcd`` **and** TLS is enabled, the field name
   ``ca-file`` will have its usage deprecated and will be removed in Cilium v1.8.0.
@@ -325,12 +514,39 @@ New ConfigMap Options
     managed etcd mode to reduce the number of policy identities whitelisted for
     each endpoint.
 
+  * ``enable-remote-node-identity`` has been added to enable a new identity
+    for remote cluster nodes. This allows to treat local and remote cluster
+    nodes differently from a policy perspective. The option is enabled by
+    default for new deployments when generated via Helm. The option is disabled
+    for existing cluster to avoid breaking compatibility in case a cluster is
+    using policy rules allowing from host which expect to allow traffic from
+    all cluster nodes.
+
+    Unless you have policy rules allowing from host which expect to allow
+    traffic from all cluster nodes instead of just the local node, it is a good
+    idea to enable this option as you upgrade as it improves the default
+    security posture of your cluster. If you have policy rules matching on host
+    with the intent of allow from all cluster nodes, it is recommended to
+    modify those policy rules to explicitly allow the entity ``remote-node``
+    and then enable this flag as you upgrade.
+
+  * ``kube-proxy-replacement`` has been added to control which features should
+    be enabled for the kube-proxy BPF replacement. The option is set to
+    ``probe`` by default for new deployments when generated via Helm. This
+    makes cilium-agent to probe for each feature support in a kernel, and
+    to enable only supported features. When the option is not set via Helm,
+    cilium-agent defaults to ``partial``. This makes ``cilium-agent`` to
+    enable only those features which user has explicitly enabled in their
+    ConfigMap. See :ref:`kubeproxy-free` for more option values.
+
+    For users who previously were running with ``nodePort.enabled=true`` it is
+    recommended to set the option to ``strict`` before upgrading.
 
 Removed options
 ~~~~~~~~~~~~~~~~~~
 
 * ``lb``: The ``--lb`` feature has been removed. If you need load-balancing on
-  a particular device, consider using :ref:`nodeport`.
+  a particular device, consider using :ref:`kubeproxy-free`.
 
 * ``docker`` and ``e``: This flags has been removed as Cilium no longer requires
   container runtime integrations to manage containers' networks.
@@ -479,37 +695,37 @@ Upgrading from >=1.4.0 to 1.5.y
 
         .. parsed-literal::
 
-          $ kubectl apply -f \ |SCM_WEB|\/examples/kubernetes/1.10/cilium-pre-flight-with-rm-svc-v2.yaml
+          $ kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.5/examples/kubernetes/1.10/cilium-pre-flight-with-rm-svc-v2.yaml
 
       .. group-tab:: K8s 1.11
 
         .. parsed-literal::
 
-          $ kubectl apply -f \ |SCM_WEB|\/examples/kubernetes/1.11/cilium-pre-flight-with-rm-svc-v2.yaml
+          $ kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.5/examples/kubernetes/1.11/cilium-pre-flight-with-rm-svc-v2.yaml
 
       .. group-tab:: K8s 1.12
 
         .. parsed-literal::
 
-          $ kubectl apply -f \ |SCM_WEB|\/examples/kubernetes/1.12/cilium-pre-flight-with-rm-svc-v2.yaml
+          $ kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.5/examples/kubernetes/1.12/cilium-pre-flight-with-rm-svc-v2.yaml
 
       .. group-tab:: K8s 1.13
 
         .. parsed-literal::
 
-          $ kubectl apply -f \ |SCM_WEB|\/examples/kubernetes/1.13/cilium-pre-flight-with-rm-svc-v2.yaml
+          $ kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.5/examples/kubernetes/1.13/cilium-pre-flight-with-rm-svc-v2.yaml
 
       .. group-tab:: K8s 1.14
 
         .. parsed-literal::
 
-          $ kubectl apply -f \ |SCM_WEB|\/examples/kubernetes/1.14/cilium-pre-flight-with-rm-svc-v2.yaml
+          $ kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.5/examples/kubernetes/1.14/cilium-pre-flight-with-rm-svc-v2.yaml
 
       .. group-tab:: K8s 1.15
 
         .. parsed-literal::
 
-          $ kubectl apply -f \ |SCM_WEB|\/examples/kubernetes/1.15/cilium-pre-flight-with-rm-svc-v2.yaml
+          $ kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.5/examples/kubernetes/1.15/cilium-pre-flight-with-rm-svc-v2.yaml
 
 
    See :ref:`pre_flight` for instructions how to run, validate and remove

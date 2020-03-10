@@ -1,20 +1,6 @@
-/*
- *  Copyright (C) 2017-2018 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2017-2020 Authors of Cilium */
+
 #ifndef __LIB_EPS_H_
 #define __LIB_EPS_H_
 
@@ -24,7 +10,7 @@
 #include "maps.h"
 
 //检查是否ipv6 endpoint地址
-static __always_inline struct endpoint_info *
+static __always_inline __maybe_unused struct endpoint_info *
 lookup_ip6_endpoint(struct ipv6hdr *ip6)
 {
 	struct endpoint_key key = {};
@@ -36,8 +22,8 @@ lookup_ip6_endpoint(struct ipv6hdr *ip6)
 }
 
 //检查是否ipv4 endpoint地址
-static __always_inline struct endpoint_info *
-__lookup_ip4_endpoint(uint32_t ip)
+static __always_inline __maybe_unused struct endpoint_info *
+__lookup_ip4_endpoint(__u32 ip)
 {
 	struct endpoint_key key = {};
 
@@ -47,7 +33,7 @@ __lookup_ip4_endpoint(uint32_t ip)
 	return map_lookup_elem(&ENDPOINTS_MAP, &key);
 }
 
-static __always_inline struct endpoint_info *
+static __always_inline __maybe_unused struct endpoint_info *
 lookup_ip4_endpoint(struct iphdr *ip4)
 {
 	return __lookup_ip4_endpoint(ip4->daddr);
@@ -55,7 +41,7 @@ lookup_ip4_endpoint(struct iphdr *ip4)
 
 #ifdef SOCKMAP
 static __always_inline void *
-lookup_ip4_endpoint_policy_map(uint32_t ip)
+lookup_ip4_endpoint_policy_map(__u32 ip)
 {
 	struct endpoint_key key = {};
 
@@ -74,7 +60,7 @@ lookup_ip4_endpoint_policy_map(uint32_t ip)
 
 #define V6_CACHE_KEY_LEN (sizeof(union v6addr)*8)
 
-static __always_inline struct remote_endpoint_info *
+static __always_inline __maybe_unused struct remote_endpoint_info *
 ipcache_lookup6(struct bpf_elf_map *map, union v6addr *addr, __u32 prefix)
 {
 	struct ipcache_key key = {
@@ -88,7 +74,7 @@ ipcache_lookup6(struct bpf_elf_map *map, union v6addr *addr, __u32 prefix)
 
 #define V4_CACHE_KEY_LEN (sizeof(__u32)*8)
 
-static __always_inline struct remote_endpoint_info *
+static __always_inline __maybe_unused struct remote_endpoint_info *
 ipcache_lookup4(struct bpf_elf_map *map, __be32 addr, __u32 prefix)
 {
 	struct ipcache_key key = {
@@ -106,7 +92,8 @@ ipcache_lookup4(struct bpf_elf_map *map, __be32 addr, __u32 prefix)
  * performing a lookup in MAP using LOOKUP_FN to find a provided IP of type
  * IPTYPE. */
 #define LPM_LOOKUP_FN(NAME, IPTYPE, PREFIXES, MAP, LOOKUP_FN)		\
-static __always_inline struct remote_endpoint_info *NAME(IPTYPE addr) \
+static __always_inline __maybe_unused struct remote_endpoint_info *	\
+NAME(IPTYPE addr)							\
 {									\
 	int prefixes[] = { PREFIXES };					\
 	const int size = (sizeof(prefixes) / sizeof(prefixes[0]));	\

@@ -3,7 +3,7 @@
 set -e
 
 HOST=$(hostname)
-export HELM_VERSION="2.14.2"
+export HELM_VERSION="3.1.1"
 export TOKEN="258062.5d84c017c9b2796c"
 export CILIUM_CONFIG_DIR="/opt/cilium"
 export PROVISIONSRC="/tmp/provision/"
@@ -44,10 +44,11 @@ sudo bash -c "echo MaxSessions 200 >> /etc/ssh/sshd_config"
 sudo systemctl restart ssh
 
 if [[ ! $(helm version | grep ${HELM_VERSION}) ]]; then
-  retry_function "wget https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+  retry_function "wget -nv https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
   tar xzvf helm-v${HELM_VERSION}-linux-amd64.tar.gz
   mv linux-amd64/helm /usr/local/bin/
 fi
+helm version
 
 # Install serial ttyS0 server
 cat <<EOF > /etc/systemd/system/serial-getty@ttyS0.service
@@ -144,6 +145,12 @@ bootstrapTokens:
   - authentication
 nodeRegistration:
   criSocket: "{{ .KUBEADM_CRI_SOCKET }}"
+controllerManager:
+  extraArgs:
+    "feature-gates": "{{ .CONTROLLER_FEATURE_GATES }}"
+apiServer:
+  extraArgs:
+    "feature-gates": "{{ .API_SERVER_FEATURE_GATES }}"
 ---
 apiVersion: kubeadm.k8s.io/v1beta1
 kind: ClusterConfiguration
@@ -213,7 +220,7 @@ case $K8S_VERSION in
         ;;
     "1.14")
         KUBERNETES_CNI_VERSION="0.7.5"
-        K8S_FULL_VERSION="1.14.9"
+        K8S_FULL_VERSION="1.14.10"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri"
         KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
@@ -221,7 +228,7 @@ case $K8S_VERSION in
         ;;
     "1.15")
         KUBERNETES_CNI_VERSION="0.7.5"
-        K8S_FULL_VERSION="1.15.6"
+        K8S_FULL_VERSION="1.15.10"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri"
         KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
@@ -229,7 +236,7 @@ case $K8S_VERSION in
         ;;
     "1.16")
         KUBERNETES_CNI_VERSION="0.7.5"
-        K8S_FULL_VERSION="1.16.3"
+        K8S_FULL_VERSION="1.16.7"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri"
         KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
@@ -237,13 +244,21 @@ case $K8S_VERSION in
         ;;
     "1.17")
         KUBERNETES_CNI_VERSION="0.7.5"
-        K8S_FULL_VERSION="1.17.0"
+        K8S_FULL_VERSION="1.17.3"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri"
         KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_ALPHA3}"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,PodSecurityPolicy=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,PodSecurityPolicy=true"
         ;;
 esac
+
+# TODO(brb) Enable after we switch k8s vsn in the kubeproxy-free job to >= v1.16
+#           (skipping the kube-proxy phase).
+#if [ "$KUBEPROXY" == "0" ]; then
+#    KUBEADM_OPTIONS="$KUBEADM_OPTIONS --skip-phases=addon/kube-proxy"
+#fi
 
 #Install kubernetes
 set +e
@@ -310,6 +325,11 @@ if [[ "${HOST}" == "k8s1" ]]; then
       sudo cp -i /etc/kubernetes/admin.conf /root/.kube/config
       sudo chown root:root /root/.kube/config
 
+      if [[ "${KUBEPROXY}" == "0" ]]; then
+          kubectl -n kube-system delete ds kube-proxy
+          iptables-restore <(iptables-save | grep -v KUBE)
+      fi
+
       sudo -u vagrant mkdir -p /home/vagrant/.kube
       sudo cp -fi /etc/kubernetes/admin.conf /home/vagrant/.kube/config
       sudo chown vagrant:vagrant /home/vagrant/.kube/config
@@ -341,20 +361,5 @@ fi
 docker network create --subnet=192.168.9.0/24 outside
 docker run --net outside --ip 192.168.9.10 --restart=always -d docker.io/cilium/demo-httpd:latest
 docker run --net outside --ip 192.168.9.11 --restart=always -d docker.io/cilium/demo-httpd:latest
-
-if [[ "${HOST}" == "k8s1" ]]; then
-    # To avoid SNAT'ing source IP, we create a network with masquerading disabled.
-    # Also, we install a route on each other node to make it possible a replies from
-    # remote nodes to reach containers attached to the network.
-    docker network create --subnet=192.168.10.0/24 \
-        --opt 'com.docker.network.bridge.enable_ip_masquerade=false' \
-        outside-no-masq
-    # NOTE: when changing "client-from-outside" IP addr, make sure that the IP addr
-    # is changed in the tests (grep for the IP addr).
-    docker run --name client-from-outside --net outside-no-masq --ip 192.168.10.10 \
-        --restart=always -d docker.io/cilium/demo-client:latest
-else
-    sudo ip route add 192.168.10.0/24 via 192.168.36.11 || true
-fi
 
 sudo touch /etc/provision_finished

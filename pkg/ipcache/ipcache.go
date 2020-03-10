@@ -1,4 +1,4 @@
-// Copyright 2018-2019 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
-
+	hubbleIPCache "github.com/cilium/hubble/pkg/ipcache"
 	"github.com/sirupsen/logrus"
 )
 
@@ -149,7 +149,8 @@ func (ipc *IPCache) getHostIPCache(ip string) (net.IP, uint8) {
 	return ipKeyPair.IP, ipKeyPair.Key
 }
 
-func (ipc *IPCache) getK8sMetadata(ip string) *K8sMetadata {
+// GetK8sMetadata returns Kubernetes metadata for the given IP address.
+func (ipc *IPCache) GetK8sMetadata(ip string) *K8sMetadata {
 	if k8sMeta, ok := ipc.ipToK8sMetadata[ip]; ok {
 		return &k8sMeta
 	}
@@ -286,7 +287,7 @@ func (ipc *IPCache) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *K8s
 func (ipc *IPCache) DumpToListenerLocked(listener IPIdentityMappingListener) {
 	for ip, identity := range ipc.ipToIdentityCache {
 		hostIP, encryptKey := ipc.getHostIPCache(ip)
-		k8sMeta := ipc.getK8sMetadata(ip)
+		k8sMeta := ipc.GetK8sMetadata(ip)
 		_, cidr, err := net.ParseCIDR(ip)
 		if err != nil {
 			endpointIP := net.ParseIP(ip)
@@ -318,7 +319,7 @@ func (ipc *IPCache) deleteLocked(ip string, source source.Source) {
 	var cidr *net.IPNet
 	cacheModification := Delete
 	oldHostIP, encryptKey := ipc.getHostIPCache(ip)
-	oldK8sMeta := ipc.getK8sMetadata(ip)
+	oldK8sMeta := ipc.GetK8sMetadata(ip)
 	var newHostIP net.IP
 	var oldIdentity *identity.NumericIdentity
 	newIdentity := cachedIdentity
@@ -455,5 +456,28 @@ func (m *K8sMetadata) Equal(o *K8sMetadata) bool {
 		return false
 	}
 
-	return m.Namespace == o.Namespace && m.PodName == m.PodName
+	return m.Namespace == o.Namespace && m.PodName == o.PodName
+}
+
+// GetIPIdentity returns the IP identity of the given IP address. Hubble uses this function to populate
+// fields like namespace and pod name for remote endpoints. If the K8s metadata is unavailable, it sets
+// the Identity field for the IP identity.
+//
+//  - IPGetter: https://github.com/cilium/hubble/blob/04ab72591faca62a305ce0715108876167182e04/pkg/parser/getters/getters.go#L46
+func (ipc *IPCache) GetIPIdentity(ip net.IP) (hubbleIPCache.IPIdentity, bool) {
+	ipIdentity, ok := ipc.LookupByIP(ip.String())
+	if !ok {
+		return hubbleIPCache.IPIdentity{}, false
+	}
+	meta := ipc.GetK8sMetadata(ip.String())
+	if meta == nil {
+		return hubbleIPCache.IPIdentity{
+			Identity: ipIdentity.ID,
+		}, true
+	}
+	return hubbleIPCache.IPIdentity{
+		Identity:  ipIdentity.ID,
+		Namespace: meta.Namespace,
+		PodName:   meta.PodName,
+	}, true
 }

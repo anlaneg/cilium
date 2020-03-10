@@ -55,7 +55,7 @@ cd .. && \
 #
 # bpftool
 #
-git clone --depth 1 -b master git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git && \
+git clone --depth 1 -b master git://git.kernel.org/pub/scm/linux/kernel/git/bpf/bpf-next.git linux && \
 cd linux/tools/bpf/bpftool/ && \
 make -j `getconf _NPROCESSORS_ONLN` && \
 strip bpftool && \
@@ -81,7 +81,7 @@ apt-get clean
 #
 # Go-based tools we need at runtime
 #
-FROM docker.io/library/golang:1.13.5 as runtime-gobuild
+FROM docker.io/library/golang:1.14 as runtime-gobuild
 WORKDIR /tmp
 RUN go get -d github.com/google/gops && \
 cd /go/src/github.com/google/gops && \

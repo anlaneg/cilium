@@ -1,6 +1,12 @@
 # Include the cilium-agent DaemonSet
 agent:
   enabled: true
+  # Do not run Cilium agent when running with clean mode. Useful to completely
+  # uninstall Cilium as it will stop Cilium from starting and create artifacts
+  # in the node.
+  sleepAfterInit: false
+  # Keep the deprecated selector labels when deploying Cilium DaemonSet
+  keepDeprecatedLabels: false
 
 # Include the cilium-config ConfigMap
 config:
@@ -76,6 +82,18 @@ global:
     serviceMonitor:
       enabled: false
 
+  # operatorPrometheus enables
+  operatorPrometheus:
+    enabled: false
+    port: 6942
+
+  # enableXTSocketFallback enables the fallback compatibility solution
+  # when the xt_socket kernel module is missing and it is needed for
+  # the datapath L7 redirection to work properly.  See documentation
+  # for details on when this can be disabled:
+  # http://docs.cilium.io/en/latest/install/system_requirements/#admin-kernel-version.
+  enableXTSocketFallback: true
+
   # installIptablesRules enables installation of iptables rules to allow for
   # TPROXY (L7 proxy injection), itpables based masquerading and compatibility
   # with kube-proxy. See documentation for details on when this can be
@@ -104,7 +122,7 @@ global:
     # chainingMode enables chaining on top of other CNI plugins. Possible
     # values:
     #  - none
-    #  - generic-verth
+    #  - generic-veth
     #  - aws-cni
     #  - portmap
     chainingMode: none
@@ -184,6 +202,9 @@ global:
     # tracking table
     ctAnyMax: 262144
 
+    # natMax is the maximum number of entries for the NAT table
+    natMax: 841429
+
     # montiorAggregation is the level of aggregation for datapath trace events
     monitorAggregation: medium
 
@@ -217,15 +238,18 @@ global:
     # interface is the interface to use for encryption
     # interface: eth0
 
-  # hostServices is the configuration for host-facing load-balancing
+  # kubeProxyReplacement enables kube-proxy replacement in Cilium BPF datapath
+  kubeProxyReplacement: "probe"
+
+  # hostServices is the configuration for ClusterIP service handling in host namespace
   hostServices:
-    # enabled enables host-facing load-balancing
+    # enabled enables host reachable functionality
     enabled: false
 
     # protocols is the list of protocols to support
     protocols: tcp,udp
 
-  # nodePort is the nodeport configuration
+  # nodePort is the configuration for NodePort service handling
   nodePort:
     # enabled enables NodePort functionality
     enabled: false
@@ -235,6 +259,14 @@ global:
 
     # device is the name of the device handling NodePort requests
     # device:
+
+    # mode is the mode of NodePort feature
+    mode: "hybrid"
+
+  # externalIPs is the configuration for ExternalIPs service handling
+  externalIPs:
+    # enabled enables ExternalIPs functionality
+    enabled: false
 
   # flannel is the flannel specific configuration
   flannel:
@@ -253,16 +285,16 @@ global:
     # enabled enables use of the IPVLAN datapath
     enabled: false
 
-    # primaryDevice is the name of the device to use to attach secondary IPVLAN
+    # masterDevice is the name of the device to use to attach secondary IPVLAN
     # devices
-    # primaryDevice: eth0
+    # masterDevice: eth0
 
   # pprof is the GO pprof configuration
   pprof:
     # enabled enables go pprof debugging
     enabled: false
 
-  # logSytemLoad enables logging of system load 
+  # logSytemLoad enables logging of system load
   logSystemLoad: false
 
   # sockops is the BPF socket operations configuration
@@ -278,6 +310,14 @@ global:
 
   # ENI mode configures the options required to run with ENI
   eni: false
+
+  azure:
+    enabled: false
+    #resourceGroup: group1
+    #subscriptionID: 00000000-0000-0000-0000-000000000000
+    #tenantID: 00000000-0000-0000-0000-000000000000
+    #clientID: 00000000-0000-0000-0000-000000000000
+    #clientSecret: 00000000-0000-0000-0000-000000000000
 
   # cleanState instructs the cilium-agent DaemonSet to clean all state in the
   # initContainer
@@ -305,3 +345,59 @@ global:
   wellKnownIdentities:
     # enabled enables the use of well-known identities
     enabled: false
+
+  tls:
+    secretsBackend: local
+
+  # remoteNodeIdentity enables use of the remote node identity
+  remoteNodeIdentity: true
+
+  synchronizeK8sNodes: true
+
+  # psp creates and binds PodSecurityPolicies for the components that require it
+  psp:
+    enabled: false
+
+  # enables non-drop mode for installed policies. In audit mode
+  # packets affected by policies will not be dropped. Policy related
+  # decisions can be checked via the poicy verdict messages.
+  policyAuditMode: false
+
+  # hubble configures Hubble.
+  hubble:
+    # List of unix domain socket paths to listen to, for example:
+    #
+    #   listenAddresses:
+    #   - "unix:///var/run/cilium/hubble.sock"
+    #
+    # You can specify the list of metrics from the helm CLI:
+    #
+    #   --set global.hubble.listenAddresses={unix:///var/run/cilium}
+    #
+    # Hubble is disabled if the list is empty.
+    listenAddresses: []
+    # Buffer size of the channel Hubble uses to receive monitor events. Defaults to 128.
+    eventQueueSize: ~
+    # Number of recent flows for Hubble to cache. Defaults to 4096.
+    flowBufferSize: ~
+    # Specifies the address the metric server listens to (e.g. ":12345"). The metric server is
+    # disabled if this value is empty.
+    metricServer: ~
+    # List of metrics to collect, for example:
+    #
+    #   metrics:
+    #   - dns:query;ignoreAAAA
+    #   - drop
+    #   - tcp
+    #   - flow
+    #   - port-distribution
+    #   - icmp
+    #   - http
+    #
+    # You can specify the list of metrics from the helm CLI:
+    #
+    #   --set metrics.enabled="{dns:query;ignoreAAAA,drop,tcp,flow,port-distribution,icmp,http}"
+    #
+    # See https://github.com/cilium/hubble/blob/master/Documentation/metrics.md for more comprehensive
+    # documentation about Hubble's metric collection.
+    metrics: []

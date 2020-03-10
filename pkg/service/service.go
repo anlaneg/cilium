@@ -27,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/metrics"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/node"
+	"github.com/cilium/cilium/pkg/service/healthserver"
 
 	"github.com/sirupsen/logrus"
 )
@@ -39,12 +40,18 @@ var (
 
 // LBMap is the interface describing methods for manipulating service maps.
 type LBMap interface {
-	UpsertService(uint16, net.IP, uint16, []uint16, int, bool, lb.SVCType) error
+	UpsertService(uint16, net.IP, uint16, []uint16, int, bool, lb.SVCType, bool) error
 	DeleteService(lb.L3n4AddrID, int) error
 	AddBackend(uint16, net.IP, uint16, bool) error
 	DeleteBackendByID(uint16, bool) error
 	DumpServiceMaps() ([]*lb.SVC, []error)
 	DumpBackendMaps() ([]*lb.Backend, error)
+}
+
+// healthServer is used to manage HealtCheckNodePort listeners
+type healthServer interface {
+	UpsertService(svcID lb.ID, svcNS, svcName string, localEndpoints int, port uint16)
+	DeleteService(svcID lb.ID)
 }
 
 // monitorNotify is used to send update notifications to the monitor
@@ -53,14 +60,17 @@ type monitorNotify interface {
 }
 
 type svcInfo struct {
-	hash                 string
-	frontend             lb.L3n4AddrID
-	backends             []lb.Backend
-	backendByHash        map[string]*lb.Backend
-	svcType              lb.SVCType
-	svcTrafficPolicy     lb.SVCTrafficPolicy
-	svcName              string
-	svcNamespace         string
+	hash          string
+	frontend      lb.L3n4AddrID
+	backends      []lb.Backend
+	backendByHash map[string]*lb.Backend
+
+	svcType                lb.SVCType
+	svcTrafficPolicy       lb.SVCTrafficPolicy
+	svcHealthCheckNodePort uint16
+	svcName                string
+	svcNamespace           string
+
 	restoredFromDatapath bool
 }
 
@@ -70,12 +80,13 @@ func (svc *svcInfo) deepCopyToLBSVC() *lb.SVC {
 		backends[i] = *backend.DeepCopy()
 	}
 	return &lb.SVC{
-		Frontend:      *svc.frontend.DeepCopy(),
-		Backends:      backends,
-		Type:          svc.svcType,
-		TrafficPolicy: svc.svcTrafficPolicy,
-		Name:          svc.svcName,
-		Namespace:     svc.svcNamespace,
+		Frontend:            *svc.frontend.DeepCopy(),
+		Backends:            backends,
+		Type:                svc.svcType,
+		TrafficPolicy:       svc.svcTrafficPolicy,
+		HealthCheckNodePort: svc.svcHealthCheckNodePort,
+		Name:                svc.svcName,
+		Namespace:           svc.svcNamespace,
 	}
 }
 
@@ -101,6 +112,7 @@ type Service struct {
 	backendRefCount counter.StringCounter
 	backendByHash   map[string]*lb.Backend
 
+	healthServer  healthServer
 	monitorNotify monitorNotify
 
 	lbmap LBMap
@@ -114,6 +126,7 @@ func NewService(monitorNotify monitorNotify) *Service {
 		backendRefCount: counter.StringCounter{},
 		backendByHash:   map[string]*lb.Backend{},
 		monitorNotify:   monitorNotify,
+		healthServer:    healthserver.New(),
 		lbmap:           &lbmap.LBBPFMap{},
 	}
 }
@@ -167,23 +180,27 @@ func (s *Service) InitMaps(ipv6, ipv4, restore bool) error {
 // The first return value is true if the service hasn't existed before.
 func (s *Service) UpsertService(
 	frontend lb.L3n4AddrID, backends []lb.Backend, svcType lb.SVCType,
-	svcTrafficPolicy lb.SVCTrafficPolicy, svcName, svcNamespace string) (bool, lb.ID, error) {
+	svcTrafficPolicy lb.SVCTrafficPolicy, svcHealthCheckNodePort uint16,
+	svcName, svcNamespace string) (bool, lb.ID, error) {
 
 	s.Lock()
 	defer s.Unlock()
 
 	scopedLog := log.WithFields(logrus.Fields{
-		logfields.ServiceIP:            frontend.L3n4Addr,
-		logfields.Backends:             backends,
-		logfields.ServiceType:          svcType,
-		logfields.ServiceTrafficPolicy: svcTrafficPolicy,
-		logfields.ServiceName:          svcName,
-		logfields.ServiceNamespace:     svcNamespace,
+		logfields.ServiceIP: frontend.L3n4Addr,
+		logfields.Backends:  backends,
+
+		logfields.ServiceType:                svcType,
+		logfields.ServiceTrafficPolicy:       svcTrafficPolicy,
+		logfields.ServiceHealthCheckNodePort: svcHealthCheckNodePort,
+		logfields.ServiceName:                svcName,
+		logfields.ServiceNamespace:           svcNamespace,
 	})
 	scopedLog.Debug("Upserting service")
 
 	// If needed, create svcInfo and allocate service ID
-	svc, new, err := s.createSVCInfoIfNotExist(frontend, svcType, svcTrafficPolicy, svcName, svcNamespace)
+	svc, new, err := s.createSVCInfoIfNotExist(frontend, svcType, svcTrafficPolicy,
+		svcHealthCheckNodePort, svcName, svcNamespace)
 	if err != nil {
 		return false, lb.ID(0), err
 	}
@@ -216,6 +233,10 @@ func (s *Service) UpsertService(
 		obsoleteBackendIDs, scopedLog); err != nil {
 		return false, lb.ID(0), err
 	}
+
+	localBackendCount := len(backendsCopy)
+	s.healthServer.UpsertService(lb.ID(svc.frontend.ID), svc.svcNamespace, svc.svcName,
+		localBackendCount, svc.svcHealthCheckNodePort)
 
 	if new {
 		addMetric.Inc()
@@ -338,6 +359,7 @@ func (s *Service) createSVCInfoIfNotExist(
 	frontend lb.L3n4AddrID,
 	svcType lb.SVCType,
 	svcTrafficPolicy lb.SVCTrafficPolicy,
+	svcHealthCheckNodePort uint16,
 	svcName, svcNamespace string,
 ) (*svcInfo, bool, error) {
 
@@ -348,25 +370,29 @@ func (s *Service) createSVCInfoIfNotExist(
 		addrID, err := AcquireID(frontend.L3n4Addr, uint32(frontend.ID))
 		if err != nil {
 			return nil, false,
-				fmt.Errorf("Unable to allocate service ID %d for %q: %s",
+				fmt.Errorf("Unable to allocate service ID %d for %v: %s",
 					frontend.ID, frontend, err)
 		}
 		frontend.ID = addrID.ID
 
 		svc = &svcInfo{
-			hash:             hash,
-			frontend:         frontend,
-			backendByHash:    map[string]*lb.Backend{},
-			svcType:          svcType,
-			svcTrafficPolicy: svcTrafficPolicy,
-			svcName:          svcName,
-			svcNamespace:     svcNamespace,
+			hash:          hash,
+			frontend:      frontend,
+			backendByHash: map[string]*lb.Backend{},
+
+			svcType:      svcType,
+			svcName:      svcName,
+			svcNamespace: svcNamespace,
+
+			svcTrafficPolicy:       svcTrafficPolicy,
+			svcHealthCheckNodePort: svcHealthCheckNodePort,
 		}
 		s.svcByID[frontend.ID] = svc
 		s.svcByHash[hash] = svc
 	} else {
 		svc.svcType = svcType
 		svc.svcTrafficPolicy = svcTrafficPolicy
+		svc.svcHealthCheckNodePort = svcHealthCheckNodePort
 		// Name and namespace are both optional and intended for exposure via
 		// API. They they are not part of any BPF maps and cannot be restored
 		// from datapath.
@@ -422,7 +448,7 @@ func (s *Service) upsertServiceIntoLBMaps(svc *svcInfo, prevBackendCount int,
 		uint16(svc.frontend.ID), svc.frontend.L3n4Addr.IP,
 		svc.frontend.L3n4Addr.L4Addr.Port,
 		backendIDs, prevBackendCount,
-		ipv6, svcType)
+		ipv6, svcType, svc.requireNodeLocalBackends())
 	if err != nil {
 		return err
 	}
@@ -506,10 +532,10 @@ func (s *Service) restoreServicesLocked() error {
 			frontend:      svc.Frontend,
 			backends:      svc.Backends,
 			backendByHash: map[string]*lb.Backend{},
-			// Correct service type and traffic policy will be restored by
-			// k8s_watcher after k8s service cache has been initialized
-			svcType:          lb.SVCTypeClusterIP,
-			svcTrafficPolicy: lb.SVCTrafficPolicyCluster,
+			// Correct traffic policy will be restored by k8s_watcher after k8s
+			// service cache has been initialized
+			svcType:          svc.Type,
+			svcTrafficPolicy: svc.TrafficPolicy,
 			// Indicate that the svc was restored from the BPF maps, so that
 			// SyncWithK8sFinished() could remove services which were restored
 			// from the maps but not present in the k8sServiceCache (e.g. a svc
@@ -565,6 +591,8 @@ func (s *Service) deleteServiceLocked(svc *svcInfo) error {
 	if err := DeleteID(uint32(svc.frontend.ID)); err != nil {
 		return fmt.Errorf("Unable to release service ID %d: %s", svc.frontend.ID, err)
 	}
+
+	s.healthServer.DeleteService(lb.ID(svc.frontend.ID))
 
 	deleteMetric.Inc()
 	s.notifyMonitorServiceDelete(svc.frontend.ID)
@@ -665,4 +693,18 @@ func (s *Service) notifyMonitorServiceDelete(id lb.ID) {
 			s.monitorNotify.SendNotification(monitorAPI.AgentNotifyServiceDeleted, repr)
 		}
 	}
+}
+
+// GetServiceNameByAddr returns namespace and name of the service with a given L3n4Addr. The third
+// return value is set to true if and only if the service is found in the map.
+func (s *Service) GetServiceNameByAddr(addr lb.L3n4Addr) (string, string, bool) {
+	s.RLock()
+	defer s.RUnlock()
+
+	svc, found := s.svcByHash[addr.Hash()]
+	if !found {
+		return "", "", false
+	}
+
+	return svc.svcNamespace, svc.svcName, true
 }

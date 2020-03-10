@@ -22,8 +22,9 @@ import (
 	"path"
 	"testing"
 
+	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
 	"github.com/cilium/cilium/pkg/checker"
-	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	"gopkg.in/check.v1"
@@ -115,7 +116,7 @@ func (t *CNITypesSuite) TestReadCNIConfENIWithPlugins(c *check.C) {
 			CNIVersion: "0.3.1",
 			Type:       "cilium-cni",
 		},
-		ENI: ciliumv2.ENISpec{
+		ENI: eniTypes.ENISpec{
 			PreAllocate:         5,
 			FirstInterfaceIndex: &firstInterfaceIndex,
 			SecurityGroups:      []string{"sg-xxx"},
@@ -152,7 +153,7 @@ func (t *CNITypesSuite) TestReadCNIConfENI(c *check.C) {
 			Name: "cilium",
 			Type: "cilium-cni",
 		},
-		ENI: ciliumv2.ENISpec{
+		ENI: eniTypes.ENISpec{
 			InstanceType:        "m4.xlarge",
 			PreAllocate:         16,
 			FirstInterfaceIndex: &firstInterfaceIndex,
@@ -163,6 +164,51 @@ func (t *CNITypesSuite) TestReadCNIConfENI(c *check.C) {
 			},
 			VpcID:            "vpc-1",
 			AvailabilityZone: "us-west1",
+		},
+	}
+	testConfRead(c, confFile1, &netConf1)
+}
+
+func (t *CNITypesSuite) TestReadCNIConfENIv2WithPlugins(c *check.C) {
+	confFile1 := `
+{
+  "cniVersion":"0.3.1",
+  "name":"cilium",
+  "plugins": [
+    {
+      "cniVersion":"0.3.1",
+      "type":"cilium-cni",
+      "eni": {
+        "first-interface-index":1,
+        "security-groups":[
+          "sg-xxx"
+        ],
+        "subnet-tags":{
+          "foo":"true"
+        }
+      },
+      "ipam": {
+        "pre-allocate": 5
+      }
+    }
+  ]
+}
+`
+	firstInterfaceIndex := 1
+	netConf1 := NetConf{
+		NetConf: cnitypes.NetConf{
+			CNIVersion: "0.3.1",
+			Type:       "cilium-cni",
+		},
+		ENI: eniTypes.ENISpec{
+			FirstInterfaceIndex: &firstInterfaceIndex,
+			SecurityGroups:      []string{"sg-xxx"},
+			SubnetTags: map[string]string{
+				"foo": "true",
+			},
+		},
+		IPAM: ipamTypes.IPAMSpec{
+			PreAllocate: 5,
 		},
 	}
 	testConfRead(c, confFile1, &netConf1)

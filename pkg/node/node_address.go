@@ -29,11 +29,11 @@ import (
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+
+	"github.com/sirupsen/logrus"
 )
 
 var (
-	ipv4ClusterCidrMaskSize = defaults.DefaultIPv4ClusterPrefixLen
-
 	ipv4Loopback        net.IP
 	ipv4ExternalAddress net.IP
 	ipv4InternalAddress net.IP
@@ -55,11 +55,6 @@ func makeIPv6HostIP() net.IP {
 	}
 
 	return ip
-}
-
-// SetIPv4ClusterCidrMaskSize sets the size of the mask of the IPv4 cluster prefix
-func SetIPv4ClusterCidrMaskSize(size int) {
-	ipv4ClusterCidrMaskSize = size
 }
 
 // InitDefaultPrefix initializes the node address and allocation prefixes with
@@ -149,19 +144,6 @@ func InitDefaultPrefix(device string) {
 	}
 }
 
-// GetIPv4ClusterRange returns the IPv4 prefix of the cluster
-func GetIPv4ClusterRange() *net.IPNet {
-	if ipv4AllocRange == nil {
-		return nil
-	}
-
-	mask := net.CIDRMask(ipv4ClusterCidrMaskSize, 32)
-	return &net.IPNet{
-		IP:   ipv4AllocRange.IPNet.IP.Mask(mask),
-		Mask: mask,
-	}
-}
-
 // GetIPv4Loopback returns the loopback IPv4 address of this node.
 func GetIPv4Loopback() net.IP {
 	return ipv4Loopback
@@ -242,12 +224,9 @@ func GetNodePortIPv6() net.IP {
 }
 
 // SetIPv6NodeRange sets the IPv6 address pool to be used on this node
-func SetIPv6NodeRange(net *net.IPNet) error {
+func SetIPv6NodeRange(net *net.IPNet) {
 	copy := *net
 	ipv6AllocRange = cidr.NewCIDR(&copy)
-
-	// TODO(brb) rm error
-	return nil
 }
 
 // AutoComplete completes the parts of addressing that can be auto derived
@@ -258,12 +237,10 @@ func AutoComplete() error {
 		ipv4GW, ipv6Router := getCiliumHostIPs()
 
 		if ipv4GW != nil && option.Config.EnableIPv4 {
-			log.Infof("Restored IPv4 internal node IP: %s", ipv4GW.String())
 			SetInternalIPv4(ipv4GW)
 		}
 
 		if ipv6Router != nil && option.Config.EnableIPv6 {
-			log.Infof("Restored IPv6 router IP: %s", ipv6Router.String())
 			SetIPv6Router(ipv6Router)
 		}
 	}
@@ -292,16 +269,8 @@ func ValidatePostInit() error {
 		}
 	}
 
-	if option.Config.EnableIPv4 {
-		if ipv4InternalAddress == nil {
-			return fmt.Errorf("BUG: Internal IPv4 node address was not configured")
-		}
-
-		ones, _ := ipv4AllocRange.Mask.Size()
-		if ipv4ClusterCidrMaskSize > ones {
-			return fmt.Errorf("IPv4 per node allocation prefix (%s) must be inside cluster prefix (%s)",
-				ipv4AllocRange, GetIPv4ClusterRange())
-		}
+	if option.Config.EnableIPv4 && ipv4InternalAddress == nil {
+		return fmt.Errorf("BUG: Internal IPv4 node address was not configured")
 	}
 
 	return nil
@@ -436,7 +405,12 @@ func getCiliumHostIPsFromFile(nodeConfig string) (ipv4GW, ipv6Router net.IP) {
 func getCiliumHostIPs() (ipv4GW, ipv6Router net.IP) {
 	nodeConfig := option.Config.GetNodeConfigPath()
 	ipv4GW, ipv6Router = getCiliumHostIPsFromFile(nodeConfig)
-	if ipv4GW != nil {
+	if ipv4GW != nil || ipv6Router != nil {
+		log.WithFields(logrus.Fields{
+			"ipv4": ipv4GW,
+			"ipv6": ipv6Router,
+			"file": nodeConfig,
+		}).Info("Restored router address from node_config")
 		return ipv4GW, ipv6Router
 	}
 	return getCiliumHostIPsFromNetDev(option.Config.HostDevice)

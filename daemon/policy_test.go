@@ -35,15 +35,20 @@ import (
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/testutils"
 
-	"github.com/cilium/proxy/go/cilium/api"
+	cilium "github.com/cilium/proxy/go/cilium/api"
 	envoy_api_v2_core "github.com/cilium/proxy/go/envoy/api/v2/core"
 	envoy_api_v2_route "github.com/cilium/proxy/go/envoy/api/v2/route"
+	envoy_type_matcher "github.com/cilium/proxy/go/envoy/type/matcher"
+
+	"github.com/golang/protobuf/ptypes/wrappers"
+
 	. "gopkg.in/check.v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sTypes "k8s.io/apimachinery/pkg/types"
@@ -85,6 +90,21 @@ var (
 			},
 		},
 	}
+	CNPAllowGETbarLog = api.PortRule{
+		Ports: CNPAllowTCP80.Ports,
+		Rules: &api.L7Rules{
+			HTTP: []api.PortRuleHTTP{
+				{
+					Method: "GET",
+					HeaderMatches: []*api.HeaderMatch{{
+						Mismatch: api.MismatchActionLog,
+						Name:     ":path",
+						Value:    "/bar",
+					}},
+				},
+			},
+		},
+	}
 
 	PNPAllowAll = cilium.PortNetworkPolicyRule_HttpRules{
 		HttpRules: &cilium.HttpNetworkPolicyRules{
@@ -93,21 +113,69 @@ var (
 			},
 		},
 	}
+	googleRe2 = &envoy_type_matcher.RegexMatcher_GoogleRe2{
+		GoogleRe2: &envoy_type_matcher.RegexMatcher_GoogleRE2{
+			MaxProgramSize: &wrappers.UInt32Value{Value: 100}, // Envoy default
+		}}
+
 	PNPAllowGETbar = cilium.PortNetworkPolicyRule_HttpRules{
 		HttpRules: &cilium.HttpNetworkPolicyRules{
 			HttpRules: []*cilium.HttpNetworkPolicyRule{
 				{
 					Headers: []*envoy_api_v2_route.HeaderMatcher{
 						{
-							Name:                 ":method",
-							HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_RegexMatch{RegexMatch: "GET"},
+							Name: ":method",
+							HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_SafeRegexMatch{
+								SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
+									EngineType: googleRe2,
+									Regex:      "GET",
+								}},
 						},
 						{
-							Name:                 ":path",
-							HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_RegexMatch{RegexMatch: "/bar"},
+							Name: ":path",
+							HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_SafeRegexMatch{
+								SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
+									EngineType: googleRe2,
+									Regex:      "/bar",
+								}},
 						},
 					},
 				},
+			},
+		},
+	}
+
+	PNPAllowGETbarLog = cilium.PortNetworkPolicyRule_HttpRules{
+		HttpRules: &cilium.HttpNetworkPolicyRules{
+			HttpRules: []*cilium.HttpNetworkPolicyRule{
+				{
+					Headers: []*envoy_api_v2_route.HeaderMatcher{
+						{
+							Name: ":method",
+							HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_SafeRegexMatch{
+								SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
+									EngineType: googleRe2,
+									Regex:      "GET",
+								}},
+						},
+					},
+					HeaderMatches: []*cilium.HeaderMatch{
+						{
+							Name:           ":path",
+							Value:          "/bar",
+							MismatchAction: cilium.HeaderMatch_CONTINUE_ON_MISMATCH,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	PNPAllowWildcardGETbar = cilium.PortNetworkPolicyRule_HttpRules{
+		HttpRules: &cilium.HttpNetworkPolicyRules{
+			HttpRules: []*cilium.HttpNetworkPolicyRule{
+				{},
+				PNPAllowGETbar.HttpRules.HttpRules[0],
 			},
 		},
 	}
@@ -123,7 +191,7 @@ func (ds *DaemonSuite) getXDSNetworkPolicies(c *C, resourceNames []string) map[s
 
 func prepareEndpointDirs() (cleanup func(), err error) {
 	testEPDir := fmt.Sprintf("%d", testEndpointID)
-	if err = os.Mkdir(testEPDir, 755); err != nil {
+	if err = os.Mkdir(testEPDir, 0755); err != nil {
 		return func() {}, err
 	}
 	return func() {
@@ -161,6 +229,7 @@ func (ds *DaemonSuite) regenerateEndpoint(c *C, e *endpoint.Endpoint) {
 }
 
 func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
+	logging.ConfigureLogLevel(false) // Use 'true' for debugging
 	rules := api.Rules{
 		{
 			EndpointSelector: api.NewESFromLabels(lblBar),
@@ -274,17 +343,22 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
+				Port:     0,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules: []*cilium.PortNetworkPolicyRule{
+					{
+						RemotePolicies: expectedRemotePolicies,
+					},
+				},
+			},
+			{
 				Port:     80,
 				Protocol: envoy_api_v2_core.SocketAddress_TCP,
 				Rules: []*cilium.PortNetworkPolicyRule{
 					{
 						RemotePolicies: expectedRemotePolicies,
-						L7:             &PNPAllowAll,
+						L7:             &PNPAllowGETbar,
 					},
-					//{
-					//	RemotePolicies: expectedRemotePolicies,
-					//	L7:             &PNPAllowGETbar,
-					//},
 				},
 			},
 		},
@@ -320,21 +394,22 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
+				Port:     0,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules: []*cilium.PortNetworkPolicyRule{
+					{
+						RemotePolicies: expectedRemotePolicies,
+					},
+				},
+			},
+			{
 				Port:     80,
 				Protocol: envoy_api_v2_core.SocketAddress_TCP,
 				Rules: []*cilium.PortNetworkPolicyRule{
 					{
-						RemotePolicies: expectedRemotePolicies2,
-						L7:             &PNPAllowAll,
-					},
-					{
 						RemotePolicies: expectedRemotePolicies,
-						L7:             &PNPAllowAll,
+						L7:             &PNPAllowGETbar,
 					},
-					//{
-					//	RemotePolicies: expectedRemotePolicies,
-					//	L7:             &PNPAllowGETbar,
-					//},
 				},
 			},
 		},
@@ -347,6 +422,90 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 }
 
 func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
+	logging.ConfigureLogLevel(false) // Use 'true' for debugging
+	// Prepare the identities necessary for testing
+	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	c.Assert(err, Equals, nil)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
+	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	c.Assert(err, Equals, nil)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx)
+
+	rules := api.Rules{
+		{
+			EndpointSelector: api.NewESFromLabels(lblBar),
+			Ingress: []api.IngressRule{
+				{
+					ToPorts: []api.PortRule{
+						// Allow all on port 80 (no proxy)
+						CNPAllowTCP80,
+					},
+				},
+				{
+					FromEndpoints: []api.EndpointSelector{
+						api.NewESFromLabels(lblFoo),
+					},
+					ToPorts: []api.PortRule{
+						// Allow Port 80 GET /bar
+						CNPAllowGETbarLog,
+					},
+				},
+			},
+		},
+	}
+
+	ds.d.l7Proxy.RemoveAllNetworkPolicies()
+
+	_, err = ds.d.PolicyAdd(rules, nil)
+	c.Assert(err, Equals, nil)
+
+	// Prepare endpoints
+	cleanup, err := prepareEndpointDirs()
+	c.Assert(err, Equals, nil)
+	defer cleanup()
+
+	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, false)
+
+	// Check that both policies have been updated in the xDS cache for the L7
+	// proxies.
+	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
+	c.Assert(networkPolicies, HasLen, 2)
+
+	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
+	expectedNetworkPolicy := &cilium.NetworkPolicy{
+		Name:             QAIPv4Addr.String(),
+		Policy:           uint64(qaBarSecLblsCtx.ID),
+		ConntrackMapName: "global",
+		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
+			{
+				Port:     80,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules: []*cilium.PortNetworkPolicyRule{
+					{},
+					{
+						RemotePolicies: []uint64{uint64(qaFooSecLblsCtx.ID)},
+						L7:             &PNPAllowGETbarLog,
+					},
+				},
+			},
+		},
+		EgressPerPortPolicies: []*cilium.PortNetworkPolicy{ // Allow-all policy.
+			{Protocol: envoy_api_v2_core.SocketAddress_TCP},
+			{Protocol: envoy_api_v2_core.SocketAddress_UDP},
+		},
+	}
+	c.Assert(qaBarNetworkPolicy, checker.Equals, expectedNetworkPolicy)
+}
+
+// HTTP rules here have no side effects, so the L4 allow-all rule is
+// short-circuiting the HTTP rules (i.e., the network policy sent to
+// envoy does not even have the HTTP rules).
+func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
+	logging.ConfigureLogLevel(false) // Use 'true' for debugging
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
@@ -408,11 +567,101 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 			{
 				Port:     80,
 				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules:    nil,
+			},
+		},
+		EgressPerPortPolicies: []*cilium.PortNetworkPolicy{ // Allow-all policy.
+			{Protocol: envoy_api_v2_core.SocketAddress_TCP},
+			{Protocol: envoy_api_v2_core.SocketAddress_UDP},
+		},
+	}
+	c.Assert(qaBarNetworkPolicy, checker.Equals, expectedNetworkPolicy)
+}
+
+func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
+	logging.ConfigureLogLevel(true) // Use 'true' for debugging
+	defer logging.ConfigureLogLevel(false)
+
+	// Prepare the identities necessary for testing
+	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	c.Assert(err, Equals, nil)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
+	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	c.Assert(err, Equals, nil)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx)
+	qaJoeLbls := labels.Labels{lblJoe.Key: lblJoe, lblQA.Key: lblQA}
+	qaJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaJoeLbls, true)
+	c.Assert(err, Equals, nil)
+	defer ds.d.identityAllocator.Release(context.Background(), qaJoeSecLblsCtx)
+
+	rules := api.Rules{
+		{
+			EndpointSelector: api.NewESFromLabels(lblBar),
+			Ingress: []api.IngressRule{
+				{
+					FromEndpoints: []api.EndpointSelector{
+						api.NewESFromLabels(lblFoo),
+					},
+					ToPorts: []api.PortRule{
+						// Allow Port 80 GET /bar
+						CNPAllowGETbar,
+					},
+				},
+			},
+		},
+		{
+			EndpointSelector: api.NewESFromLabels(lblBar),
+			Ingress: []api.IngressRule{
+				{
+					FromEndpoints: []api.EndpointSelector{
+						api.NewESFromLabels(lblJoe),
+					},
+				},
+			},
+		},
+	}
+
+	ds.d.l7Proxy.RemoveAllNetworkPolicies()
+
+	_, err = ds.d.PolicyAdd(rules, nil)
+	c.Assert(err, Equals, nil)
+
+	// Prepare endpoints
+	cleanup, err := prepareEndpointDirs()
+	c.Assert(err, Equals, nil)
+	defer cleanup()
+
+	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	c.Assert(e.Allows(qaJoeSecLblsCtx.ID), Equals, true)
+
+	// Check that both policies have been updated in the xDS cache for the L7
+	// proxies.
+	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
+	c.Assert(networkPolicies, HasLen, 2)
+
+	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
+	expectedNetworkPolicy := &cilium.NetworkPolicy{
+		Name:             QAIPv4Addr.String(),
+		Policy:           uint64(qaBarSecLblsCtx.ID),
+		ConntrackMapName: "global",
+		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
+			{
+				Port:     0,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
 				Rules: []*cilium.PortNetworkPolicyRule{
 					{
-						RemotePolicies: nil,
-						L7:             &PNPAllowAll,
+						RemotePolicies: []uint64{uint64(qaJoeSecLblsCtx.ID)},
 					},
+				},
+			},
+			{
+				Port:     80,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules: []*cilium.PortNetworkPolicyRule{
 					{
 						RemotePolicies: []uint64{uint64(qaFooSecLblsCtx.ID)},
 						L7:             &PNPAllowGETbar,
@@ -667,12 +916,39 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 			return false
 		}
 		qaBarNetworkPolicy = networkPolicies[QAIPv4Addr.String()]
-		return qaBarNetworkPolicy != nil && len(qaBarNetworkPolicy.IngressPerPortPolicies) == 1
+		return qaBarNetworkPolicy != nil && len(qaBarNetworkPolicy.IngressPerPortPolicies) == 2
 	}, time.Second*1)
 	c.Assert(err, IsNil)
-	c.Assert(qaBarNetworkPolicy.IngressPerPortPolicies[0].Rules, HasLen, 1)
-	c.Assert(qaBarNetworkPolicy.IngressPerPortPolicies[0].Rules[0].RemotePolicies, HasLen, 1)
-	c.Assert(qaBarNetworkPolicy.IngressPerPortPolicies[0].Rules[0].RemotePolicies[0], Equals, uint64(qaFooID.ID))
+	c.Assert(qaBarNetworkPolicy, checker.Equals, &cilium.NetworkPolicy{
+		Name:             QAIPv4Addr.String(),
+		Policy:           uint64(qaBarSecLblsCtx.ID),
+		ConntrackMapName: "global",
+		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
+			{
+				Port:     0,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules: []*cilium.PortNetworkPolicyRule{
+					{
+						RemotePolicies: []uint64{uint64(qaFooID.ID)},
+					},
+				},
+			},
+			{
+				Port:     80,
+				Protocol: envoy_api_v2_core.SocketAddress_TCP,
+				Rules: []*cilium.PortNetworkPolicyRule{
+					{
+						RemotePolicies: []uint64{uint64(qaFooID.ID)},
+						L7:             &PNPAllowGETbar,
+					},
+				},
+			},
+		},
+		EgressPerPortPolicies: []*cilium.PortNetworkPolicy{ // Allow-all policy.
+			{Protocol: envoy_api_v2_core.SocketAddress_TCP},
+			{Protocol: envoy_api_v2_core.SocketAddress_UDP},
+		},
+	})
 
 	// Delete the endpoint.
 	e.Delete(ds.d, ds.d.ipam, &dummyManager{}, endpoint.DeleteConfig{})
@@ -727,11 +1003,11 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 							},
 						},
 					},
-					repo: policy.NewPolicyRepository(nil),
+					repo: policy.NewPolicyRepository(nil, nil),
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				r.AddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
@@ -760,7 +1036,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		{
 			name: "have a rule with user labels and update it without user labels, all other rules should be deleted",
 			setupArgs: func() args {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				lbls := utils.GetPolicyLabels("production", "db", uuid, utils.ResourceTypeCiliumNetworkPolicy)
 				lbls = append(lbls, labels.ParseLabelArray("foo=bar")...).Sort()
 				r.AddList(api.Rules{
@@ -803,7 +1079,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				r.AddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
@@ -832,7 +1108,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		{
 			name: "have a rule without user labels and update it with user labels, all other rules should be deleted",
 			setupArgs: func() args {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				r.AddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
@@ -874,7 +1150,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				lbls := utils.GetPolicyLabels("production", "db", uuid, utils.ResourceTypeCiliumNetworkPolicy)
 				lbls = append(lbls, labels.ParseLabelArray("foo=bar")...).Sort()
 				r.AddList(api.Rules{
@@ -900,7 +1176,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		{
 			name: "have a rule policy installed with multiple rules and apply an empty spec should delete all rules installed",
 			setupArgs: func() args {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				r.AddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
@@ -945,7 +1221,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil)
+				r := policy.NewPolicyRepository(nil, nil)
 				r.AddList(api.Rules{})
 				return wanted{
 					err:  nil,

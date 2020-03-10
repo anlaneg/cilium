@@ -25,6 +25,7 @@ Clusterwide
 DDoS
 DMA'ed
 DNS
+DSR
 DTrace
 Dangaard
 Datapath
@@ -51,6 +52,7 @@ IP
 IPsec
 IPv
 Integrations
+IoT
 Istio
 JUnit
 Jakub
@@ -91,6 +93,7 @@ Netdev
 Netronome
 NewProto
 Nic
+O'Reilly
 Orchestrators
 Pepelnjak
 Pfaff
@@ -127,6 +130,7 @@ Suricata
 Suricate
 Syscall
 TCP
+TLS
 Terraform
 Tierney
 Toolchain
@@ -151,6 +155,7 @@ Zannoni
 Zhou
 allocator
 allocators
+amd
 analytics
 api
 apiKeys
@@ -172,6 +177,7 @@ balancers
 battlestation
 bcc
 behaviour
+benefitting
 bgpd
 bnxt
 bookinfo
@@ -194,6 +200,7 @@ cgroup
 ci
 classful
 classid
+cli
 cls
 clustermesh
 cni
@@ -209,13 +216,16 @@ cqlsh
 crd
 createtopic
 cri
+crt
 crypto
+cryptographic
 daemonset
 datacenter
 datapath
 datastore
 datastream
 datastreams
+de
 deathstar
 debuginfo
 decapsulate
@@ -230,6 +240,7 @@ dev
 devel
 disassembly
 discoverable
+distro
 distros
 dns
 dockerhub
@@ -292,6 +303,7 @@ hypervisors
 iam
 ie
 incrementing
+ingressing
 init
 inlined
 inlines
@@ -345,6 +357,7 @@ kvstore
 leia
 libbpf
 libc
+libceph
 libdw
 libelf
 libnetwork
@@ -369,6 +382,7 @@ lwt
 macOS
 matchPattern
 mc
+mediabot
 memcache
 memcached
 memcd
@@ -384,6 +398,7 @@ multi
 multicore
 multinode
 musl
+myCA
 mysql
 namespace
 namespaced
@@ -398,13 +413,17 @@ netfilter
 newproto
 newprotoparser
 nfp
+nfs
+nfsd
 nftables
+nginx
 nodeX
 observability
 onData
 onwards
 opcodes
 openSUSE
+openssl
 orchestrator
 pahole
 parserfactory
@@ -433,6 +452,7 @@ qede
 qemu
 queryable
 queueing
+readthedocs
 rebase
 rebased
 recompiles
@@ -464,6 +484,7 @@ seccomp
 selftest
 selftests
 sendmsg
+sessionAffinity
 setrlimit
 sfc
 sg
@@ -472,6 +493,8 @@ sig
 skb
 sockmap
 src
+ssl
+stacktrace
 stap
 stapbpf
 starfighter
@@ -494,6 +517,8 @@ sudo
 supergalatic
 superset
 svc
+sw
+swapi
 sys
 syscall
 sysctl
@@ -541,6 +566,7 @@ uuid
 vCPUs
 validator
 verifier
+vers
 versa
 versioning
 veth
@@ -563,6 +589,9 @@ wildcards
 workflow
 workflows
 workspace
+wouldn
+writeable
+www
 xdp
 xfrm
 xml

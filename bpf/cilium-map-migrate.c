@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2017-2020 Authors of Cilium */
+
 /*
- *  Copyright (C) 2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  *  Parts from iproute2 bpf.c loader code:
  *
  *  This program is free software; you can distribute it and/or
@@ -49,7 +36,8 @@
 #include "elf/libelf.h"
 #include "elf/gelf.h"
 
-#include "iproute2/bpf_elf.h"
+#include "bpf/ctx/unspec.h"
+#include "bpf/api.h"
 
 #ifndef EM_BPF
 # define EM_BPF		247
@@ -513,7 +501,7 @@ static int bpf_check_ancillary(struct bpf_elf_ctx *ctx, bpf_handle_state_t cb,
 		if (ret < 0)
 			continue;
 		if (data.sec_hdr.sh_type == SHT_PROGBITS &&
-		    !strcmp(data.sec_name, ELF_SECTION_MAPS))
+		    !strcmp(data.sec_name, "maps"))
 			ret = bpf_fetch_maps_begin(ctx, i, &data);
 		else if (data.sec_hdr.sh_type == SHT_SYMTAB &&
 			 !strcmp(data.sec_name, ".symtab"))

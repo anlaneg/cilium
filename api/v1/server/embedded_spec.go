@@ -779,6 +779,9 @@ func init() {
           },
           {
             "$ref": "#/parameters/ipam-owner"
+          },
+          {
+            "$ref": "#/parameters/ipam-expiration"
           }
         ],
         "responses": {
@@ -844,7 +847,7 @@ func init() {
         "summary": "Release an allocated IP address",
         "parameters": [
           {
-            "$ref": "#/parameters/ipam-ip"
+            "$ref": "#/parameters/ipam-release-arg"
           }
         ],
         "responses": {
@@ -1295,8 +1298,16 @@ func init() {
           "description": "IPv4 address",
           "type": "string"
         },
+        "ipv4-expiration-uuid": {
+          "description": "UUID of IPv4 expiration timer",
+          "type": "string"
+        },
         "ipv6": {
           "description": "IPv6 address",
+          "type": "string"
+        },
+        "ipv6-expiration-uuid": {
+          "description": "UUID of IPv6 expiration timer",
           "type": "string"
         }
       }
@@ -1419,6 +1430,22 @@ func init() {
           "items": {
             "$ref": "#/definitions/PolicyRule"
           }
+        }
+      }
+    },
+    "ClusterMeshStatus": {
+      "description": "Status of ClusterMesh",
+      "properties": {
+        "clusters": {
+          "description": "List of remote clusters",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RemoteCluster"
+          }
+        },
+        "num-global-services": {
+          "description": "Number of global services",
+          "type": "integer"
         }
       }
     },
@@ -1956,8 +1983,16 @@ func init() {
           "description": "Docker network ID",
           "type": "string"
         },
+        "k8s-namespace": {
+          "description": "K8s namespace for this endpoint",
+          "type": "string"
+        },
+        "k8s-pod-name": {
+          "description": "K8s pod name for this endpoint",
+          "type": "string"
+        },
         "pod-name": {
-          "description": "K8s pod for this endpoint",
+          "description": "K8s pod for this endpoint(Deprecated, use K8sPodName and K8sNamespace instead)",
           "type": "string"
         }
       }
@@ -2075,7 +2110,6 @@ func init() {
       "description": "State of endpoint",
       "type": "string",
       "enum": [
-        "creating",
         "waiting-for-identity",
         "not-ready",
         "waiting-to-regenerate",
@@ -2204,6 +2238,10 @@ func init() {
           "items": {
             "type": "string"
           }
+        },
+        "expiration-uuid": {
+          "description": "The UUID for the expiration timer. Set when expiration has been\nenabled while allocating.\n",
+          "type": "string"
         },
         "gateway": {
           "description": "IP of gateway",
@@ -2401,6 +2439,70 @@ func init() {
         "type": {
           "description": "Type of kvstore",
           "type": "string"
+        }
+      }
+    },
+    "KubeProxyReplacement": {
+      "description": "Status of kube-proxy replacement",
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "object",
+          "properties": {
+            "externalIPs": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "hostReachableServices": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "protocols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "nodePort": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "SNAT",
+                    "DSR",
+                    "HYBRID"
+                  ]
+                },
+                "portMax": {
+                  "type": "integer"
+                },
+                "portMin": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Disabled",
+            "Strict",
+            "Probe",
+            "Partial"
+          ]
         }
       }
     },
@@ -2724,6 +2826,24 @@ func init() {
         }
       }
     },
+    "ProxyRedirect": {
+      "description": "Configured proxy redirection state",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Name of the proxy redirect",
+          "type": "string"
+        },
+        "proxy": {
+          "description": "Name of the proxy this redirect points to",
+          "type": "string"
+        },
+        "proxy-port": {
+          "description": "Host port that this redirect points to",
+          "type": "integer"
+        }
+      }
+    },
     "ProxyStatistics": {
       "description": "Statistics of a set of proxy redirects for an endpoint",
       "type": "object",
@@ -2764,6 +2884,50 @@ func init() {
         },
         "port-range": {
           "description": "Port range used for proxying",
+          "type": "string"
+        },
+        "redirects": {
+          "description": "Detailed description of configured redirects",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProxyRedirect"
+          }
+        },
+        "total-ports": {
+          "description": "Total number of listening proxy ports",
+          "type": "integer"
+        },
+        "total-redirects": {
+          "description": "Total number of ports configured to redirect to proxies",
+          "type": "integer"
+        }
+      }
+    },
+    "RemoteCluster": {
+      "description": "Status of remote cluster",
+      "properties": {
+        "name": {
+          "description": "Name of the cluster",
+          "type": "string"
+        },
+        "num-identities": {
+          "description": "Number of identities in the cluster",
+          "type": "integer"
+        },
+        "num-nodes": {
+          "description": "Number of nodes in the cluster",
+          "type": "integer"
+        },
+        "num-shared-services": {
+          "description": "Number of services in the cluster",
+          "type": "integer"
+        },
+        "ready": {
+          "description": "Indicates readiness of the remote cluser",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "Status of the control plane",
           "type": "string"
         }
       }
@@ -2852,6 +3016,11 @@ func init() {
           "description": "Optional service configuration flags",
           "type": "object",
           "properties": {
+            "healthCheckNodePort": {
+              "description": "Service health check node port",
+              "type": "integer",
+              "format": "uint16"
+            },
             "name": {
               "description": "Service name  (e.g. Kubernetes service name)",
               "type": "string"
@@ -2934,6 +3103,10 @@ func init() {
           "description": "Status of cluster",
           "$ref": "#/definitions/ClusterStatus"
         },
+        "cluster-mesh": {
+          "description": "Status of ClusterMesh",
+          "$ref": "#/definitions/ClusterMeshStatus"
+        },
         "container-runtime": {
           "description": "Status of local container runtime",
           "$ref": "#/definitions/Status"
@@ -2945,6 +3118,10 @@ func init() {
         "ipam": {
           "description": "Status of IP address management",
           "$ref": "#/definitions/IPAMStatus"
+        },
+        "kube-proxy-replacement": {
+          "description": "Status of kube-proxy replacement",
+          "$ref": "#/definitions/KubeProxyReplacement"
         },
         "kubernetes": {
           "description": "Status of Kubernetes integration",
@@ -3042,6 +3219,11 @@ func init() {
       "in": "path",
       "required": true
     },
+    "ipam-expiration": {
+      "type": "boolean",
+      "name": "expiration",
+      "in": "header"
+    },
     "ipam-family": {
       "enum": [
         "ipv4",
@@ -3062,6 +3244,13 @@ func init() {
       "type": "string",
       "name": "owner",
       "in": "query"
+    },
+    "ipam-release-arg": {
+      "type": "string",
+      "description": "IP address or owner name",
+      "name": "ip",
+      "in": "path",
+      "required": true
     },
     "labels": {
       "description": "List of labels\n",
@@ -4002,6 +4191,11 @@ func init() {
             "type": "string",
             "name": "owner",
             "in": "query"
+          },
+          {
+            "type": "boolean",
+            "name": "expiration",
+            "in": "header"
           }
         ],
         "responses": {
@@ -4074,7 +4268,7 @@ func init() {
         "parameters": [
           {
             "type": "string",
-            "description": "IP address",
+            "description": "IP address or owner name",
             "name": "ip",
             "in": "path",
             "required": true
@@ -4573,8 +4767,16 @@ func init() {
           "description": "IPv4 address",
           "type": "string"
         },
+        "ipv4-expiration-uuid": {
+          "description": "UUID of IPv4 expiration timer",
+          "type": "string"
+        },
         "ipv6": {
           "description": "IPv6 address",
+          "type": "string"
+        },
+        "ipv6-expiration-uuid": {
+          "description": "UUID of IPv6 expiration timer",
           "type": "string"
         }
       }
@@ -4697,6 +4899,22 @@ func init() {
           "items": {
             "$ref": "#/definitions/PolicyRule"
           }
+        }
+      }
+    },
+    "ClusterMeshStatus": {
+      "description": "Status of ClusterMesh",
+      "properties": {
+        "clusters": {
+          "description": "List of remote clusters",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RemoteCluster"
+          }
+        },
+        "num-global-services": {
+          "description": "Number of global services",
+          "type": "integer"
         }
       }
     },
@@ -5234,8 +5452,16 @@ func init() {
           "description": "Docker network ID",
           "type": "string"
         },
+        "k8s-namespace": {
+          "description": "K8s namespace for this endpoint",
+          "type": "string"
+        },
+        "k8s-pod-name": {
+          "description": "K8s pod name for this endpoint",
+          "type": "string"
+        },
         "pod-name": {
-          "description": "K8s pod for this endpoint",
+          "description": "K8s pod for this endpoint(Deprecated, use K8sPodName and K8sNamespace instead)",
           "type": "string"
         }
       }
@@ -5353,7 +5579,6 @@ func init() {
       "description": "State of endpoint",
       "type": "string",
       "enum": [
-        "creating",
         "waiting-for-identity",
         "not-ready",
         "waiting-to-regenerate",
@@ -5482,6 +5707,10 @@ func init() {
           "items": {
             "type": "string"
           }
+        },
+        "expiration-uuid": {
+          "description": "The UUID for the expiration timer. Set when expiration has been\nenabled while allocating.\n",
+          "type": "string"
         },
         "gateway": {
           "description": "IP of gateway",
@@ -5679,6 +5908,70 @@ func init() {
         "type": {
           "description": "Type of kvstore",
           "type": "string"
+        }
+      }
+    },
+    "KubeProxyReplacement": {
+      "description": "Status of kube-proxy replacement",
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "object",
+          "properties": {
+            "externalIPs": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "hostReachableServices": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "protocols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "nodePort": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "SNAT",
+                    "DSR",
+                    "HYBRID"
+                  ]
+                },
+                "portMax": {
+                  "type": "integer"
+                },
+                "portMin": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Disabled",
+            "Strict",
+            "Probe",
+            "Partial"
+          ]
         }
       }
     },
@@ -6002,6 +6295,24 @@ func init() {
         }
       }
     },
+    "ProxyRedirect": {
+      "description": "Configured proxy redirection state",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Name of the proxy redirect",
+          "type": "string"
+        },
+        "proxy": {
+          "description": "Name of the proxy this redirect points to",
+          "type": "string"
+        },
+        "proxy-port": {
+          "description": "Host port that this redirect points to",
+          "type": "integer"
+        }
+      }
+    },
     "ProxyStatistics": {
       "description": "Statistics of a set of proxy redirects for an endpoint",
       "type": "object",
@@ -6042,6 +6353,50 @@ func init() {
         },
         "port-range": {
           "description": "Port range used for proxying",
+          "type": "string"
+        },
+        "redirects": {
+          "description": "Detailed description of configured redirects",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProxyRedirect"
+          }
+        },
+        "total-ports": {
+          "description": "Total number of listening proxy ports",
+          "type": "integer"
+        },
+        "total-redirects": {
+          "description": "Total number of ports configured to redirect to proxies",
+          "type": "integer"
+        }
+      }
+    },
+    "RemoteCluster": {
+      "description": "Status of remote cluster",
+      "properties": {
+        "name": {
+          "description": "Name of the cluster",
+          "type": "string"
+        },
+        "num-identities": {
+          "description": "Number of identities in the cluster",
+          "type": "integer"
+        },
+        "num-nodes": {
+          "description": "Number of nodes in the cluster",
+          "type": "integer"
+        },
+        "num-shared-services": {
+          "description": "Number of services in the cluster",
+          "type": "integer"
+        },
+        "ready": {
+          "description": "Indicates readiness of the remote cluser",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "Status of the control plane",
           "type": "string"
         }
       }
@@ -6130,6 +6485,11 @@ func init() {
           "description": "Optional service configuration flags",
           "type": "object",
           "properties": {
+            "healthCheckNodePort": {
+              "description": "Service health check node port",
+              "type": "integer",
+              "format": "uint16"
+            },
             "name": {
               "description": "Service name  (e.g. Kubernetes service name)",
               "type": "string"
@@ -6212,6 +6572,10 @@ func init() {
           "description": "Status of cluster",
           "$ref": "#/definitions/ClusterStatus"
         },
+        "cluster-mesh": {
+          "description": "Status of ClusterMesh",
+          "$ref": "#/definitions/ClusterMeshStatus"
+        },
         "container-runtime": {
           "description": "Status of local container runtime",
           "$ref": "#/definitions/Status"
@@ -6223,6 +6587,10 @@ func init() {
         "ipam": {
           "description": "Status of IP address management",
           "$ref": "#/definitions/IPAMStatus"
+        },
+        "kube-proxy-replacement": {
+          "description": "Status of kube-proxy replacement",
+          "$ref": "#/definitions/KubeProxyReplacement"
         },
         "kubernetes": {
           "description": "Status of Kubernetes integration",
@@ -6320,6 +6688,11 @@ func init() {
       "in": "path",
       "required": true
     },
+    "ipam-expiration": {
+      "type": "boolean",
+      "name": "expiration",
+      "in": "header"
+    },
     "ipam-family": {
       "enum": [
         "ipv4",
@@ -6340,6 +6713,13 @@ func init() {
       "type": "string",
       "name": "owner",
       "in": "query"
+    },
+    "ipam-release-arg": {
+      "type": "string",
+      "description": "IP address or owner name",
+      "name": "ip",
+      "in": "path",
+      "required": true
     },
     "labels": {
       "description": "List of labels\n",

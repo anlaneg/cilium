@@ -39,6 +39,7 @@ var (
 var _ = Describe("NightlyEpsMeasurement", func() {
 
 	var kubectl *helpers.Kubectl
+	var ciliumFilename string
 
 	endpointCount := 45
 	endpointsTimeout := endpointTimeout * time.Duration(endpointCount)
@@ -49,7 +50,8 @@ var _ = Describe("NightlyEpsMeasurement", func() {
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
 		vagrantManifestPath = path.Join(kubectl.BasePath(), manifestPath)
-		DeployCiliumAndDNS(kubectl)
+		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
+		DeployCiliumAndDNS(kubectl, ciliumFilename)
 	})
 	deleteAll := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), endpointsTimeout)
@@ -65,12 +67,13 @@ var _ = Describe("NightlyEpsMeasurement", func() {
 	}
 	AfterAll(func() {
 		deleteAll()
+		kubectl.DeleteCiliumDS()
 		ExpectAllPodsTerminated(kubectl)
 		kubectl.CloseSSHClient()
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace,
+		kubectl.CiliumReport(helpers.CiliumNamespace,
 			"cilium service list",
 			"cilium endpoint list")
 	})
@@ -126,7 +129,7 @@ var _ = Describe("NightlyEpsMeasurement", func() {
 
 		log.WithFields(logrus.Fields{"pod creation time": waitForPodsTime}).Info("")
 
-		ciliumPods, err := kubectl.GetCiliumPods(helpers.KubeSystemNamespace)
+		ciliumPods, err := kubectl.GetCiliumPods(helpers.CiliumNamespace)
 		Expect(err).To(BeNil(), "Cannot retrieve cilium pods")
 
 		runtime := b.Time("Endpoint creation", func() {
@@ -319,8 +322,8 @@ var _ = Describe("NightlyEpsMeasurement", func() {
 var _ = Describe("NightlyExamples", func() {
 
 	var kubectl *helpers.Kubectl
-	var demoPath string
-	var l3Policy, l7Policy string
+	var l3Policy string
+	var ciliumFilename string
 
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
@@ -328,10 +331,11 @@ var _ = Describe("NightlyExamples", func() {
 		demoPath = helpers.ManifestGet(kubectl.BasePath(), "demo.yaml")
 		l3Policy = helpers.ManifestGet(kubectl.BasePath(), "l3-l4-policy.yaml")
 		l7Policy = helpers.ManifestGet(kubectl.BasePath(), "l7-policy.yaml")
+		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace,
+		kubectl.CiliumReport(helpers.CiliumNamespace,
 			"cilium service list",
 			"cilium endpoint list")
 	})
@@ -353,41 +357,75 @@ var _ = Describe("NightlyExamples", func() {
 	})
 
 	Context("Upgrade test", func() {
-		var cleanupCallback = func() { return }
+		var (
+			kubectl *helpers.Kubectl
 
-		BeforeEach(func() {
-			// Delete kube-dns because if not will be a restore the old endpoints
-			// from master instead of create the new ones.
+			cleanupCallback = func() { return }
+		)
+
+		BeforeAll(func() {
+			kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
+
+			demoPath = helpers.ManifestGet(kubectl.BasePath(), "demo.yaml")
+			l7Policy = helpers.ManifestGet(kubectl.BasePath(), "l7-policy.yaml")
+			migrateSVCClient = helpers.ManifestGet(kubectl.BasePath(), "migrate-svc-client.yaml")
+			migrateSVCServer = helpers.ManifestGet(kubectl.BasePath(), "migrate-svc-server.yaml")
 			_ = kubectl.Delete(helpers.DNSDeployment(kubectl.BasePath()))
 
+			kubectl.Delete(migrateSVCClient)
+			kubectl.Delete(migrateSVCServer)
+			kubectl.Delete(l7Policy)
+			kubectl.Delete(demoPath)
+
+			// Delete kube-dns because if not will be a restore the old endpoints
+			// from master instead of create the new ones.
 			_ = kubectl.DeleteResource(
-				"deploy", fmt.Sprintf("-n %s cilium-operator", helpers.KubeSystemNamespace))
+				"deploy", fmt.Sprintf("-n %s kube-dns", helpers.KubeSystemNamespace))
 
-			// Delete etcd operator because sometimes when install from
-			// clean-state the quorum is lost.
-			// ETCD operator maybe is not installed at all, so no assert here.
+			_ = kubectl.DeleteResource(
+				"deploy", fmt.Sprintf("-n %s cilium-operator", helpers.CiliumNamespace))
+			// Sometimes PolicyGen has a lot of pods running around without delete
+			// it. Using this we are sure that we delete before this test start
+			kubectl.Exec(fmt.Sprintf(
+				"%s delete --all pods,svc,cnp -n %s", helpers.KubectlCmd, helpers.DefaultNamespace))
+
 			kubectl.DeleteETCDOperator()
-			ExpectAllPodsTerminated(kubectl)
 
+			ExpectAllPodsTerminated(kubectl)
+		})
+
+		AfterAll(func() {
+			kubectl.CloseSSHClient()
+		})
+
+		AfterFailed(func() {
+			kubectl.CiliumReport(helpers.CiliumNamespace, "cilium endpoint list")
+		})
+
+		JustAfterEach(func() {
+			kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
 		})
 
 		AfterEach(func() {
 			cleanupCallback()
+			ExpectAllPodsTerminated(kubectl)
 		})
 
-		AfterAll(func() {
-			_ = kubectl.ApplyDefault(helpers.DNSDeployment(kubectl.BasePath()))
-		})
-
-		for _, image := range helpers.NightlyStableUpgradesFrom {
-			func(version string) {
-				It(fmt.Sprintf("Update Cilium from %s to master", version), func() {
-					var assertUpgradeSuccessful func()
-					assertUpgradeSuccessful, cleanupCallback = InstallAndValidateCiliumUpgrades(
-						kubectl, image, helpers.CiliumDevImage())
-					assertUpgradeSuccessful()
-				})
-			}(image)
+		for imageVersion, chartVersion := range helpers.NightlyStableUpgradesFrom {
+			func(imageVersion, chartVersion string) {
+				SkipItIf(func() bool { return !helpers.RunsWithKubeProxy() },
+					fmt.Sprintf("Update Cilium from %s to master", imageVersion), func() {
+						var assertUpgradeSuccessful func()
+						assertUpgradeSuccessful, cleanupCallback = InstallAndValidateCiliumUpgrades(
+							kubectl,
+							chartVersion,
+							imageVersion,
+							helpers.CiliumLatestHelmChartVersion,
+							helpers.CiliumLatestImageVersion,
+						)
+						assertUpgradeSuccessful()
+					})
+			}(imageVersion, chartVersion)
 		}
 	})
 
@@ -405,7 +443,8 @@ var _ = Describe("NightlyExamples", func() {
 			AppManifest = kubectl.GetFilePath(GRPCManifest)
 			PolicyManifest = kubectl.GetFilePath(GRPCPolicy)
 
-			DeployCiliumAndDNS(kubectl)
+			ciliumFilename = helpers.TimestampFilename("cilium.yaml")
+			DeployCiliumAndDNS(kubectl, ciliumFilename)
 		})
 
 		AfterAll(func() {

@@ -74,8 +74,8 @@ func identitiesForFQDNSelectorIPs(selectorsWithIPsToUpdate map[policyApi.FQDNSel
 	// AllocateCIDRs. If we for some reason cannot allocate new CIDRs,
 	// we have to undo all of our changes and release the identities.
 	// This is best effort, as releasing can fail as well.
-	usedIdentities := make([]*identity.Identity, 0)
-	selectorIdentitySliceMapping := make(map[policyApi.FQDNSelector][]*identity.Identity)
+	usedIdentities := make([]*identity.Identity, 0, len(selectorsWithIPsToUpdate))
+	selectorIdentitySliceMapping := make(map[policyApi.FQDNSelector][]*identity.Identity, len(selectorsWithIPsToUpdate))
 
 	// Allocate identities for each IPNet and then map to selector
 	for selector, selectorIPs := range selectorsWithIPsToUpdate {
@@ -301,7 +301,7 @@ func (d *Daemon) bootstrapFQDN(restoredEndpoints *endpointRestoreState, preCache
 	if err != nil {
 		return err
 	}
-	proxy.DefaultDNSProxy, err = dnsproxy.StartDNSProxy("", port, d.lookupEPByIP, d.lookupSecIDByIP, d.notifyOnDNSMsg)
+	proxy.DefaultDNSProxy, err = dnsproxy.StartDNSProxy("", port, option.Config.ToFQDNsEnableDNSCompression, d.lookupEPByIP, d.lookupSecIDByIP, d.notifyOnDNSMsg)
 	if err == nil {
 		// Increase the ProxyPort reference count so that it will never get released.
 		err = d.l7Proxy.SetProxyPort(listenerName, proxy.DefaultDNSProxy.BindPort)

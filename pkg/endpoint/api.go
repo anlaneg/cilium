@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -215,6 +215,8 @@ func (e *Endpoint) GetModelRLocked() *models.Endpoint {
 				DockerEndpointID: e.dockerEndpointID,
 				DockerNetworkID:  e.dockerNetworkID,
 				PodName:          e.getK8sNamespaceAndPodName(),
+				K8sPodName:       e.K8sPodName,
+				K8sNamespace:     e.K8sNamespace,
 			},
 			// FIXME GH-3280 When we begin returning endpoint revisions this should
 			// change to return the configured and in-datapath policies.
@@ -252,13 +254,6 @@ func (e *Endpoint) getHealthModel() *models.EndpointHealth {
 			Policy:        models.EndpointHealthStatusPending,
 			Connected:     true,
 			OverallHealth: models.EndpointHealthStatusPending,
-		}
-	case models.EndpointStateCreating:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusBootstrap,
-			Policy:        models.EndpointHealthStatusDisabled,
-			Connected:     true,
-			OverallHealth: models.EndpointHealthStatusDisabled,
 		}
 	case models.EndpointStateWaitingForIdentity:
 		h = models.EndpointHealth{

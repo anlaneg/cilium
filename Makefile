@@ -1,5 +1,4 @@
 include Makefile.defs
-include daemon/bpf.sha
 
 SUBDIRS_CILIUM_CONTAINER := proxylib envoy plugins/cilium-cni bpf cilium daemon cilium-health bugtool
 ifdef LIBNETWORK_PLUGIN
@@ -12,9 +11,6 @@ TESTPKGS_EVAL := $(subst github.com/cilium/cilium/,,$(shell $(CGO_DISABLED) $(GO
 TESTPKGS ?= $(TESTPKGS_EVAL)
 GOLANGVERSION := $(shell $(GO) version 2>/dev/null | grep -Eo '(go[0-9].[0-9])')
 GOLANG_SRCFILES := $(shell for pkg in $(subst github.com/cilium/cilium/,,$(GOFILES)); do find $$pkg -name *.go -print; done | grep -v vendor | sort | uniq)
-BPF_FILES_EVAL := $(shell git ls-files $(ROOT_DIR)/bpf/ | grep -v .gitignore | tr "\n" ' ')
-BPF_FILES ?= $(BPF_FILES_EVAL)
-BPF_SRCFILES := $(subst ../,,$(BPF_FILES))
 
 SWAGGER_VERSION := v0.20.1
 SWAGGER := $(CONTAINER_ENGINE_FULL) run --rm -v $(CURDIR):$(CURDIR) -w $(CURDIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
@@ -38,7 +34,7 @@ JOB_BASE_NAME ?= cilium_test
 
 UTC_DATE=$(shell date -u "+%Y-%m-%d")
 
-GO_VERSION := 1.13.5
+GO_VERSION := $(shell cat GO_VERSION)
 
 # Since there's a bug with NFS or the kernel, the flock syscall hangs the documentation
 # build in the developer VM. For this reason the documentation build is skipped if NFS
@@ -106,7 +102,7 @@ ifeq ($(SKIP_KVSTORES),"false")
 	$(CONTAINER_ENGINE_FULL) run -d \
 		--name "cilium-etcd-test-container" \
 		-p 4002:4001 \
-		quay.io/coreos/etcd:v3.2.17 \
+		$(ETCD_IMAGE) \
 		etcd -name etcd0 \
 		-advertise-client-urls http://0.0.0.0:4001 \
 		-listen-client-urls http://0.0.0.0:4001 \
@@ -148,7 +144,6 @@ unit-tests: start-kvstores
 	$(QUIET) $(MAKE) -C tools/maptool/
 	$(QUIET) $(MAKE) -C test/bpf/
 	test/bpf/unit-test
-	$(QUIET) $(MAKE) -C daemon/ check-bindata
 ifeq ($(SKIP_VET),"false")
 	$(MAKE) govet
 endif
@@ -178,9 +173,11 @@ clean-tags:
 	@$(ECHO_CLEAN) tags
 	@-rm -f cscope.out cscope.in.out cscope.po.out cscope.files tags
 
+cscope.files: $(GOLANG_SRCFILES) $(BPF_SRCFILES)
+	@echo $(GOLANG_SRCFILES) $(BPF_SRCFILES) | sed 's/ /\n/g' | sort > cscope.files
+
 tags: $(GOLANG_SRCFILES) $(BPF_SRCFILES) cscope.files
-	ctags $(GOLANG_SRCFILES) $(BPF_SRCFILES)
-	@ echo $(GOLANG_SRCFILES) $(BPF_SRCFILES) | sed 's/ /\n/g' | sort > cscope.files
+	@ctags $(GOLANG_SRCFILES) $(BPF_SRCFILES)
 	cscope -R -b -q
 
 clean-container:
@@ -191,17 +188,31 @@ clean: clean-container
 	-$(MAKE) -C ./contrib/packaging/rpm clean
 	-rm -f GIT_VERSION
 
-install:
-	$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
+install-bpf:
+	$(QUIET)$(INSTALL) -m 0750 -d $(DESTDIR)$(LOCALSTATEDIR)/lib/cilium
+	-rm -rf $(DESTDIR)$(LOCALSTATEDIR)/lib/cilium/bpf/*
+	$(foreach bpfsrc,$(BPF_SRCFILES), $(INSTALL) -D -m 0644 $(bpfsrc) $(DESTDIR)$(LOCALSTATEDIR)/lib/cilium/$(bpfsrc);)
+
+install: install-bpf
+	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
 	for i in $(SUBDIRS); do $(MAKE) -C $$i install; done
 
-install-container:
-	$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
+install-container: install-bpf
+	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
 	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) -C $$i install; done
 
 # Workaround for not having git in the build environment
 GIT_VERSION: .git
 	echo "$(GIT_VERSION)" >GIT_VERSION
+
+docker-cilium-image-for-developers:
+	# DOCKER_BUILDKIT allows for faster build as well as the ability to use
+	# a dedicated dockerignore file per Dockerfile.
+	DOCKER_BUILDKIT=1 $(CONTAINER_ENGINE_FULL) build \
+	     --build-arg LOCKDEBUG=\
+	     --build-arg V=\
+	     --build-arg LIBNETWORK_PLUGIN=\
+	     -t "cilium/cilium-dev:"latest"" . -f ./cilium-dev.Dockerfile
 
 docker-image: clean docker-image-no-clean docker-operator-image docker-plugin-image
 
@@ -232,9 +243,6 @@ docker-plugin-image: GIT_VERSION
 	$(CONTAINER_ENGINE_FULL) build --build-arg LOCKDEBUG=${LOCKDEUBG} -f cilium-docker-plugin.Dockerfile -t "cilium/docker-plugin:$(DOCKER_IMAGE_TAG)" .
 	$(QUIET)echo "Push like this when ready:"
 	$(QUIET)echo "docker push cilium/docker-plugin:$(DOCKER_IMAGE_TAG)"
-
-docker-image-init:
-	$(QUIET)cd contrib/packaging/docker && ${CONTAINER_ENGINE} build -t "cilium/cilium-init:$(UTC_DATE)" -f Dockerfile.init .
 
 docker-image-runtime:
 	cd contrib/packaging/docker && ${CONTAINER_ENGINE} build -t "cilium/cilium-runtime:$(UTC_DATE)" -f Dockerfile.runtime .
@@ -270,6 +278,9 @@ generate-health-api: api/v1/health/openapi.yaml
 
 generate-k8s-api:
 	$(call generate_k8s_api_all,github.com/cilium/cilium/pkg/k8s/apis,"cilium.io:v2")
+	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg/aws,"eni:types")
+	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"azure:types")
+	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"ipam:types")
 	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"policy:api")
 	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:loadbalancer")
 	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:k8s")
@@ -449,7 +460,7 @@ postcheck: build
 minikube:
 	$(QUIET) contrib/scripts/minikube.sh
 
-update-golang: update-golang-dockerfiles update-travis-go-version
+update-golang: update-golang-dockerfiles update-travis-go-version update-test-go-version
 
 update-golang-dockerfiles:
 	$(QUIET) sed -i 's/GO_VERSION .*/GO_VERSION $(GO_VERSION)/g' Dockerfile.builder
@@ -459,6 +470,11 @@ update-golang-dockerfiles:
 update-travis-go-version:
 	$(QUIET) sed -e 's/TRAVIS_GO_VERSION/$(GO_VERSION)/g' .travis.yml.tmpl > .travis.yml
 	@echo "Updated go version in .travis.yml to $(GO_VERSION)"
+
+update-test-go-version:
+	$(QUIET) sed -i 's/GO_VERSION=.*/GO_VERSION="$(GO_VERSION)"/g' test/kubernetes-test.sh
+	$(QUIET) sed -i 's/GOLANG_VERSION=.*/GOLANG_VERSION="$(GO_VERSION)"/g' test/packet/scripts/install.sh
+	@echo "Updated go version in test scripts to $(GO_VERSION)"
 
 .PHONY: force generate-api generate-health-api install
 force :;

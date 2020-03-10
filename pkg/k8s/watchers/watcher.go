@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/k8s"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
@@ -58,10 +59,12 @@ const (
 	k8sAPIGroupCiliumNodeV2                     = "cilium/v2::CiliumNode"
 	k8sAPIGroupCiliumEndpointV2                 = "cilium/v2::CiliumEndpoint"
 	cacheSyncTimeout                            = 3 * time.Minute
+	K8sAPIGroupEndpointSliceV1Beta1Discovery    = "discovery/v1beta1::EndpointSlice"
 
 	metricCNP            = "CiliumNetworkPolicy"
 	metricCCNP           = "CiliumClusterwideNetworkPolicy"
 	metricEndpoint       = "Endpoint"
+	metricEndpointSlice  = "EndpointSlice"
 	metricKNP            = "NetworkPolicy"
 	metricNS             = "Namespace"
 	metricCiliumNode     = "CiliumNode"
@@ -121,7 +124,7 @@ type svcManager interface {
 	DeleteService(frontend loadbalancer.L3n4Addr) (bool, error)
 	UpsertService(frontend loadbalancer.L3n4AddrID, backends []loadbalancer.Backend,
 		svcType loadbalancer.SVCType, svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-		svcName, svcNamespace string) (bool, loadbalancer.ID, error)
+		svcHealthCheckNodePort uint16, svcName, svcNamespace string) (bool, loadbalancer.ID, error)
 }
 
 type K8sWatcher struct {
@@ -163,6 +166,7 @@ type K8sWatcher struct {
 	podStoreOnce sync.Once
 
 	namespaceStore cache.Store
+	datapath       datapath.Datapath
 }
 
 func NewK8sWatcher(
@@ -171,11 +175,12 @@ func NewK8sWatcher(
 	policyManager policyManager,
 	policyRepository policyRepository,
 	svcManager svcManager,
+	datapath datapath.Datapath,
 ) *K8sWatcher {
 	return &K8sWatcher{
 		k8sResourceSynced:         map[string]<-chan struct{}{},
 		k8sResourceSyncedStopWait: map[string]bool{},
-		K8sSvcCache:               k8s.NewServiceCache(),
+		K8sSvcCache:               k8s.NewServiceCache(datapath.LocalNodeAddressing()),
 		endpointManager:           endpointManager,
 		nodeDiscoverManager:       nodeDiscoverManager,
 		policyManager:             policyManager,
@@ -183,6 +188,7 @@ func NewK8sWatcher(
 		svcManager:                svcManager,
 		controllersStarted:        make(chan struct{}),
 		podStoreSet:               make(chan struct{}),
+		datapath:                  datapath,
 	}
 }
 
@@ -411,7 +417,19 @@ func (k *K8sWatcher) EnableK8sWatcher(queueSize uint) error {
 	// kubernetes endpoints
 	serEps := serializer.NewFunctionQueue(queueSize)
 	swgEps := lock.NewStoppableWaitGroup()
-	k.endpointsInit(k8s.Client(), serEps, swgEps)
+
+	// We only enable either "Endpoints" or "EndpointSlice"
+	switch {
+	case k8s.SupportsEndpointSlice():
+		connected := k.endpointSlicesInit(k8s.Client(), serEps, swgEps)
+		// the cluster has endpoint slices so we should not check for v1.Endpoints
+		if connected {
+			break
+		}
+		fallthrough
+	default:
+		k.endpointsInit(k8s.Client(), serEps, swgEps)
+	}
 
 	// cilium network policies
 	serCNPs := serializer.NewFunctionQueue(queueSize)
@@ -579,7 +597,6 @@ func (k *K8sWatcher) delK8sSVCs(svc k8s.ServiceID, svcInfo *k8s.Service, se *k8s
 func genCartesianProduct(
 	fe net.IP,
 	svcType loadbalancer.SVCType,
-	svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
 	ports map[loadbalancer.FEPortName]*loadbalancer.L4Addr,
 	bes *k8s.Endpoints,
 ) []loadbalancer.SVC {
@@ -611,9 +628,8 @@ func genCartesianProduct(
 					},
 					ID: loadbalancer.ID(0),
 				},
-				Backends:      besValues,
-				Type:          svcType,
-				TrafficPolicy: svcTrafficPolicy,
+				Backends: besValues,
+				Type:     svcType,
 			})
 	}
 	return svcs
@@ -632,16 +648,16 @@ func datapathSVCs(svc *k8s.Service, endpoints *k8s.Endpoints) (svcs []loadbalanc
 		clusterIPPorts[fePortName] = fePort
 	}
 	if svc.FrontendIP != nil {
-		dpSVC := genCartesianProduct(svc.FrontendIP, loadbalancer.SVCTypeClusterIP, svc.TrafficPolicy, clusterIPPorts, endpoints)
+		dpSVC := genCartesianProduct(svc.FrontendIP, loadbalancer.SVCTypeClusterIP, clusterIPPorts, endpoints)
 		svcs = append(svcs, dpSVC...)
 	}
 	for _, ip := range svc.LoadBalancerIPs {
-		dpSVC := genCartesianProduct(ip, loadbalancer.SVCTypeLoadBalancer, svc.TrafficPolicy, clusterIPPorts, endpoints)
+		dpSVC := genCartesianProduct(ip, loadbalancer.SVCTypeLoadBalancer, clusterIPPorts, endpoints)
 		svcs = append(svcs, dpSVC...)
 	}
 
 	for _, k8sExternalIP := range svc.K8sExternalIPs {
-		dpSVC := genCartesianProduct(k8sExternalIP, loadbalancer.SVCTypeExternalIPs, svc.TrafficPolicy, clusterIPPorts, endpoints)
+		dpSVC := genCartesianProduct(k8sExternalIP, loadbalancer.SVCTypeExternalIPs, clusterIPPorts, endpoints)
 		svcs = append(svcs, dpSVC...)
 	}
 
@@ -650,10 +666,17 @@ func datapathSVCs(svc *k8s.Service, endpoints *k8s.Endpoints) (svcs []loadbalanc
 			nodePortPorts := map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
 				fePortName: &nodePortFE.L4Addr,
 			}
-			dpSVC := genCartesianProduct(nodePortFE.IP, loadbalancer.SVCTypeNodePort, svc.TrafficPolicy, nodePortPorts, endpoints)
+			dpSVC := genCartesianProduct(nodePortFE.IP, loadbalancer.SVCTypeNodePort, nodePortPorts, endpoints)
 			svcs = append(svcs, dpSVC...)
 		}
 	}
+
+	// apply common service properties
+	for i := range svcs {
+		svcs[i].TrafficPolicy = svc.TrafficPolicy
+		svcs[i].HealthCheckNodePort = svc.HealthCheckNodePort
+	}
+
 	return svcs
 }
 
@@ -710,7 +733,7 @@ func (k *K8sWatcher) addK8sSVCs(svcID k8s.ServiceID, oldSvc, svc *k8s.Service, e
 
 	for _, dpSvc := range svcs {
 		if _, _, err := k.svcManager.UpsertService(dpSvc.Frontend, dpSvc.Backends, dpSvc.Type,
-			dpSvc.TrafficPolicy, svcID.Name, svcID.Namespace); err != nil {
+			dpSvc.TrafficPolicy, dpSvc.HealthCheckNodePort, svcID.Name, svcID.Namespace); err != nil {
 			scopedLog.WithError(err).Error("Error while inserting service in LB map")
 		}
 	}

@@ -23,13 +23,14 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/versioncheck"
 
 	go_version "github.com/blang/semver"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -147,6 +148,12 @@ func CheckMinRequirements() {
 			"version is %s; kernel version that is running is: %s", minKernelVer, kernelVersion)
 	}
 
+	_, err = netlink.RuleList(netlink.FAMILY_V4)
+	if err == unix.EAFNOSUPPORT {
+		log.WithError(err).Error("Policy routing:NOT OK. " +
+			"Please enable kernel configuration item CONFIG_IP_MULTIPLE_TABLES")
+	}
+
 	if option.Config.EnableIPv6 {
 		if _, err := os.Stat("/proc/net/if_inet6"); os.IsNotExist(err) {
 			log.Fatalf("kernel: ipv6 is enabled in agent but ipv6 is either disabled or not compiled in the kernel")
@@ -183,16 +190,6 @@ func CheckMinRequirements() {
 				log.Warn("llc version was compiled in debug mode, expect higher latency!")
 			}
 		}
-		// /usr/include/gnu/stubs-32.h is installed by 'glibc-devel.i686' in fedora
-		// /usr/include/sys/cdefs.h is installed by 'libc6-dev-i386' in ubuntu
-		// both files exist on both systems but cdefs.h already exists in fedora
-		// without 'glibc-devel.i686' so we check for 'stubs-32.h first.
-		if _, err := os.Stat("/usr/include/gnu/stubs-32.h"); os.IsNotExist(err) {
-			log.Fatal("linking environment: NOT OK, please make sure you have 'glibc-devel.i686' if you use fedora system or 'libc6-dev-i386' if you use ubuntu system")
-		}
-		if _, err := os.Stat("/usr/include/sys/cdefs.h"); os.IsNotExist(err) {
-			log.Fatal("linking environment: NOT OK, please make sure you have 'libc6-dev-i386' in your ubuntu system")
-		}
 		log.Info("linking environment: OK!")
 	}
 
@@ -202,6 +199,9 @@ func CheckMinRequirements() {
 	}
 	if err := os.Chdir(option.Config.LibDir); err != nil {
 		log.WithError(err).WithField(logfields.Path, option.Config.LibDir).Fatal("Could not change to runtime directory")
+	}
+	if _, err := os.Stat(option.Config.BpfDir); os.IsNotExist(err) {
+		log.WithError(err).Fatalf("BPF template directory: NOT OK. Please run 'make install-bpf'")
 	}
 	probeScript := filepath.Join(option.Config.BpfDir, "run_probes.sh")
 	if err := exec.Command(probeScript, option.Config.BpfDir, option.Config.StateDir).Run(); err != nil {
@@ -214,5 +214,12 @@ func CheckMinRequirements() {
 
 	checkBPFLogs("bpf_requirements", true)
 	checkBPFLogs("bpf_features", false)
-	bpf.ReadFeatureProbes(featuresFilePath)
+
+	// bpftool checks
+	if !option.Config.DryMode {
+		probeManager := probes.NewProbeManager()
+		if err := probeManager.SystemConfigProbes(); err != nil {
+			log.WithError(err).Warning("BPF system config check: NOT OK.")
+		}
+	}
 }

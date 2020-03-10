@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,9 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
+	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
+	azureTypes "github.com/cilium/cilium/pkg/azure/types"
+	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	k8sCiliumUtils "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
@@ -384,10 +387,6 @@ type EndpointStatus struct {
 	// - disconnecting
 	// - disconnected
 	State string `json:"state,omitempty"`
-
-	// Deprecated fields
-	Spec   *deprecatedEndpointConfigurationSpec `json:"spec,omitempty"`
-	Status *DeprecatedEndpointStatus            `json:"status,omitempty"`
 }
 
 // EndpointStatusLogEntries is the maximum number of log entries in EndpointStatus.Log
@@ -476,36 +475,6 @@ func (a AllowedIdentityList) Sort() {
 	})
 }
 
-// +k8s:deepcopy-gen=false
-type deprecatedEndpointConfigurationSpec struct {
-	LabelConfiguration *deprecatedLabelConfigurationSpec `json:"label-configuration,omitempty"`
-	Options            map[string]string                 `json:"options,omitempty"`
-}
-
-type deprecatedLabelConfigurationSpec struct {
-	User []string `json:"user"`
-}
-
-// DeprecatedEndpointStatus is the original endpoint status provided for
-// backwards compatibility.
-//
-// See EndpointStatus for descriptions of fields
-// +k8s:deepcopy-gen=false
-type DeprecatedEndpointStatus struct {
-	Controllers ControllerList                 `json:"controllers,omitempty"`
-	Identity    *EndpointIdentity              `json:"identity,omitempty"`
-	Log         []*models.EndpointStatusChange `json:"log,omitempty"`
-	Networking  *EndpointNetworking            `json:"networking,omitempty"`
-	State       string                         `json:"state,omitempty"`
-
-	// These fields are no longer populated
-	Realized            *deprecatedEndpointConfigurationSpec `json:"realized,omitempty"`
-	Labels              *deprecatedLabelConfigurationStatus  `json:"labels,omitempty"`
-	Policy              *models.EndpointPolicyStatus         `json:"policy,omitempty"`
-	ExternalIdentifiers *models.EndpointIdentifiers          `json:"external-identifiers,omitempty"`
-	Health              *models.EndpointHealth               `json:"health,omitempty"`
-}
-
 // EndpointIdentity is the identity information of an endpoint
 type EndpointIdentity struct {
 	// ID is the numeric identity of the endpoint
@@ -513,9 +482,6 @@ type EndpointIdentity struct {
 
 	// Labels is the list of labels associated with the identity
 	Labels []string `json:"labels,omitempty"`
-
-	// Deprecated fields
-	LabelsSHA256 string `json:"labelsSHA256,omitempty"`
 }
 
 // +genclient
@@ -600,20 +566,6 @@ type EndpointNetworking struct {
 	// NodeIP is the IP of the node the endpoint is running on. The IP must
 	// be reachable between nodes.
 	NodeIP string `json:"node,omitempty"`
-
-	// Deprecated fields
-	HostAddressing *models.NodeAddressing `json:"host-addressing,omitempty"`
-	HostMac        string                 `json:"host-mac,omitempty"`
-	InterfaceIndex int64                  `json:"interface-index,omitempty"`
-	InterfaceName  string                 `json:"interface-name,omitempty"`
-	Mac            string                 `json:"mac,omitempty"`
-}
-
-type deprecatedLabelConfigurationStatus struct {
-	Derived          []string                         `json:"derived"`
-	Disabled         []string                         `json:"disabled"`
-	Realized         deprecatedLabelConfigurationSpec `json:"realized,omitempty"`
-	SecurityRelevant []string                         `json:"security-relevant"`
 }
 
 // DeepCopyInto is an inefficient hack to allow reusing models.Endpoint in the
@@ -713,14 +665,19 @@ type NodeSpec struct {
 	// ENI is the AWS ENI specific configuration
 	//
 	// +optional
-	ENI ENISpec `json:"eni,omitempty"`
+	ENI eniTypes.ENISpec `json:"eni,omitempty"`
+
+	// Azure is the Azure specific configuration
+	//
+	// +optional
+	Azure azureTypes.AzureSpec `json:"azure,omitempty"`
 
 	// IPAM is the address management specification. This section can be
 	// populated by a user or it can be automatically populated by an IPAM
 	// operator
 	//
 	// +optional
-	IPAM IPAMSpec `json:"ipam,omitempty"`
+	IPAM ipamTypes.IPAMSpec `json:"ipam,omitempty"`
 }
 
 // HealthAddressingSpec is the addressing information required to do
@@ -746,232 +703,22 @@ type EncryptionSpec struct {
 	Key int `json:"key,omitempty"`
 }
 
-// ENISpec is the ENI specification of a node. This specification is considered
-// by the cilium-operator to act as an IPAM operator and makes ENI IPs available
-// via the IPAMSpec section.
-//
-// The ENI specification can either be provided explicitly by the user or the
-// cilium agent running on the node can be instructed to create the CiliumNode
-// custom resource along with an ENI specification when the node registers
-// itself to the Kubernetes cluster.
-type ENISpec struct {
-	// InstanceID is the AWS InstanceId of the node. The InstanceID is used
-	// to retrieve AWS metadata for the node.
-	InstanceID string `json:"instance-id,omitempty"`
-
-	// InstanceType is the AWS EC2 instance type, e.g. "m5.large"
-	InstanceType string `json:"instance-type,omitempty"`
-
-	// MinAllocate is the minimum number of IPs that must be allocated when
-	// the node is first bootstrapped. It defines the minimum base socket
-	// of addresses that must be available. After reaching this watermark,
-	// the PreAllocate and MaxAboveWatermark logic takes over to continue
-	// allocating IPs.
-	//
-	// +optional
-	MinAllocate int `json:"min-allocate,omitempty"`
-
-	// PreAllocate defines the number of IP addresses that must be
-	// available for allocation in the IPAMspec. It defines the buffer of
-	// addresses available immediately without requiring cilium-operator to
-	// get involved.
-	//
-	// +optional
-	PreAllocate int `json:"pre-allocate,omitempty"`
-
-	// MaxAboveWatermark is the maximum number of addresses to allocate
-	// beyond the addresses needed to reach the PreAllocate watermark.
-	// Going above the watermark can help reduce the number of API calls to
-	// allocate IPs, e.g. when a new ENI is allocated, as many secondary
-	// IPs as possible are allocated. Limiting the amount can help reduce
-	// waste of IPs.
-	//
-	// +optional
-	MaxAboveWatermark int `json:"max-above-watermark,omitempty"`
-
-	// FirstInterfaceIndex is the index of the first ENI to use for IP
-	// allocation, e.g. if the node has eth0, eth1, eth2 and
-	// FirstInterfaceIndex is set to 1, then only eth1 and eth2 will be
-	// used for IP allocation, eth0 will be ignored for PodIP allocation.
-	//
-	// +optional
-	FirstInterfaceIndex *int `json:"first-interface-index,omitempty"`
-
-	// SecurityGroups is the list of security groups to attach to any ENI
-	// that is created and attached to the instance.
-	//
-	// +optional
-	SecurityGroups []string `json:"security-groups,omitempty"`
-
-	// SecurityGroupTags is the list of tags to use when evaliating what
-	// AWS security groups to use for the ENI.
-	//
-	// +optional
-	SecurityGroupTags map[string]string `json:"security-group-tags,omitempty"`
-
-	// SubnetTags is the list of tags to use when evaluating what AWS
-	// subnets to use for ENI and IP allocation
-	//
-	// +optional
-	SubnetTags map[string]string `json:"subnet-tags,omitempty"`
-
-	// VpcID is the VPC ID to use when allocating ENIs
-	VpcID string `json:"vpc-id,omitempty"`
-
-	// AvailabilityZone is the availability zone to use when allocating
-	// ENIs
-	AvailabilityZone string `json:"availability-zone,omitempty"`
-
-	// DeleteOnTermination defines that the ENI should be deleted when the
-	// associated instance is terminated. If the parameter is not set the
-	// default behavior is to delete the ENI on instance termination.
-	//
-	// +optional
-	DeleteOnTermination *bool `json:"delete-on-termination,omitempty"`
-}
-
-// IPAMSpec is the IPAM specification of the node
-type IPAMSpec struct {
-	// Pool is the list of IPs available to the node for allocation. When
-	// an IP is used, the IP will remain on this list but will be added to
-	// Status.IPAM.Used
-	//
-	// +optional
-	Pool map[string]AllocationIP `json:"pool,omitempty"`
-
-	// PodCIDRs is the list of CIDRs available to the node for allocation.
-	// When an IP is used, the IP will be added to Status.IPAM.Used
-	//
-	// +optional
-	PodCIDRs []string `json:"podCIDRs,omitempty"`
-}
-
 // NodeStatus is the status of a node
 type NodeStatus struct {
-	// ENI is the AWS ENi specific status of the node
+	// ENI is the AWS ENI specific status of the node
 	//
 	// +optional
-	ENI ENIStatus `json:"eni,omitempty"`
+	ENI eniTypes.ENIStatus `json:"eni,omitempty"`
+
+	// Azure is the Azure specific status of the node
+	//
+	// +optional
+	Azure azureTypes.AzureStatus `json:"azure,omitempty"`
 
 	// IPAM is the IPAM status of the node
 	//
 	// +optional
-	IPAM IPAMStatus `json:"ipam,omitempty"`
-}
-
-// IPAMStatus is the IPAM status of a node
-type IPAMStatus struct {
-	// Used lists all IPs out of Spec.IPAM.Pool which have been allocated
-	// and are in use.
-	//
-	// +optional
-	Used map[string]AllocationIP `json:"used,omitempty"`
-}
-
-// AllocationIP is an IP which is available for allocation, or already
-// has been allocated
-type AllocationIP struct {
-	// Owner is the owner of the IP. This field is set if the IP has been
-	// allocated. It will be set to the pod name or another identifier
-	// representing the usage of the IP
-	//
-	// The owner field is left blank for an entry in Spec.IPAM.Pool and
-	// filled out as the IP is used and also added to Status.IPAM.Used.
-	//
-	// +optional
-	Owner string `json:"owner,omitempty"`
-
-	// Resource is set for both available and allocated IPs, it represents
-	// what resource the IP is associated with, e.g. in combination with
-	// AWS ENI, this will refer to the ID of the ENI
-	//
-	// +optional
-	Resource string `json:"resource,omitempty"`
-}
-
-// ENIStatus is the status of ENI addressing of the node
-type ENIStatus struct {
-	// ENIs is the list of ENIs on the node
-	//
-	// +optional
-	ENIs map[string]ENI `json:"enis,omitempty"`
-}
-
-// ENI represents an AWS Elastic Network Interface
-//
-// More details:
-// https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-eni.html
-type ENI struct {
-	// ID is the ENI ID
-	//
-	// +optional
-	ID string `json:"id,omitempty"`
-
-	// IP is the primary IP of the ENI
-	//
-	// +optional
-	IP string `json:"ip,omitempty"`
-
-	// MAC is the mac address of the ENI
-	//
-	// +optional
-	MAC string `json:"mac,omitempty"`
-
-	// AvailabilityZone is the availability zone of the ENI
-	//
-	// +optional
-	AvailabilityZone string `json:"availability-zone,omitempty"`
-
-	// Description is the description field of the ENI
-	//
-	// +optional
-	Description string `json:"description,omitempty"`
-
-	// Number is the interface index, it used in combination with
-	// FirstInterfaceIndex
-	//
-	// +optional
-	Number int `json:"number,omitempty"`
-
-	// Subnet is the subnet the ENI is associated with
-	//
-	// +optional
-	Subnet AwsSubnet `json:"subnet,omitempty"`
-
-	// VPC is the VPC information to which the ENI is attached to
-	//
-	// +optional
-	VPC AwsVPC `json:"vpc,omitempty"`
-
-	// Addresses is the list of all IPs associated with the ENI, including
-	// all secondary addresses
-	//
-	// +optional
-	Addresses []string `json:"addresses,omitempty"`
-
-	// SecurityGroups are the security groups associated with the ENI
-	SecurityGroups []string `json:"security-groups,omitempty"`
-}
-
-// AwsSubnet stores information regarding an AWS subnet
-type AwsSubnet struct {
-	// ID is the ID of the subnet
-	ID string `json:"id,omitempty"`
-
-	// CIDR is the CIDR range associated with the subnet
-	CIDR string `json:"cidr,omitempty"`
-}
-
-// AwsVPC stores information regarding an AWS VPC
-type AwsVPC struct {
-	/// ID is the ID of a VPC
-	ID string `json:"id,omitempty"`
-
-	// PrimaryCIDR is the primary CIDR of the VPC
-	PrimaryCIDR string `json:"primary-cidr,omitempty"`
-
-	// CIDRs is the list of CIDR ranges associated with the VPC
-	CIDRs []string `json:"cidrs,omitempty"`
+	IPAM ipamTypes.IPAMStatus `json:"ipam,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

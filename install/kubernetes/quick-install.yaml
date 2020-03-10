@@ -1,4 +1,18 @@
 ---
+# Source: cilium/charts/agent/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cilium
+  namespace: kube-system
+---
+# Source: cilium/charts/operator/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cilium-operator
+  namespace: kube-system
+---
 # Source: cilium/charts/config/templates/configmap.yaml
 apiVersion: v1
 kind: ConfigMap
@@ -61,6 +75,10 @@ data:
   bpf-ct-global-tcp-max: "524288"
   bpf-ct-global-any-max: "262144"
 
+  # bpf-nat-global-max specified the maximum number of entries in the BPF NAT
+  # table.
+  bpf-nat-global-max: "841429"
+
   # Pre-allocation of map entries allows per-packet latency to be reduced, at
   # the expense of up-front memory allocation for the entries in the maps. The
   # default value below will minimize memory usage in the default installation;
@@ -118,28 +136,20 @@ data:
   wait-bpf-mount: "false"
 
   masquerade: "true"
-
+  enable-xt-socket-fallback: "true"
   install-iptables-rules: "true"
   auto-direct-node-routes: "false"
+  kube-proxy-replacement:  "probe"
+  enable-host-reachable-services: "false"
+  enable-external-ips: "false"
   enable-node-port: "false"
+  node-port-mode: "hybrid"
   enable-well-known-identities: "false"
+  enable-remote-node-identity: "true"
 
----
-# Source: cilium/charts/agent/templates/serviceaccount.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cilium
-  namespace: kube-system
-
----
-# Source: cilium/charts/operator/templates/serviceaccount.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cilium-operator
-  namespace: kube-system
-
+  synchronize-k8s-nodes: "true"
+  policy-audit-mode: "false"
+  operator-api-serve-addr: '127.0.0.1:9234'
 ---
 # Source: cilium/charts/agent/templates/clusterrole.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -151,6 +161,14 @@ rules:
   - networking.k8s.io
   resources:
   - networkpolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
   verbs:
   - get
   - list
@@ -208,7 +226,6 @@ rules:
   - ciliumidentities/status
   verbs:
   - '*'
-
 ---
 # Source: cilium/charts/operator/templates/clusterrole.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -227,6 +244,14 @@ rules:
   - list
   - watch
   - delete
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -258,7 +283,6 @@ rules:
   - ciliumidentities/status
   verbs:
   - '*'
-
 ---
 # Source: cilium/charts/agent/templates/clusterrolebinding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -273,7 +297,6 @@ subjects:
 - kind: ServiceAccount
   name: cilium
   namespace: kube-system
-
 ---
 # Source: cilium/charts/operator/templates/clusterrolebinding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -288,7 +311,6 @@ subjects:
 - kind: ServiceAccount
   name: cilium-operator
   namespace: kube-system
-
 ---
 # Source: cilium/charts/agent/templates/daemonset.yaml
 apiVersion: apps/v1
@@ -318,6 +340,31 @@ spec:
         - --config-dir=/tmp/cilium/config-map
         command:
         - cilium-agent
+        livenessProbe:
+          exec:
+            command:
+            - cilium
+            - status
+            - --brief
+          failureThreshold: 10
+          # The initial delay for the liveness probe is intentionally large to
+          # avoid an endless kill & restart cycle if in the event that the initial
+          # bootstrapping takes longer than expected.
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - cilium
+            - status
+            - --brief
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 5
         env:
         - name: K8S_NODE_NAME
           valueFrom:
@@ -367,32 +414,7 @@ spec:
             exec:
               command:
               - /cni-uninstall.sh
-        livenessProbe:
-          exec:
-            command:
-            - cilium
-            - status
-            - --brief
-          failureThreshold: 10
-          # The initial delay for the liveness probe is intentionally large to
-          # avoid an endless kill & restart cycle if in the event that the initial
-          # bootstrapping takes longer than expected.
-          initialDelaySeconds: 120
-          periodSeconds: 30
-          successThreshold: 1
-          timeoutSeconds: 5
         name: cilium-agent
-        readinessProbe:
-          exec:
-            command:
-            - cilium
-            - status
-            - --brief
-          failureThreshold: 3
-          initialDelaySeconds: 5
-          periodSeconds: 30
-          successThreshold: 1
-          timeoutSeconds: 5
         securityContext:
           capabilities:
             add:
@@ -457,6 +479,10 @@ spec:
           mountPropagation: HostToContainer
         - mountPath: /var/run/cilium
           name: cilium-run
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
       restartPolicy: Always
       priorityClassName: system-node-critical
       serviceAccount: cilium
@@ -508,7 +534,6 @@ spec:
     rollingUpdate:
       maxUnavailable: 2
     type: RollingUpdate
-
 ---
 # Source: cilium/charts/operator/templates/deployment.yaml
 apiVersion: apps/v1
@@ -539,61 +564,25 @@ spec:
     spec:
       containers:
       - args:
+        - --config-dir=/tmp/cilium/config-map
         - --debug=$(CILIUM_DEBUG)
-        - --identity-allocation-mode=$(CILIUM_IDENTITY_ALLOCATION_MODE)
         command:
         - cilium-operator
         env:
-        - name: CILIUM_K8S_NAMESPACE
-          valueFrom:
-            fieldRef:
-              apiVersion: v1
-              fieldPath: metadata.namespace
         - name: K8S_NODE_NAME
           valueFrom:
             fieldRef:
               apiVersion: v1
               fieldPath: spec.nodeName
+        - name: CILIUM_K8S_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
         - name: CILIUM_DEBUG
           valueFrom:
             configMapKeyRef:
               key: debug
-              name: cilium-config
-              optional: true
-        - name: CILIUM_CLUSTER_NAME
-          valueFrom:
-            configMapKeyRef:
-              key: cluster-name
-              name: cilium-config
-              optional: true
-        - name: CILIUM_CLUSTER_ID
-          valueFrom:
-            configMapKeyRef:
-              key: cluster-id
-              name: cilium-config
-              optional: true
-        - name: CILIUM_IPAM
-          valueFrom:
-            configMapKeyRef:
-              key: ipam
-              name: cilium-config
-              optional: true
-        - name: CILIUM_DISABLE_ENDPOINT_CRD
-          valueFrom:
-            configMapKeyRef:
-              key: disable-endpoint-crd
-              name: cilium-config
-              optional: true
-        - name: CILIUM_KVSTORE
-          valueFrom:
-            configMapKeyRef:
-              key: kvstore
-              name: cilium-config
-              optional: true
-        - name: CILIUM_KVSTORE_OPT
-          valueFrom:
-            configMapKeyRef:
-              key: kvstore-opt
               name: cilium-config
               optional: true
         - name: AWS_ACCESS_KEY_ID
@@ -614,38 +603,29 @@ spec:
               key: AWS_DEFAULT_REGION
               name: cilium-aws
               optional: true
-        - name: CILIUM_IDENTITY_ALLOCATION_MODE
-          valueFrom:
-            configMapKeyRef:
-              key: identity-allocation-mode
-              name: cilium-config
-              optional: true
         image: "docker.io/cilium/operator:latest"
         imagePullPolicy: Always
         name: cilium-operator
         livenessProbe:
           httpGet:
+            host: '127.0.0.1'
             path: /healthz
             port: 9234
             scheme: HTTP
           initialDelaySeconds: 60
           periodSeconds: 10
           timeoutSeconds: 3
+        volumeMounts:
+        - mountPath: /tmp/cilium/config-map
+          name: cilium-config-path
+          readOnly: true
       hostNetwork: true
       restartPolicy: Always
+      priorityClassName: system-cluster-critical
       serviceAccount: cilium-operator
       serviceAccountName: cilium-operator
-
----
-# Source: cilium/charts/agent/templates/servicemonitor.yaml
-
----
-# Source: cilium/charts/agent/templates/svc.yaml
-
-
----
-# Source: cilium/charts/operator/templates/servicemonitor.yaml
-
----
-# Source: cilium/charts/operator/templates/svc.yaml
-
+      volumes:
+        # To read the configuration from the config map
+      - configMap:
+          name: cilium-config
+        name: cilium-config-path

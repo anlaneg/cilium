@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 	"path"
+	"testing"
 	"time"
 
 	"github.com/cilium/cilium/pkg/checker"
@@ -42,7 +43,7 @@ func (e *EtcdSuite) SetUpTest(c *C) {
 }
 
 func (e *EtcdSuite) TearDownTest(c *C) {
-	Close()
+	Client().Close()
 }
 
 type MaintenanceMocker struct {
@@ -200,22 +201,23 @@ endpoints:
 		k8sNamespace string
 	}
 	tests := []struct {
-		args args
-		want bool
+		args        args
+		wantSvcName string
+		wantBool    bool
 	}{
 		{
 			args: args{
 				backend: consulName,
 			},
 			// it is not etcd
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
 				backend: EtcdBackendName,
 			},
 			// misses configuration
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
@@ -225,8 +227,9 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
+			wantSvcName: "http://cilium-etcd-client.kube-system.svc",
 			// everything valid
-			want: true,
+			wantBool: true,
 		},
 		{
 			args: args{
@@ -237,7 +240,7 @@ endpoints:
 				k8sNamespace: "kube-system",
 			},
 			// domain name misses protocol
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
@@ -247,7 +250,7 @@ endpoints:
 				k8sNamespace: "kube-system",
 			},
 			// backend not specified
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
@@ -257,8 +260,9 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
+			wantSvcName: "https://cilium-etcd-client.kube-system.svc:2379",
 			// config file with everything setup
-			want: true,
+			wantBool: true,
 		},
 		{
 			args: args{
@@ -269,7 +273,8 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
-			want: true,
+			wantSvcName: "foo-bar.kube-system.svc",
+			wantBool:    true,
 		},
 		{
 			args: args{
@@ -280,7 +285,7 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
@@ -290,7 +295,7 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
@@ -301,7 +306,7 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
-			want: false,
+			wantBool: false,
 		},
 		{
 			args: args{
@@ -312,7 +317,8 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
-			want: true,
+			wantSvcName: "https://cilium-etcd-client.kube-system.svc",
+			wantBool:    true,
 		},
 		{
 			args: args{
@@ -323,13 +329,15 @@ endpoints:
 				},
 				k8sNamespace: "kube-system",
 			},
+			wantSvcName: "https://cilium-etcd-client.kube-system.svc:2379",
 			// config file with everything setup
-			want: true,
+			wantBool: true,
 		},
 	}
 	for i, tt := range tests {
-		got := IsEtcdOperator(tt.args.backend, tt.args.opts, tt.args.k8sNamespace)
-		c.Assert(got, Equals, tt.want, Commentf("Test %d", i))
+		gotSvcName, gotBool := IsEtcdOperator(tt.args.backend, tt.args.opts, tt.args.k8sNamespace)
+		c.Assert(gotBool, Equals, tt.wantBool, Commentf("Test %d", i))
+		c.Assert(gotSvcName, Equals, tt.wantSvcName, Commentf("Test %d", i))
 	}
 }
 
@@ -354,7 +362,7 @@ func (e *EtcdLockedSuite) SetUpSuite(c *C) {
 func (e *EtcdLockedSuite) TearDownSuite(c *C) {
 	err := e.etcdClient.Close()
 	c.Assert(err, IsNil)
-	Close()
+	Client().Close()
 }
 
 func (e *EtcdLockedSuite) TestGetIfLocked(c *C) {
@@ -1562,5 +1570,75 @@ func (e *EtcdLockedSuite) TestListPrefixIfLocked(c *C) {
 		}
 		err = tt.cleanup(args)
 		c.Assert(err, IsNil)
+	}
+}
+
+func TestGetSvcNamespace(t *testing.T) {
+	type args struct {
+		address string
+	}
+	tests := []struct {
+		name          string
+		args          args
+		wantSvcName   string
+		wantNamespace string
+		wantErr       bool
+	}{
+		{
+			name: "test-1",
+			args: args{
+				address: "http://foo.bar.something",
+			},
+			wantSvcName:   "foo",
+			wantNamespace: "bar",
+			wantErr:       false,
+		},
+		{
+			name: "test-2",
+			args: args{
+				address: "http://foo.bar",
+			},
+			wantSvcName:   "foo",
+			wantNamespace: "bar",
+			wantErr:       false,
+		},
+		{
+			name: "test-3",
+			args: args{
+				address: "http://foo",
+			},
+			wantErr: true,
+		},
+		{
+			name: "test-4",
+			args: args{
+				address: "http://foo.bar:5679/",
+			},
+			wantSvcName:   "foo",
+			wantNamespace: "bar",
+			wantErr:       false,
+		},
+		{
+			name: "test-5",
+			args: args{
+				address: "http://foo:2379",
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, got1, err := SplitK8sServiceURL(tt.args.address)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SplitK8sServiceURL() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.wantSvcName {
+				t.Errorf("SplitK8sServiceURL() got = %v, want %v", got, tt.wantSvcName)
+			}
+			if got1 != tt.wantNamespace {
+				t.Errorf("SplitK8sServiceURL() got1 = %v, want %v", got1, tt.wantNamespace)
+			}
+		})
 	}
 }

@@ -35,13 +35,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	pollTimeout = 5000
-)
-
-var (
-	eventsMapName = "cilium_events"
-)
+const eventsMapName = "cilium_events"
 
 // isCtxDone is a utility function that returns true when the context's Done()
 // channel is closed. It is intended to simplify goroutines that need to check
@@ -107,12 +101,12 @@ func NewMonitor(ctx context.Context, nPages int, server1_2 net.Listener) (m *Mon
 	return m, nil
 }
 
-// registerNewListener adds the new MonitorListener to the global list. It also spawns
+// RegisterNewListener adds the new MonitorListener to the global list. It also spawns
 // a singleton goroutine to read and distribute the events. It passes a
 // cancelable context to this goroutine and the cancelFunc is assigned to
 // perfReaderCancel. Note that cancelling parentCtx (e.g. on program shutdown)
 // will also cancel the derived context.
-func (m *Monitor) registerNewListener(parentCtx context.Context, conn net.Conn, version listener.Version) {
+func (m *Monitor) RegisterNewListener(parentCtx context.Context, newListener listener.MonitorListener) {
 	m.Lock()
 	defer m.Unlock()
 
@@ -123,15 +117,14 @@ func (m *Monitor) registerNewListener(parentCtx context.Context, conn net.Conn, 
 		m.perfReaderCancel = cancel
 		go m.handleEvents(perfEventReaderCtx)
 	}
-
-	switch version {
+	version := newListener.Version()
+	switch newListener.Version() {
 	case listener.Version1_2:
-		newListener := newListenerv1_2(conn, option.Config.MonitorQueueSize, m.removeListener)
 		m.listeners[newListener] = struct{}{}
 
 	default:
-		conn.Close()
-		log.WithField("version", version).Error("Closing new connection from unsupported monitor client version")
+		newListener.Close()
+		log.WithField("version", version).Error("Closing listener from unsupported monitor client version")
 	}
 
 	log.WithFields(logrus.Fields{
@@ -146,11 +139,13 @@ func (m *Monitor) removeListener(ml listener.MonitorListener) {
 	m.Lock()
 	defer m.Unlock()
 
+	// Remove the listener and close it.
 	delete(m.listeners, ml)
 	log.WithFields(logrus.Fields{
 		"count.listener": len(m.listeners),
 		"version":        ml.Version(),
 	}).Debug("Removed listener")
+	ml.Close()
 
 	// If this was the final listener, shutdown the perf reader and unmap our
 	// ring buffer readers. This tells the kernel to not emit this data.
@@ -256,7 +251,8 @@ func (m *Monitor) connectionHandler1_2(parentCtx context.Context, server net.Lis
 			continue
 		}
 
-		m.registerNewListener(parentCtx, conn, listener.Version1_2)
+		newListener := newListenerv1_2(conn, option.Config.MonitorQueueSize, m.removeListener)
+		m.RegisterNewListener(parentCtx, newListener)
 	}
 }
 

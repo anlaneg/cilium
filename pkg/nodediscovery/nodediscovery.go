@@ -16,9 +16,12 @@ package nodediscovery
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
 	"github.com/cilium/cilium/pkg/aws/metadata"
+	azureTypes "github.com/cilium/cilium/pkg/azure/types"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
@@ -223,6 +226,8 @@ func (n *NodeDiscovery) UpdateCiliumNodeResource() {
 		}
 	}
 
+	var providerID string
+
 	// Tie the CiliumNode custom resource lifecycle to the lifecycle of the
 	// Kubernetes node
 	if k8sNode, err := k8s.GetNode(k8s.Client(), node.GetName()); err != nil {
@@ -234,6 +239,7 @@ func (n *NodeDiscovery) UpdateCiliumNodeResource() {
 			Name:       node.GetName(),
 			UID:        k8sNode.UID,
 		}}
+		providerID = k8sNode.Spec.ProviderID
 	}
 
 	nodeResource.Spec.Addresses = []ciliumv2.NodeAddress{}
@@ -265,9 +271,10 @@ func (n *NodeDiscovery) UpdateCiliumNodeResource() {
 		nodeResource.Spec.HealthAddressing.IPv6 = ip.String()
 	}
 
-	if option.Config.IPAM == option.IPAMENI {
+	switch option.Config.IPAM {
+	case option.IPAMENI:
 		// set ENI field in the node only when the ENI ipam is specified
-		nodeResource.Spec.ENI = ciliumv2.ENISpec{}
+		nodeResource.Spec.ENI = eniTypes.ENISpec{}
 		instanceID, instanceType, availabilityZone, vpcID, err := metadata.GetInstanceMetadata()
 		if err != nil {
 			log.WithError(err).Fatal("Unable to retrieve InstanceID of own EC2 instance")
@@ -278,12 +285,16 @@ func (n *NodeDiscovery) UpdateCiliumNodeResource() {
 		nodeResource.Spec.ENI.PreAllocate = defaults.ENIPreAllocation
 
 		if c := n.NetConf; c != nil {
-			if c.ENI.MinAllocate != 0 {
-				nodeResource.Spec.ENI.MinAllocate = c.ENI.MinAllocate
+			if c.IPAM.MinAllocate != 0 {
+				nodeResource.Spec.IPAM.MinAllocate = c.IPAM.MinAllocate
+			} else if c.ENI.MinAllocate != 0 {
+				nodeResource.Spec.IPAM.MinAllocate = c.ENI.MinAllocate
 			}
 
-			if c.ENI.PreAllocate != 0 {
-				nodeResource.Spec.ENI.PreAllocate = c.ENI.PreAllocate
+			if c.IPAM.PreAllocate != 0 {
+				nodeResource.Spec.IPAM.PreAllocate = c.IPAM.PreAllocate
+			} else if c.ENI.PreAllocate != 0 {
+				nodeResource.Spec.IPAM.PreAllocate = c.ENI.PreAllocate
 			}
 
 			if c.ENI.FirstInterfaceIndex != nil {
@@ -308,6 +319,16 @@ func (n *NodeDiscovery) UpdateCiliumNodeResource() {
 		nodeResource.Spec.ENI.InstanceID = instanceID
 		nodeResource.Spec.ENI.InstanceType = instanceType
 		nodeResource.Spec.ENI.AvailabilityZone = availabilityZone
+
+	case option.IPAMAzure:
+		if providerID == "" {
+			log.WithError(err).Fatal("Spec.ProviderID in k8s node resource must be set for Azure IPAM")
+		}
+		if !strings.HasPrefix(providerID, azureTypes.ProviderPrefix) {
+			log.WithError(err).Fatalf("Spec.ProviderID in k8s node resource must have prefix %s", azureTypes.ProviderPrefix)
+		}
+		nodeResource.Spec.Azure = azureTypes.AzureSpec{}
+		nodeResource.Spec.Azure.InstanceID = strings.TrimPrefix(providerID, azureTypes.ProviderPrefix)
 	}
 
 	if performUpdate {

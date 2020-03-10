@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -50,7 +50,7 @@ const (
 	// EtcdBackendName is the backend name for etcd
 	EtcdBackendName = "etcd"
 
-	addrOption           = "etcd.address"
+	EtcdAddrOption       = "etcd.address"
 	isEtcdOperatorOption = "etcd.operator"
 	EtcdOptionConfig     = "etcd.config"
 
@@ -107,7 +107,7 @@ func newEtcdModule() backendModule {
 			isEtcdOperatorOption: &backendOption{
 				description: "if the configuration is setting up an etcd-operator",
 			},
-			addrOption: &backendOption{
+			EtcdAddrOption: &backendOption{
 				description: "Addresses of etcd cluster",
 			},
 			EtcdOptionConfig: &backendOption{
@@ -156,7 +156,7 @@ func (e *etcdModule) getConfig() map[string]string {
 func (e *etcdModule) newClient(ctx context.Context, opts *ExtraOptions) (BackendOperations, chan error) {
 	errChan := make(chan error, 10)
 
-	endpointsOpt, endpointsSet := e.opts[addrOption]
+	endpointsOpt, endpointsSet := e.opts[EtcdAddrOption]
 	configPathOpt, configSet := e.opts[EtcdOptionConfig]
 
 	rateLimitOpt, rateLimitSet := e.opts[EtcdRateLimitOption]
@@ -173,14 +173,14 @@ func (e *etcdModule) newClient(ctx context.Context, opts *ExtraOptions) (Backend
 	}
 	if e.config == nil {
 		if !endpointsSet && !configSet {
-			errChan <- fmt.Errorf("invalid etcd configuration, %s or %s must be specified", EtcdOptionConfig, addrOption)
+			errChan <- fmt.Errorf("invalid etcd configuration, %s or %s must be specified", EtcdOptionConfig, EtcdAddrOption)
 			close(errChan)
 			return nil, errChan
 		}
 
 		if endpointsOpt.value == "" && configPath == "" {
 			errChan <- fmt.Errorf("invalid etcd configuration, %s or %s must be specified",
-				EtcdOptionConfig, addrOption)
+				EtcdOptionConfig, EtcdAddrOption)
 			close(errChan)
 			return nil, errChan
 		}
@@ -365,9 +365,9 @@ func (e *etcdClient) waitForInitLock(ctx context.Context) <-chan bool {
 			randNumber := strconv.FormatUint(rand.Uint64(), 16)
 			locker, err := e.LockPath(ctx, InitLockPath+"/"+randNumber)
 			if err == nil {
+				locker.Unlock(context.Background())
 				initLockSucceeded <- true
 				close(initLockSucceeded)
-				locker.Unlock(ctx)
 				e.getLogger().Debug("Distributed lock successful, etcd has quorum")
 				return
 			}
@@ -660,10 +660,12 @@ func (e *etcdClient) LockPath(ctx context.Context, path string) (KVLocker, error
 	return &etcdMutex{mutex: mu}, nil
 }
 
-func (e *etcdClient) DeletePrefix(ctx context.Context, path string) error {
+func (e *etcdClient) DeletePrefix(ctx context.Context, path string) (err error) {
+	defer func() { Trace("DeletePrefix", err, logrus.Fields{fieldPrefix: path}) }()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
-	_, err := e.client.Delete(ctx, path, client.WithPrefix())
+	_, err = e.client.Delete(ctx, path, client.WithPrefix())
 	increaseMetric(path, metricDelete, "DeletePrefix", duration.EndError(err).Total(), err)
 	return Hint(err)
 }
@@ -881,7 +883,9 @@ func (e *etcdClient) Status() (string, error) {
 }
 
 // GetIfLocked returns value of key if the client is still holding the given lock.
-func (e *etcdClient) GetIfLocked(ctx context.Context, key string, lock KVLocker) ([]byte, error) {
+func (e *etcdClient) GetIfLocked(ctx context.Context, key string, lock KVLocker) (bv []byte, err error) {
+	defer func() { Trace("GetIfLocked", err, logrus.Fields{fieldKey: key, fieldValue: string(bv)}) }()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
 	opGet := client.OpGet(key)
@@ -904,7 +908,9 @@ func (e *etcdClient) GetIfLocked(ctx context.Context, key string, lock KVLocker)
 }
 
 // Get returns value of key
-func (e *etcdClient) Get(ctx context.Context, key string) ([]byte, error) {
+func (e *etcdClient) Get(ctx context.Context, key string) (bv []byte, err error) {
+	defer func() { Trace("Get", err, logrus.Fields{fieldKey: key, fieldValue: string(bv)}) }()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
 	getR, err := e.client.Get(ctx, key)
@@ -920,7 +926,11 @@ func (e *etcdClient) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // GetPrefixIfLocked returns the first key which matches the prefix and its value if the client is still holding the given lock.
-func (e *etcdClient) GetPrefixIfLocked(ctx context.Context, prefix string, lock KVLocker) (string, []byte, error) {
+func (e *etcdClient) GetPrefixIfLocked(ctx context.Context, prefix string, lock KVLocker) (k string, bv []byte, err error) {
+	defer func() {
+		Trace("GetPrefixIfLocked", err, logrus.Fields{fieldPrefix: prefix, fieldKey: k, fieldValue: string(bv)})
+	}()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
 	opGet := client.OpGet(prefix, client.WithPrefix(), client.WithLimit(1))
@@ -942,7 +952,11 @@ func (e *etcdClient) GetPrefixIfLocked(ctx context.Context, prefix string, lock 
 }
 
 // GetPrefix returns the first key which matches the prefix and its value
-func (e *etcdClient) GetPrefix(ctx context.Context, prefix string) (string, []byte, error) {
+func (e *etcdClient) GetPrefix(ctx context.Context, prefix string) (k string, bv []byte, err error) {
+	defer func() {
+		Trace("GetPrefix", err, logrus.Fields{fieldPrefix: prefix, fieldKey: k, fieldValue: string(bv)})
+	}()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
 	getR, err := e.client.Get(ctx, prefix, client.WithPrefix(), client.WithLimit(1))
@@ -958,16 +972,20 @@ func (e *etcdClient) GetPrefix(ctx context.Context, prefix string) (string, []by
 }
 
 // Set sets value of key
-func (e *etcdClient) Set(ctx context.Context, key string, value []byte) error {
+func (e *etcdClient) Set(ctx context.Context, key string, value []byte) (err error) {
+	defer func() { Trace("Set", err, logrus.Fields{fieldKey: key, fieldValue: string(value)}) }()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
-	_, err := e.client.Put(ctx, key, string(value))
+	_, err = e.client.Put(ctx, key, string(value))
 	increaseMetric(key, metricSet, "Set", duration.EndError(err).Total(), err)
 	return Hint(err)
 }
 
 // DeleteIfLocked deletes a key if the client is still holding the given lock.
-func (e *etcdClient) DeleteIfLocked(ctx context.Context, key string, lock KVLocker) error {
+func (e *etcdClient) DeleteIfLocked(ctx context.Context, key string, lock KVLocker) (err error) {
+	defer func() { Trace("DeleteIfLocked", err, logrus.Fields{fieldKey: key}) }()
+
 	duration := spanstat.Start()
 	opDel := client.OpDelete(key)
 	cmp := lock.Comparator().(client.Cmp)
@@ -980,10 +998,12 @@ func (e *etcdClient) DeleteIfLocked(ctx context.Context, key string, lock KVLock
 }
 
 // Delete deletes a key
-func (e *etcdClient) Delete(ctx context.Context, key string) error {
+func (e *etcdClient) Delete(ctx context.Context, key string) (err error) {
+	defer func() { Trace("Delete", err, logrus.Fields{fieldKey: key}) }()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
-	_, err := e.client.Delete(ctx, key)
+	_, err = e.client.Delete(ctx, key)
 	increaseMetric(key, metricDelete, "Delete", duration.EndError(err).Total(), err)
 	return Hint(err)
 }
@@ -1032,7 +1052,9 @@ func (e *etcdClient) UpdateIfLocked(ctx context.Context, key string, value []byt
 }
 
 // Update creates or updates a key
-func (e *etcdClient) Update(ctx context.Context, key string, value []byte, lease bool) error {
+func (e *etcdClient) Update(ctx context.Context, key string, value []byte, lease bool) (err error) {
+	defer Trace("Update", err, logrus.Fields{fieldKey: key, fieldValue: string(value), fieldAttachLease: lease})
+
 	select {
 	case <-e.firstSession:
 	case <-ctx.Done():
@@ -1051,13 +1073,17 @@ func (e *etcdClient) Update(ctx context.Context, key string, value []byte, lease
 
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
-	_, err := e.client.Put(ctx, key, string(value))
+	_, err = e.client.Put(ctx, key, string(value))
 	increaseMetric(key, metricSet, "Update", duration.EndError(err).Total(), err)
 	return Hint(err)
 }
 
 // UpdateIfDifferentIfLocked updates a key if the value is different and if the client is still holding the given lock.
-func (e *etcdClient) UpdateIfDifferentIfLocked(ctx context.Context, key string, value []byte, lease bool, lock KVLocker) (bool, error) {
+func (e *etcdClient) UpdateIfDifferentIfLocked(ctx context.Context, key string, value []byte, lease bool, lock KVLocker) (recreated bool, err error) {
+	defer func() {
+		Trace("UpdateIfDifferentIfLocked", err, logrus.Fields{fieldKey: key, fieldValue: value, fieldAttachLease: lease, "recreated": recreated})
+	}()
+
 	select {
 	case <-e.firstSession:
 	case <-ctx.Done():
@@ -1101,7 +1127,11 @@ func (e *etcdClient) UpdateIfDifferentIfLocked(ctx context.Context, key string, 
 }
 
 // UpdateIfDifferent updates a key if the value is different
-func (e *etcdClient) UpdateIfDifferent(ctx context.Context, key string, value []byte, lease bool) (bool, error) {
+func (e *etcdClient) UpdateIfDifferent(ctx context.Context, key string, value []byte, lease bool) (recreated bool, err error) {
+	defer func() {
+		Trace("UpdateIfDifferent", err, logrus.Fields{fieldKey: key, fieldValue: value, fieldAttachLease: lease, "recreated": recreated})
+	}()
+
 	select {
 	case <-e.firstSession:
 	case <-ctx.Done():
@@ -1133,7 +1163,11 @@ func (e *etcdClient) UpdateIfDifferent(ctx context.Context, key string, value []
 }
 
 // CreateOnlyIfLocked atomically creates a key if the client is still holding the given lock or fails if it already exists
-func (e *etcdClient) CreateOnlyIfLocked(ctx context.Context, key string, value []byte, lease bool, lock KVLocker) (bool, error) {
+func (e *etcdClient) CreateOnlyIfLocked(ctx context.Context, key string, value []byte, lease bool, lock KVLocker) (success bool, err error) {
+	defer func() {
+		Trace("CreateOnlyIfLocked", err, logrus.Fields{fieldKey: key, fieldValue: value, fieldAttachLease: lease, "success": success})
+	}()
+
 	duration := spanstat.Start()
 	var leaseID client.LeaseID
 	if lease {
@@ -1187,7 +1221,11 @@ func (e *etcdClient) CreateOnlyIfLocked(ctx context.Context, key string, value [
 }
 
 // CreateOnly creates a key with the value and will fail if the key already exists
-func (e *etcdClient) CreateOnly(ctx context.Context, key string, value []byte, lease bool) (bool, error) {
+func (e *etcdClient) CreateOnly(ctx context.Context, key string, value []byte, lease bool) (success bool, err error) {
+	defer func() {
+		Trace("CreateOnly", err, logrus.Fields{fieldKey: key, fieldValue: value, fieldAttachLease: lease, "success": success})
+	}()
+
 	duration := spanstat.Start()
 	var leaseID client.LeaseID
 	if lease {
@@ -1208,7 +1246,11 @@ func (e *etcdClient) CreateOnly(ctx context.Context, key string, value []byte, l
 }
 
 // CreateIfExists creates a key with the value only if key condKey exists
-func (e *etcdClient) CreateIfExists(ctx context.Context, condKey, key string, value []byte, lease bool) error {
+func (e *etcdClient) CreateIfExists(ctx context.Context, condKey, key string, value []byte, lease bool) (err error) {
+	defer func() {
+		Trace("CreateIfExists", err, logrus.Fields{fieldKey: key, fieldValue: string(value), fieldCondition: condKey, fieldAttachLease: lease})
+	}()
+
 	duration := spanstat.Start()
 	var leaseID client.LeaseID
 	if lease {
@@ -1252,7 +1294,9 @@ func (e *etcdClient) CreateIfExists(ctx context.Context, condKey, key string, va
 //}
 
 // ListPrefixIfLocked returns a list of keys matching the prefix only if the client is still holding the given lock.
-func (e *etcdClient) ListPrefixIfLocked(ctx context.Context, prefix string, lock KVLocker) (KeyValuePairs, error) {
+func (e *etcdClient) ListPrefixIfLocked(ctx context.Context, prefix string, lock KVLocker) (v KeyValuePairs, err error) {
+	defer func() { Trace("ListPrefixIfLocked", err, logrus.Fields{fieldPrefix: prefix, fieldNumEntries: len(v)}) }()
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
 	opGet := client.OpGet(prefix, client.WithPrefix())
@@ -1280,7 +1324,9 @@ func (e *etcdClient) ListPrefixIfLocked(ctx context.Context, prefix string, lock
 }
 
 // ListPrefix returns a map of matching keys
-func (e *etcdClient) ListPrefix(ctx context.Context, prefix string) (KeyValuePairs, error) {
+func (e *etcdClient) ListPrefix(ctx context.Context, prefix string) (v KeyValuePairs, err error) {
+	defer func() { Trace("ListPrefix", err, logrus.Fields{fieldPrefix: prefix, fieldNumEntries: len(v)}) }()
+
 	duration := spanstat.Start()
 
 	e.limiter.Wait(ctx)
@@ -1295,6 +1341,7 @@ func (e *etcdClient) ListPrefix(ctx context.Context, prefix string) (KeyValuePai
 		pairs[string(getR.Kvs[i].Key)] = Value{
 			Data:        getR.Kvs[i].Value,
 			ModRevision: uint64(getR.Kvs[i].ModRevision),
+			LeaseID:     getR.Kvs[i].Lease,
 		}
 
 	}
@@ -1322,12 +1369,14 @@ func (e *etcdClient) GetCapabilities() Capabilities {
 }
 
 // Encode encodes a binary slice into a character set that the backend supports
-func (e *etcdClient) Encode(in []byte) string {
+func (e *etcdClient) Encode(in []byte) (out string) {
+	defer func() { Trace("Encode", nil, logrus.Fields{"in": in, "out": out}) }()
 	return string(in)
 }
 
 // Decode decodes a key previously encoded back into the original binary slice
-func (e *etcdClient) Decode(in string) ([]byte, error) {
+func (e *etcdClient) Decode(in string) (out []byte, err error) {
+	defer func() { Trace("Decode", err, logrus.Fields{"in": in, "out": out}) }()
 	return []byte(in), nil
 }
 
@@ -1342,57 +1391,71 @@ func (e *etcdClient) ListAndWatch(ctx context.Context, name, prefix string, chan
 	return w
 }
 
-// IsEtcdOperator returns true if the configuration is setting up an
-// etcd-operator and false otherwise.
-func IsEtcdOperator(selectedBackend string, opts map[string]string, k8sNamespace string) bool {
+// SplitK8sServiceURL returns the service name and namespace for the given address.
+// If the given address is not parseable or it is not the format
+// '<protocol>://><name>.<namespace>[optional]', returns an error.
+func SplitK8sServiceURL(address string) (string, string, error) {
+	u, err := url.Parse(address)
+	if err != nil {
+		return "", "", err
+	}
+	// typical service name "cilium-etcd-client.kube-system.svc"
+	names := strings.Split(u.Hostname(), ".")
+	if len(names) >= 2 {
+		return names[0], names[1], nil
+	}
+	return "", "",
+		fmt.Errorf("invalid service name. expecting <protocol://><name>.<namespace>[optional], got: %s", address)
+}
+
+// IsEtcdOperator returns the service name if the configuration is setting up an
+// etcd-operator. If the configuration explicitly states it is configured
+// to connect to an etcd operator, e.g. with etcd.operator=true, the returned
+// service name is the first found within the configuration specified.
+func IsEtcdOperator(selectedBackend string, opts map[string]string, k8sNamespace string) (string, bool) {
 	if selectedBackend != EtcdBackendName {
-		return false
+		return "", false
 	}
 
-	isEtcdOperator := opts[isEtcdOperatorOption]
-	if strings.ToLower(isEtcdOperator) == "true" {
-		return true
-	}
+	isEtcdOperator := strings.ToLower(opts[isEtcdOperatorOption]) == "true"
 
 	fqdnIsEtcdOperator := func(address string) bool {
-		u, err := url.Parse(address)
-		if err != nil {
-			return false
-		}
-		// typical service name "cilium-etcd-client.kube-system.svc"
-		names := strings.Split(u.Hostname(), ".")
-		return len(names) >= 2 &&
-			names[0] == "cilium-etcd-client" &&
-			names[1] == k8sNamespace
+		svcName, ns, err := SplitK8sServiceURL(address)
+		return err == nil &&
+			svcName == "cilium-etcd-client" &&
+			ns == k8sNamespace
 	}
 
-	fqdn := opts[addrOption]
+	fqdn := opts[EtcdAddrOption]
 	if len(fqdn) != 0 {
-		return fqdnIsEtcdOperator(fqdn)
+		if fqdnIsEtcdOperator(fqdn) || isEtcdOperator {
+			return fqdn, true
+		}
+		return "", false
 	}
 
 	bm := newEtcdModule()
 	err := bm.setConfig(opts)
 	if err != nil {
-		return false
+		return "", false
 	}
 	etcdConfig := bm.getConfig()[EtcdOptionConfig]
 	if len(etcdConfig) == 0 {
-		return false
+		return "", false
 	}
 
 	cfg, err := newConfig(etcdConfig)
 	if err != nil {
 		log.WithError(err).Error("Unable to read etcd configuration.")
-		return false
+		return "", false
 	}
 	for _, endpoint := range cfg.Endpoints {
-		if fqdnIsEtcdOperator(endpoint) {
-			return true
+		if fqdnIsEtcdOperator(endpoint) || isEtcdOperator {
+			return endpoint, true
 		}
 	}
 
-	return false
+	return "", false
 }
 
 // newConfig is a wrapper of clientyaml.NewConfig. Since etcd has deprecated

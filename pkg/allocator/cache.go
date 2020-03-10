@@ -176,7 +176,7 @@ func (c *cache) OnDelete(id idpool.ID, key AllocatorKey) {
 
 // start requests a LIST operation from the kvstore and starts watching the
 // prefix in a go subroutine.
-func (c *cache) start(a *Allocator) waitChan {
+func (c *cache) start() waitChan {
 	c.listDone = make(waitChan)
 
 	c.mutex.Lock()
@@ -236,4 +236,10 @@ func (c *cache) insert(key AllocatorKey, val idpool.ID) {
 	c.nextCache[val] = key
 	c.nextKeyCache[c.allocator.encodeKey(key)] = val
 	c.mutex.Unlock()
+}
+
+func (c *cache) numEntries() int {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return len(c.nextCache)
 }

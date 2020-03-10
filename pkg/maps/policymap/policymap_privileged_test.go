@@ -17,18 +17,23 @@
 package policymap
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"syscall"
 	"testing"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/checker"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/u8proto"
 
+	"golang.org/x/sys/unix"
 	. "gopkg.in/check.v1"
 )
+
+var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "map-policy")
 
 func Test(t *testing.T) {
 	TestingT(t)
@@ -98,7 +103,9 @@ func (pm *PolicyMapTestSuite) TestPolicyMapDumpToSlice(c *C) {
 
 func (pm *PolicyMapTestSuite) TestDeleteNonexistentKey(c *C) {
 	key := newKey(27, 80, u8proto.ANY, trafficdirection.Ingress)
-	err, errno := testMap.Map.DeleteWithErrno(&key)
+	err := testMap.Map.Delete(&key)
 	c.Assert(err, Not(IsNil))
-	c.Assert(errno, Equals, syscall.ENOENT)
+	var errno unix.Errno
+	c.Assert(errors.As(err, &errno), Equals, true)
+	c.Assert(errno, Equals, unix.ENOENT)
 }

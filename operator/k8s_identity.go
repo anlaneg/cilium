@@ -1,4 +1,4 @@
-// Copyright 2019 Authors of Cilium
+// Copyright 2019-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +23,9 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/cilium/pkg/option"
 
+	"github.com/sirupsen/logrus"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -59,7 +60,10 @@ func deleteIdentity(identity *types.Identity) error {
 // have no nodes using them (status is empty). This generally means that
 // deletes here are for longer lived identities with no active users.
 func identityGCIteration() {
+	log.Debug("Running CRD identity garbage collector")
+
 	if identityStore == nil {
+		log.Debug("Identity store cache is not ready yet")
 		return
 	}
 
@@ -73,7 +77,7 @@ nextIdentity:
 		}
 
 		for _, heartbeat := range identity.Status.Nodes {
-			if time.Since(heartbeat.Time) < k8sIdentityHeartbeatTimeout {
+			if time.Since(heartbeat.Time) < option.Config.IdentityHeartbeatTimeout {
 				continue nextIdentity
 			}
 		}
@@ -87,9 +91,11 @@ nextIdentity:
 }
 
 func startCRDIdentityGC() {
+	log.Infof("Starting CRD identity garbage collector with %s interval...", option.Config.IdentityGCInterval)
+
 	controller.NewManager().UpdateController("crd-identity-gc",
 		controller.ControllerParams{
-			RunInterval: identityGCInterval,
+			RunInterval: option.Config.IdentityGCInterval,
 			DoFunc: func(ctx context.Context) error {
 				identityGCIteration()
 				return nil

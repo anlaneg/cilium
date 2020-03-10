@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2018-2019 Authors of Cilium
+# Copyright 2018-2020 Authors of Cilium
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ ALL_TC_PROGS="bpf_hostdev_ingress bpf_ipsec bpf_lxc bpf_netdev bpf_network bpf_o
 TC_PROGS=${TC_PROGS:-$ALL_TC_PROGS}
 ALL_CG_PROGS="bpf_sock sockops/bpf_sockops sockops/bpf_redir"
 CG_PROGS=${CG_PROGS:-$ALL_CG_PROGS}
-ALL_XDP_PROGS="bpf_xdp"
+ALL_XDP_PROGS="bpf_prefilter"
 XDP_PROGS=${XDP_PROGS:-$ALL_XDP_PROGS}
 IGNORED_PROGS="bpf_alignchecker"
 ALL_PROGS="${IGNORED_PROGS} ${ALL_CG_PROGS} ${ALL_TC_PROGS} ${ALL_XDP_PROGS}"
@@ -177,11 +177,13 @@ function load_sockops_prog {
 	prog="$1"
 	pinpath="$2"
 
+	# cilium_signals is omitted from this list, because the sockops progs
+	# don't support BPF_MAP_TYPE_PERF_EVENT_ARRAY for now.
 	ALL_MAPS="cilium_ipcache cilium_ep_to_policy cilium_lxc sock_ops_map	\
 		cilium_metrics cilium_tunnel_map cilium_encrypt_state		\
 		cilium_lb6_reverse_nat cilium_lb6_services cilium_lb6_backends	\
 		cilium_lb4_reverse_nat cilium_lb4_services cilium_lb4_backends	\
-		cilium_events cilium_signals"
+		cilium_events"
 
 	map_args=""
 	for map in $ALL_MAPS; do
@@ -230,13 +232,12 @@ function load_cg {
 }
 
 function load_xdp {
-	if $IPROUTE2 link set help 2>&1 | grep -q xdpgeneric; then
-		$IPROUTE2 link set dev ${DEV} xdpgeneric off
+	if $IPROUTE2 link set dev ${DEV} xdpgeneric off 2>/dev/null; then
 		for p in ${XDP_PROGS}; do
 			load_prog_dev "$IPROUTE2 link set" "xdpgeneric" ${p}
 		done
 	else
-		echo "=> Skipping ${DIR}/bpf_xdp.c."
+		echo "=> Skipping ${DIR}/bpf_prefilter.c."
 		echo "Ensure you have linux >= 4.12 and recent iproute2 to test XDP." 1>&2
 	fi
 }

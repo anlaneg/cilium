@@ -1,3 +1,17 @@
+// Copyright 2018-2020 Authors of Cilium
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package k8sTest
 
 import (
@@ -8,6 +22,7 @@ import (
 
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
+
 	. "github.com/onsi/gomega"
 )
 
@@ -61,7 +76,7 @@ var _ = Describe("K8sUpdates", func() {
 			"deploy", fmt.Sprintf("-n %s kube-dns", helpers.KubeSystemNamespace))
 
 		_ = kubectl.DeleteResource(
-			"deploy", fmt.Sprintf("-n %s cilium-operator", helpers.KubeSystemNamespace))
+			"deploy", fmt.Sprintf("-n %s cilium-operator", helpers.CiliumNamespace))
 		// Sometimes PolicyGen has a lot of pods running around without delete
 		// it. Using this we are sure that we delete before this test start
 		kubectl.Exec(fmt.Sprintf(
@@ -77,7 +92,7 @@ var _ = Describe("K8sUpdates", func() {
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace, "cilium endpoint list")
+		kubectl.CiliumReport(helpers.CiliumNamespace, "cilium endpoint list")
 	})
 
 	JustAfterEach(func() {
@@ -88,33 +103,82 @@ var _ = Describe("K8sUpdates", func() {
 		cleanupCallback()
 		ExpectAllPodsTerminated(kubectl)
 	})
-
-	It("Tests upgrade and downgrade from a Cilium stable image to master", func() {
-		var assertUpgradeSuccessful func()
-		assertUpgradeSuccessful, cleanupCallback =
-			InstallAndValidateCiliumUpgrades(kubectl, helpers.CiliumStableVersion, helpers.CiliumDevImage())
-		assertUpgradeSuccessful()
-	})
+	// FIXME don't skip once stable becomes v1.6 (v1.5 doesn't implement the kube-proxy
+	// replacement)
+	SkipItIf(func() bool { return !helpers.RunsWithKubeProxy() },
+		"Tests upgrade and downgrade from a Cilium stable image to master", func() {
+			var assertUpgradeSuccessful func()
+			assertUpgradeSuccessful, cleanupCallback =
+				InstallAndValidateCiliumUpgrades(
+					kubectl,
+					helpers.CiliumStableHelmChartVersion,
+					helpers.CiliumStableVersion,
+					helpers.CiliumLatestHelmChartVersion,
+					helpers.CiliumLatestImageVersion,
+				)
+			assertUpgradeSuccessful()
+		})
 })
 
 // InstallAndValidateCiliumUpgrades installs and tests if the oldVersion can be
 // upgrade to the newVersion and if the newVersion can be downgraded to the
 // oldVersion.  It returns two callbacks, the first one is the assertfunction
 // that need to run, and the second one are the cleanup actions
-func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldVersion, newVersion string) (func(), func()) {
-	canRun, err := helpers.CanRunK8sVersion(oldVersion, helpers.GetCurrentK8SEnv())
-	ExpectWithOffset(1, err).To(BeNil(), "Unable to get k8s constraints for %s", oldVersion)
+func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVersion, oldImageVersion, newHelmChartVersion, newImageVersion string) (func(), func()) {
+	canRun, err := helpers.CanRunK8sVersion(oldImageVersion, helpers.GetCurrentK8SEnv())
+	ExpectWithOffset(1, err).To(BeNil(), "Unable to get k8s constraints for %s", oldImageVersion)
 	if !canRun {
 		Skip(fmt.Sprintf(
 			"Cilium %q is not supported in K8s %q. Skipping upgrade/downgrade tests.",
-			oldVersion, helpers.GetCurrentK8SEnv()))
+			oldImageVersion, helpers.GetCurrentK8SEnv()))
 		return func() {}, func() {}
 	}
 
-	SkipIfFlannel()
+	SkipIfIntegration(helpers.CIIntegrationFlannel)
 
 	apps := []string{helpers.App1, helpers.App2, helpers.App3}
 	app1Service := "app1-service"
+
+	cleanupCiliumState := func(helmPath, chartVersion, imageName, imageTag, registry string) {
+		_ = kubectl.ExecMiddle("helm delete cilium --namespace=" + helpers.CiliumNamespace)
+		_ = kubectl.ExecMiddle(fmt.Sprintf("kubectl delete configmap --namespace=%s cilium-config", helpers.CiliumNamespace))
+		_ = kubectl.ExecMiddle(fmt.Sprintf("kubectl delete serviceaccount --namespace=%s cilium cilium-operator", helpers.CiliumNamespace))
+		_ = kubectl.ExecMiddle("kubectl delete clusterrole cilium cilium-operator cilium-psp cilium-operator-psp")
+		_ = kubectl.ExecMiddle("kubectl delete clusterrolebinding cilium cilium-operator cilium-psp cilium-operator-psp")
+		_ = kubectl.ExecMiddle(fmt.Sprintf("kubectl delete daemonset --namespace=%s cilium", helpers.CiliumNamespace))
+		_ = kubectl.ExecMiddle(fmt.Sprintf("kubectl delete deployment --namespace=%s cilium-operator", helpers.CiliumNamespace))
+		_ = kubectl.ExecMiddle("kubectl delete podsecuritypolicy cilium-psp cilium-operator-psp")
+		ExpectAllPodsTerminated(kubectl)
+		opts := map[string]string{
+			"global.cleanState":    "true",
+			"global.tag":           imageTag,
+			"agent.sleepAfterInit": "true",
+			"operator.enabled":     "false ",
+		}
+		if registry != "" {
+			opts["global.registry"] = registry
+		}
+		if imageName != "" {
+			opts["agent.image"] = imageName
+		}
+		cmd, err := kubectl.RunHelm(
+			"install",
+			helmPath,
+			"cilium",
+			chartVersion,
+			helpers.CiliumNamespace,
+			opts,
+		)
+		ExpectWithOffset(1, err).To(BeNil(), "Cilium clean state %q was not able to be deployed", chartVersion)
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Cilium clean state %q was not able to be deployed", chartVersion)
+		err = kubectl.WaitforPods(helpers.CiliumNamespace, "-l k8s-app=cilium", longTimeout)
+		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be deployed", chartVersion)
+		err = kubectl.WaitForCiliumInitContainerToFinish()
+		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be clean up environment", chartVersion)
+		cmd = kubectl.ExecMiddle("helm delete cilium --namespace=" + helpers.CiliumNamespace)
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Cilium %q was not able to be deleted", chartVersion)
+		ExpectAllPodsTerminated(kubectl)
+	}
 
 	cleanupCallback := func() {
 		kubectl.Delete(migrateSVCClient)
@@ -124,31 +188,19 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldVersion, newV
 
 		kubectl.DeleteETCDOperator()
 
-		ExpectAllPodsTerminated(kubectl)
-
-		// make sure we clean everything up before doing any other test
-		err := kubectl.CiliumInstall([]string{
-			"--set global.cleanState=true",
-		})
-
-		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be deployed", newVersion)
-		err = kubectl.WaitForCiliumInitContainerToFinish()
-		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be clean up environment", newVersion)
-
 		if res := kubectl.Delete(helpers.DNSDeployment(kubectl.BasePath())); !res.WasSuccessful() {
 			log.Warningf("Unable to delete CoreDNS deployment: %s", res.OutputPrettyPrint())
 		}
 
-		if err := kubectl.CiliumUninstall([]string{}); err != nil {
-			log.WithError(err).Warning("Unable to uninstall Cilium")
-		}
+		// make sure we clean everything up before doing any other test
+		cleanupCiliumState(filepath.Join(kubectl.BasePath(), helpers.HelmTemplate), newHelmChartVersion, "", newImageVersion, "")
 	}
 
 	testfunc := func() {
 		By("Deleting Cilium, CoreDNS, and etcd-operator...")
 		// Making sure that we deleted the  cilium ds. No assert
 		// message because maybe is not present
-		if res := kubectl.DeleteResource("ds", fmt.Sprintf("-n %s cilium", helpers.KubeSystemNamespace)); !res.WasSuccessful() {
+		if res := kubectl.DeleteResource("ds", fmt.Sprintf("-n %s cilium", helpers.CiliumNamespace)); !res.WasSuccessful() {
 			log.Warningf("Unable to delete Cilium DaemonSet: %s", res.OutputPrettyPrint())
 		}
 
@@ -166,34 +218,36 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldVersion, newV
 		By("Waiting for pods to be terminated..")
 		ExpectAllPodsTerminated(kubectl)
 
+		cmd := kubectl.HelmAddCiliumRepo()
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Unable to install helm repository")
+
 		By("Cleaning Cilium state")
-		err = kubectl.CiliumInstallVersion(
-			"cilium-ds-clean-only.yaml",
-			"cilium-cm-patch-clean-cilium-state.yaml",
-			oldVersion,
-		)
-		Expect(err).To(BeNil(), "Cilium %q was not able to be deployed", oldVersion)
+		cleanupCiliumState("cilium/cilium", oldHelmChartVersion, "cilium", oldImageVersion, "docker.io/cilium")
 
-		err := kubectl.WaitforPods(helpers.KubeSystemNamespace, "-l k8s-app=cilium", longTimeout)
-		ExpectWithOffset(1, err).Should(BeNil(), "Cleaning state did not complete in time")
-
-		By("Deploying Cilium")
-		err = kubectl.CiliumInstallVersion(
-			helpers.CiliumDefaultDSPatch,
-			"cilium-cm-patch.yaml",
-			oldVersion,
+		By("Deploying Cilium %s", oldHelmChartVersion)
+		cmd, err = kubectl.RunHelm(
+			"install",
+			"cilium/cilium",
+			"cilium",
+			oldHelmChartVersion,
+			helpers.CiliumNamespace,
+			map[string]string{
+				"global.tag":      oldImageVersion,
+				"global.registry": "docker.io/cilium",
+				"agent.image":     "cilium",
+			},
 		)
-		Expect(err).To(BeNil(), "Cilium %q was not able to be deployed", oldVersion)
+		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be deployed", oldHelmChartVersion)
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Cilium %q was not able to be deployed", oldHelmChartVersion)
 
 		By("Installing kube-dns")
-		_ = kubectl.ApplyDefault(helpers.DNSDeployment(kubectl.BasePath()))
+		cmd = kubectl.ApplyDefault(helpers.DNSDeployment(kubectl.BasePath()))
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Unable to deploy Kubedns")
 
 		// Cilium is only ready if kvstore is ready, the kvstore is ready if
 		// kube-dns is running.
-		By("Cilium %q is installed and running", oldVersion)
+		By("Cilium %q is installed and running", oldHelmChartVersion)
 		ExpectCiliumReady(kubectl)
-
-		ExpectETCDOperatorReady(kubectl)
 		ExpectCiliumOperatorReady(kubectl)
 
 		validatedImage := func(image string) {
@@ -201,7 +255,7 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldVersion, newV
 
 			filter := `{.items[*].status.containerStatuses[0].image}`
 			data, err := kubectl.GetPods(
-				helpers.KubeSystemNamespace, "-l k8s-app=cilium").Filter(filter)
+				helpers.CiliumNamespace, "-l k8s-app=cilium").Filter(filter)
 			ExpectWithOffset(1, err).To(BeNil(), "Cannot get cilium pods")
 
 			for _, val := range strings.Split(data.String(), " ") {
@@ -297,14 +351,14 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldVersion, newV
 
 		waitForUpdateImage := func(image string) func() bool {
 			return func() bool {
-				pods, err := kubectl.GetCiliumPods(helpers.KubeSystemNamespace)
+				pods, err := kubectl.GetCiliumPods(helpers.CiliumNamespace)
 				if err != nil {
 					return false
 				}
 
 				filter := `{.items[*].status.containerStatuses[0].image}`
 				data, err := kubectl.GetPods(
-					helpers.KubeSystemNamespace, "-l k8s-app=cilium").Filter(filter)
+					helpers.CiliumNamespace, "-l k8s-app=cilium").Filter(filter)
 				if err != nil {
 					return false
 				}
@@ -319,73 +373,88 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldVersion, newV
 		}
 
 		By("Install Cilium pre-flight check DaemonSet")
-		helmTemplate := filepath.Join(kubectl.BasePath(), helpers.HelmTemplate)
-		res = kubectl.ExecMiddle("helm template " +
-			helmTemplate + " " +
-			"--namespace=kube-system " +
-			"--set preflight.enabled=true " +
-			"--set agent.enabled=false " +
-			"--set config.enabled=false " +
-			"--set operator.enabled=false " +
-			"> cilium-preflight.yaml")
-		ExpectWithOffset(1, res).To(helpers.CMDSuccess(), "Unable to generate preflight YAML")
-
-		res = kubectl.ApplyDefault("cilium-preflight.yaml")
-		ExpectWithOffset(1, res).To(helpers.CMDSuccess(), "Unable to deploy preflight manifest")
+		cmd, err = kubectl.RunHelm(
+			"install",
+			filepath.Join(kubectl.BasePath(), helpers.HelmTemplate),
+			"cilium-preflight",
+			newHelmChartVersion,
+			helpers.CiliumNamespace,
+			map[string]string{
+				"preflight.enabled": "true ",
+				"agent.enabled":     "false ",
+				"config.enabled":    "false ",
+				"operator.enabled":  "false ",
+				"global.tag":        newImageVersion,
+			},
+		)
+		ExpectWithOffset(1, err).To(BeNil(), "Unable to deploy preflight manifest")
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Unable to deploy preflight manifest")
 		ExpectCiliumPreFlightInstallReady(kubectl)
 
 		// Once they are installed we can remove it
 		By("Removing Cilium pre-flight check DaemonSet")
-		kubectl.Delete("cilium-preflight.yaml")
+		cmd = kubectl.ExecMiddle("helm delete cilium-preflight --namespace=" + helpers.CiliumNamespace)
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Unable to delete preflight")
 
+		err = kubectl.WaitforPods(helpers.CiliumNamespace, "-l k8s-app=cilium", timeout)
+		ExpectWithOffset(1, err).Should(BeNil(), "Cilium is not ready after timeout")
 		// Need to run using the kvstore-based allocator because upgrading from
 		// kvstore-based allocator to CRD-based allocator is not currently
 		// supported at this time.
-		By("Installing Cilium using kvstore-based allocator")
-		err = kubectl.CiliumInstall([]string{
-			"--set global.identityAllocationMode=kvstore",
-			"--set global.etcd.enabled=true",
-			"--set global.etcd.managed=true",
-		})
-		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be deployed", newVersion)
+		By("Upgrading Cilium to %s", newHelmChartVersion)
+		opts := map[string]string{
+			"global.tag": newImageVersion,
+		}
+		// We have removed the labels since >= 1.7 and we are only testing
+		// starting from 1.6.
+		if oldHelmChartVersion == "1.6-dev" {
+			opts["agent.keepDeprecatedLabels"] = "true"
+		}
+		cmd, err = kubectl.RunHelm(
+			"upgrade",
+			filepath.Join(kubectl.BasePath(), helpers.HelmTemplate),
+			"cilium",
+			newHelmChartVersion,
+			helpers.CiliumNamespace,
+			opts)
+		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be deployed", newHelmChartVersion)
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Cilium %q was not able to be deployed", newHelmChartVersion)
 
+		By("Validating pods have the right image version upgraded")
 		err = helpers.WithTimeout(
-			waitForUpdateImage(newVersion),
-			fmt.Sprintf("Cilium Pods are not updating correctly to %s", newVersion),
+			waitForUpdateImage(newImageVersion),
+			fmt.Sprintf("Cilium Pods are not updating correctly to %s", newImageVersion),
 			&helpers.TimeoutConfig{Timeout: timeout})
 		ExpectWithOffset(1, err).To(BeNil(), "Pods are not updating")
 
 		err = kubectl.WaitforPods(
-			helpers.KubeSystemNamespace, "-l k8s-app=cilium", timeout)
+			helpers.CiliumNamespace, "-l k8s-app=cilium", timeout)
 		ExpectWithOffset(1, err).Should(BeNil(), "Cilium is not ready after timeout")
 
-		validatedImage(newVersion)
+		validatedImage(newImageVersion)
 		ExpectCiliumReady(kubectl)
 		ExpectCiliumOperatorReady(kubectl)
 
 		validateEndpointsConnection()
 		checkNoInteruptsInSVCFlows()
 
-		By("Downgrading cilium to %s image", oldVersion)
-
-		err = kubectl.CiliumInstallVersion(
-			helpers.CiliumDefaultDSPatch,
-			helpers.CiliumConfigMapPatch,
-			oldVersion,
-		)
-		ExpectWithOffset(1, err).To(BeNil(), "Cilium %q was not able to be deployed", oldVersion)
+		By("Downgrading cilium to %s image", oldHelmChartVersion)
+		// rollback cilium 1 because it's the version that we have started
+		// cilium with in this updates test.
+		cmd = kubectl.ExecMiddle("helm rollback cilium 1 --namespace=" + helpers.CiliumNamespace)
+		ExpectWithOffset(1, cmd).To(helpers.CMDSuccess(), "Cilium %q was not able to be deployed", oldHelmChartVersion)
 
 		err = helpers.WithTimeout(
-			waitForUpdateImage(oldVersion),
+			waitForUpdateImage(oldImageVersion),
 			"Cilium Pods are not updating correctly",
 			&helpers.TimeoutConfig{Timeout: timeout})
 		ExpectWithOffset(1, err).To(BeNil(), "Pods are not updating")
 
 		err = kubectl.WaitforPods(
-			helpers.KubeSystemNamespace, "-l k8s-app=cilium", timeout)
+			helpers.CiliumNamespace, "-l k8s-app=cilium", timeout)
 		ExpectWithOffset(1, err).Should(BeNil(), "Cilium is not ready after timeout")
 
-		validatedImage(oldVersion)
+		validatedImage(oldImageVersion)
 		ExpectCiliumOperatorReady(kubectl)
 
 		validateEndpointsConnection()

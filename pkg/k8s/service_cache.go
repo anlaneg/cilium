@@ -1,4 +1,4 @@
-// Copyright 2018-2019 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package k8s
 
 import (
+	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
@@ -85,20 +86,23 @@ type ServiceCache struct {
 
 	// externalEndpoints is a list of additional service backends derived from source other than the local cluster
 	externalEndpoints map[ServiceID]externalEndpoints
+
+	nodeAddressing datapath.NodeAddressing
 }
 
 // NewServiceCache returns a new ServiceCache
-func NewServiceCache() ServiceCache {
+func NewServiceCache(nodeAddressing datapath.NodeAddressing) ServiceCache {
 	return ServiceCache{
 		services:          map[ServiceID]*Service{},
 		endpoints:         map[ServiceID]*Endpoints{},
 		externalEndpoints: map[ServiceID]externalEndpoints{},
 		Events:            make(chan ServiceEvent, option.Config.K8sServiceCacheSize),
+		nodeAddressing:    nodeAddressing,
 	}
 }
 
-// GetRandomBackendIP returns a random L3n4Addr that is backing the given Service ID.
-func (s *ServiceCache) GetRandomBackendIP(svcID ServiceID) *loadbalancer.L3n4Addr {
+// GetServiceIP returns a random L3n4Addr that is backing the given Service ID.
+func (s *ServiceCache) GetServiceIP(svcID ServiceID) *loadbalancer.L3n4Addr {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	svc := s.services[svcID]
@@ -116,7 +120,7 @@ func (s *ServiceCache) GetRandomBackendIP(svcID ServiceID) *loadbalancer.L3n4Add
 // be parsed and a bool to indicate whether the service was changed in the
 // cache or not.
 func (s *ServiceCache) UpdateService(k8sSvc *types.Service, swg *lock.StoppableWaitGroup) ServiceID {
-	svcID, newService := ParseService(k8sSvc)
+	svcID, newService := ParseService(k8sSvc, s.nodeAddressing)
 	if newService == nil {
 		return svcID
 	}
@@ -174,13 +178,7 @@ func (s *ServiceCache) DeleteService(k8sSvc *types.Service, swg *lock.StoppableW
 	}
 }
 
-// UpdateEndpoints parses a Kubernetes endpoints and adds or updates it in the
-// ServiceCache. Returns the ServiceID unless the Kubernetes endpoints could not
-// be parsed and a bool to indicate whether the endpoints was changed in the
-// cache or not.
-func (s *ServiceCache) UpdateEndpoints(k8sEndpoints *types.Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
-	svcID, newEndpoints := ParseEndpoints(k8sEndpoints)
-
+func (s *ServiceCache) updateEndpoints(svcID ServiceID, newEndpoints *Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -193,14 +191,14 @@ func (s *ServiceCache) UpdateEndpoints(k8sEndpoints *types.Endpoints, swg *lock.
 	s.endpoints[svcID] = newEndpoints
 
 	// Check if the corresponding Endpoints resource is already available
-	service, ok := s.services[svcID]
+	svc, ok := s.services[svcID]
 	endpoints, serviceReady := s.correlateEndpoints(svcID)
 	if ok && serviceReady {
 		swg.Add()
 		s.Events <- ServiceEvent{
 			Action:    UpdateService,
 			ID:        svcID,
-			Service:   service,
+			Service:   svc,
 			Endpoints: endpoints,
 			SWG:       swg,
 		}
@@ -209,15 +207,27 @@ func (s *ServiceCache) UpdateEndpoints(k8sEndpoints *types.Endpoints, swg *lock.
 	return svcID, newEndpoints
 }
 
-// DeleteEndpoints parses a Kubernetes endpoints and removes it from the
-// ServiceCache
-func (s *ServiceCache) DeleteEndpoints(k8sEndpoints *types.Endpoints, swg *lock.StoppableWaitGroup) ServiceID {
-	svcID := ParseEndpointsID(k8sEndpoints)
+// UpdateEndpoints parses a Kubernetes endpoints and adds or updates it in the
+// ServiceCache. Returns the ServiceID unless the Kubernetes endpoints could not
+// be parsed and a bool to indicate whether the endpoints was changed in the
+// cache or not.
+func (s *ServiceCache) UpdateEndpoints(k8sEndpoints *types.Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
+	svcID, newEndpoints := ParseEndpoints(k8sEndpoints)
 
+	return s.updateEndpoints(svcID, newEndpoints, swg)
+}
+
+func (s *ServiceCache) UpdateEndpointSlices(epSlice *types.EndpointSlice, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
+	svcID, newEndpoints := ParseEndpointSlice(epSlice)
+
+	return s.updateEndpoints(svcID, newEndpoints, swg)
+}
+
+func (s *ServiceCache) deleteEndpoints(svcID ServiceID, swg *lock.StoppableWaitGroup) ServiceID {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	service, serviceOK := s.services[svcID]
+	svc, serviceOK := s.services[svcID]
 	delete(s.endpoints, svcID)
 	endpoints, serviceReady := s.correlateEndpoints(svcID)
 
@@ -226,7 +236,7 @@ func (s *ServiceCache) DeleteEndpoints(k8sEndpoints *types.Endpoints, swg *lock.
 		event := ServiceEvent{
 			Action:    DeleteService,
 			ID:        svcID,
-			Service:   service,
+			Service:   svc,
 			Endpoints: endpoints,
 			SWG:       swg,
 		}
@@ -239,6 +249,20 @@ func (s *ServiceCache) DeleteEndpoints(k8sEndpoints *types.Endpoints, swg *lock.
 	}
 
 	return svcID
+}
+
+// DeleteEndpoints parses a Kubernetes endpoints and removes it from the
+// ServiceCache
+func (s *ServiceCache) DeleteEndpoints(k8sEndpoints *types.Endpoints, swg *lock.StoppableWaitGroup) ServiceID {
+	svcID := ParseEndpointsID(k8sEndpoints)
+
+	return s.deleteEndpoints(svcID, swg)
+}
+
+func (s *ServiceCache) DeleteEndpointSlices(epSlice *types.EndpointSlice, swg *lock.StoppableWaitGroup) ServiceID {
+	svcID := ParseEndpointSliceID(epSlice)
+
+	return s.deleteEndpoints(svcID, swg)
 }
 
 // FrontendList is the list of all k8s service frontends

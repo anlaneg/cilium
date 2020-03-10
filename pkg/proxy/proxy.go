@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -112,17 +112,10 @@ type Proxy struct {
 // StartProxySupport starts the servers to support L7 proxies: xDS GRPC server
 // and access log server.
 func StartProxySupport(minPort uint16, maxPort uint16, stateDir string,
-	accessLogFile string, accessLogNotifier logger.LogRecordNotifier, accessLogMetadata []string,
+	accessLogNotifier logger.LogRecordNotifier, accessLogMetadata []string,
 	datapathUpdater DatapathUpdater, mgr EndpointLookup) *Proxy {
 	endpointManager = mgr
 	xdsServer := envoy.StartXDSServer(stateDir)
-
-	if accessLogFile != "" {
-		if err := logger.OpenLogfile(accessLogFile); err != nil {
-			log.WithError(err).WithField(logfields.Path, accessLogFile).
-				Warn("Cannot open L7 access log")
-		}
-	}
 
 	if accessLogNotifier != nil {
 		logger.SetNotifier(accessLogNotifier)
@@ -424,8 +417,6 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 			}
 			revertStack.Push(implUpdateRevertFunc)
 
-			redir.lastUpdated = time.Now()
-
 			scopedLog.WithField(logfields.Object, logfields.Repr(redir)).
 				Debug("updated existing ", l4.GetL7Parser(), " proxy instance")
 
@@ -616,11 +607,27 @@ func ChangeLogLevel(level logrus.Level) {
 func (p *Proxy) GetStatusModel() *models.ProxyStatus {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
+	proxyPortsMutex.Lock()
+	defer proxyPortsMutex.Unlock()
 
-	return &models.ProxyStatus{
-		IP:        node.GetInternalIPv4().String(),
-		PortRange: fmt.Sprintf("%d-%d", p.rangeMin, p.rangeMax),
+	result := &models.ProxyStatus{
+		IP:             node.GetInternalIPv4().String(),
+		PortRange:      fmt.Sprintf("%d-%d", p.rangeMin, p.rangeMax),
+		TotalRedirects: int64(len(p.redirects)),
 	}
+	for _, pp := range proxyPorts {
+		if pp.nRedirects > 0 {
+			result.TotalPorts++
+		}
+	}
+	for name, redirect := range p.redirects {
+		result.Redirects = append(result.Redirects, &models.ProxyRedirect{
+			Name:      name,
+			Proxy:     redirect.listener.name,
+			ProxyPort: int64(redirect.listener.rulesPort),
+		})
+	}
+	return result
 }
 
 // UpdateRedirectMetrics updates the redirect metrics per application protocol

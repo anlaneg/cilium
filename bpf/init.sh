@@ -56,6 +56,8 @@ rm $RUNDIR/encap.state 2> /dev/null || true
 # This directory was created by the daemon and contains the per container header file
 DIR="$PWD/globals"
 
+MACHINE=$(uname -m)
+
 function setup_dev()
 {
 	local -r NAME=$1
@@ -159,7 +161,7 @@ function setup_proxy_rules()
 
 	# Any packet to an ingress or egress proxy uses a separate routing table
 	# that routes the packet to the loopback device regardless of the destination
-	# address in the packet. For this to work the skb must have a socket set
+	# address in the packet. For this to work the ctx must have a socket set
 	# (e.g., via TPROXY).
 	to_proxy_rulespec="fwmark 0x200/0xF00 pref 9 lookup $TO_PROXY_RT_TABLE"
 
@@ -269,6 +271,7 @@ function bpf_compile()
 
 	clang -O2 -g -target bpf -emit-llvm				\
 	      -Wno-address-of-packed-member -Wno-unknown-warning-option	\
+	      -I/usr/include/${MACHINE}-linux-gnu                       \
 	      -I. -I$DIR -I$LIB -I$LIB/include				\
 	      -D__NR_CPUS__=$(nproc)					\
 	      -DENABLE_ARP_RESPONDER					\
@@ -456,8 +459,8 @@ case "${MODE}" in
 		CILIUM_IDX=$(cat /sys/class/net/${HOST_DEV1}/ifindex)
 		echo "#define CILIUM_IFINDEX $CILIUM_IDX" >> $RUNDIR/globals/node_config.h
 
-		CILIUM_EPHERMERAL_MIN=$(cat /proc/sys/net/ipv4/ip_local_port_range | awk '{print $1}')
-		echo "#define EPHERMERAL_MIN $CILIUM_EPHERMERAL_MIN" >> $RUNDIR/globals/node_config.h
+		CILIUM_EPHEMERAL_MIN=$(cat /proc/sys/net/ipv4/ip_local_port_range | awk '{print $1}')
+		echo "#define EPHEMERAL_MIN $CILIUM_EPHEMERAL_MIN" >> $RUNDIR/globals/node_config.h
 
 		if [ "$NODE_PORT" = "true" ]; then
 			sed -i '/^#.*NATIVE_DEV_IFINDEX.*$/d' $RUNDIR/globals/node_config.h
@@ -505,7 +508,7 @@ fi
 if [ "$MODE" = "vxlan" -o "$MODE" = "geneve" ]; then
 	ENCAP_DEV="cilium_${MODE}"
 	ip link show $ENCAP_DEV || {
-		ip link add name $ENCAP_DEV address $(rnd_mac_addr) type $MODE external || encap_fail
+		ip link add name $ENCAP_DEV address $(rnd_mac_addr) mtu $MTU type $MODE external || encap_fail
 	}
 
 	setup_dev $ENCAP_DEV
@@ -516,8 +519,7 @@ if [ "$MODE" = "vxlan" -o "$MODE" = "geneve" ]; then
 	echo "#define ENCAP_IFINDEX $ENCAP_IDX" >> $RUNDIR/globals/node_config.h
 
 	CALLS_MAP="cilium_calls_overlay_${ID_WORLD}"
-	POLICY_MAP="cilium_policy_reserved_${ID_WORLD}"
-	COPTS="-DSECLABEL=${ID_WORLD} -DPOLICY_MAP=${POLICY_MAP}"
+	COPTS="-DSECLABEL=${ID_WORLD}"
 	if [ "$NODE_PORT" = "true" ]; then
 		COPTS="${COPTS} -DLB_L3 -DLB_L4"
 	fi
@@ -530,7 +532,7 @@ else
 fi
 
 if [ "$MODE" = "direct" ] || [ "$MODE" = "ipvlan" ] || [ "$MODE" = "routed" ] || [ "$NODE_PORT" = "true" ] ; then
-	if [ -z "$NATIVE_DEV" ]; then
+	if [ "$NATIVE_DEV" == "<nil>" ]; then
 		echo "No device specified for $MODE mode, ignoring..."
 	else
 		if [ "$IP6_HOST" != "<nil>" ]; then
@@ -538,8 +540,7 @@ if [ "$MODE" = "direct" ] || [ "$MODE" = "ipvlan" ] || [ "$MODE" = "routed" ] ||
 		fi
 
 		CALLS_MAP=cilium_calls_netdev_${ID_WORLD}
-		POLICY_MAP="cilium_policy_reserved_${ID_WORLD}"
-		COPTS="-DSECLABEL=${ID_WORLD} -DPOLICY_MAP=${POLICY_MAP}"
+		COPTS="-DSECLABEL=${ID_WORLD}"
 		if [ "$NODE_PORT" = "true" ]; then
 			COPTS="${COPTS} -DLB_L3 -DLB_L4"
 		fi
@@ -563,6 +564,17 @@ else
 	fi
 fi
 
+# Remove bpf_netdev.o from previously used devices
+for iface in $(ip -o -a l | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1 | grep -v cilium); do
+    [ "$iface" == "$NATIVE_DEV" ] && continue
+    for where in ingress egress; do
+        if tc filter show dev "$iface" "$where" | grep -q "bpf_netdev.o"; then
+            echo "Removing bpf_netdev.o from $where of $iface"
+            tc filter del dev "$iface" "$where" || true
+        fi
+    done
+done
+
 if [ "$HOSTLB" = "true" ]; then
 	if [ "$IP6_HOST" != "<nil>" ]; then
 		echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
@@ -570,8 +582,13 @@ if [ "$HOSTLB" = "true" ]; then
 
 	CALLS_MAP="cilium_calls_lb"
 	COPTS="-DLB_L3 -DLB_L4"
-	if [ "$IP6_HOST" != "<nil>" ]; then
+	if [ "$IP6_HOST" != "<nil>" ] || [ "$IP4_HOST" != "<nil>" ] && [ -f /proc/sys/net/ipv6/conf/all/forwarding ]; then
 		bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect6 from-sock6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		if [ "$NODE_PORT" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sock post_bind6 post-bind-sock6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		else
+			bpf_clear_cgroups $CGROUP_ROOT post_bind6
+		fi
 		if [ "$HOSTLB_UDP" = "true" ]; then
 			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr sendmsg6 snd-sock6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
 			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr recvmsg6 rcv-sock6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
@@ -582,6 +599,11 @@ if [ "$HOSTLB" = "true" ]; then
 	fi
 	if [ "$IP4_HOST" != "<nil>" ]; then
 		bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect4 from-sock4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		if [ "$NODE_PORT" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sock post_bind4 post-bind-sock4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		else
+			bpf_clear_cgroups $CGROUP_ROOT post_bind4
+		fi
 		if [ "$HOSTLB_UDP" = "true" ]; then
 			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr sendmsg4 snd-sock4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
 			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr recvmsg4 rcv-sock4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
@@ -591,6 +613,8 @@ if [ "$HOSTLB" = "true" ]; then
 		fi
 	fi
 else
+	bpf_clear_cgroups $CGROUP_ROOT post_bind4
+	bpf_clear_cgroups $CGROUP_ROOT post_bind6
 	bpf_clear_cgroups $CGROUP_ROOT connect4
 	bpf_clear_cgroups $CGROUP_ROOT connect6
 	bpf_clear_cgroups $CGROUP_ROOT sendmsg4
@@ -601,8 +625,7 @@ fi
 
 # bpf_host.o requires to see an updated node_config.h which includes ENCAP_IFINDEX
 CALLS_MAP="cilium_calls_netdev_ns_${ID_HOST}"
-POLICY_MAP="cilium_policy_reserved_${ID_HOST}"
-COPTS="-DFROM_HOST -DFIXED_SRC_SECCTX=${ID_HOST} -DSECLABEL=${ID_HOST} -DPOLICY_MAP=${POLICY_MAP}"
+COPTS="-DFROM_HOST -DFIXED_SRC_SECCTX=${ID_HOST} -DSECLABEL=${ID_HOST}"
 if [ "$MODE" == "ipvlan" ]; then
 	COPTS+=" -DENABLE_EXTRA_HOST_DEV"
 fi
@@ -611,7 +634,7 @@ bpf_load $HOST_DEV1 "" "ingress" bpf_hostdev_ingress.c bpf_hostdev_ingress.o to-
 # bpf_ipsec.o is also needed by proxy redirects, so we load it unconditionally
 bpf_load $HOST_DEV2 "" "ingress" bpf_ipsec.c bpf_ipsec.o from-netdev $CALLS_MAP
 if [ "$IPSEC" == "true" ]; then
-	if [ $ENCRYPT_DEV != "" ]; then
+	if [ "$ENCRYPT_DEV" != "<nil>" ]; then
 		bpf_load $ENCRYPT_DEV "" "ingress" bpf_network.c bpf_network.o from-network $CALLS_MAP
 	fi
 fi
@@ -619,10 +642,10 @@ if [ "$HOST_DEV1" != "$HOST_DEV2" ]; then
 	bpf_unload $HOST_DEV2 "egress"
 fi
 
-if [ -n "$XDP_DEV" ]; then
+if [ "$XDP_DEV" != "<nil>" ]; then
 	CIDR_MAP="cilium_cidr_v*"
 	COPTS=""
-	xdp_load $XDP_DEV $XDP_MODE "$COPTS" bpf_xdp.c bpf_xdp.o from-netdev $CIDR_MAP
+	xdp_load $XDP_DEV $XDP_MODE "$COPTS" bpf_prefilter.c bpf_prefilter.o from-netdev $CIDR_MAP
 fi
 
 # Compile dummy BPF file containing all shared struct definitions used by

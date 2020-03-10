@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -244,6 +244,14 @@ type Backend interface {
 	// backends, and may use leases to expire keys.
 	RunGC(ctx context.Context, staleKeysPrevRound map[string]uint64) (map[string]uint64, error)
 
+	// RunLocksGC reaps stale or unused locks within the Backend. It is used by
+	// the cilium-operator and is not invoked by cilium-agent. Returns
+	// a map of locks currently being held in the KVStore including the ones
+	// that failed to be GCed.
+	// Note: not all Backend implementations rely on this, such as the kvstore
+	// backends, and may use leases to expire keys.
+	RunLocksGC(ctx context.Context, staleKeysPrevRound map[string]kvstore.Value) (map[string]kvstore.Value, error)
+
 	// Status returns a human-readable status of the Backend.
 	Status() (string, error)
 }
@@ -297,7 +305,7 @@ func NewAllocator(typ AllocatorKey, backend Backend, opts ...AllocatorOption) (*
 
 	a.idPool = idpool.NewIDPool(a.min, a.max)
 
-	a.initialListDone = a.mainCache.start(a)
+	a.initialListDone = a.mainCache.start()
 	if !a.disableGC {
 		go func() {
 			select {
@@ -357,6 +365,13 @@ func WithMasterKeyProtection() AllocatorOption {
 // WithoutGC disables the use of the garbage collector
 func WithoutGC() AllocatorOption {
 	return func(a *Allocator) { a.disableGC = true }
+}
+
+// GetEvents returns the events channel given to the allocator when
+// constructed.
+// Note: This channel is not owned by the allocator!
+func (a *Allocator) GetEvents() AllocatorEventChan {
+	return a.events
 }
 
 // Delete deletes an allocator and stops the garbage collector
@@ -443,7 +458,7 @@ func (a *Allocator) lockedAllocate(ctx context.Context, key AllocatorKey) (idpoo
 		return 0, false, err
 	}
 
-	defer lock.Unlock(ctx)
+	defer lock.Unlock(context.Background())
 
 	// fetch first key that matches /value/<key> while ignoring the
 	// node suffix
@@ -700,6 +715,11 @@ func (a *Allocator) RunGC(staleKeysPrevRound map[string]uint64) (map[string]uint
 	return a.backend.RunGC(context.TODO(), staleKeysPrevRound)
 }
 
+// RunLocksGC scans the kvstore for stale locks and removes them
+func (a *Allocator) RunLocksGC(ctx context.Context, staleLocksPrevRound map[string]kvstore.Value) (map[string]kvstore.Value, error) {
+	return a.backend.RunLocksGC(ctx, staleLocksPrevRound)
+}
+
 // DeleteAllKeys will delete all keys. It is expected to be used in tests.
 func (a *Allocator) DeleteAllKeys() {
 	a.backend.DeleteAllKeys(context.TODO())
@@ -773,19 +793,28 @@ type RemoteCache struct {
 // kvstore will be maintained in the RemoteCache structure returned and will
 // start being reported in the identities returned by the ForeachCache()
 // function.
-func (a *Allocator) WatchRemoteKVStore(backend kvstore.BackendOperations, prefix string) *RemoteCache {
+func (a *Allocator) WatchRemoteKVStore(remoteAlloc *Allocator) *RemoteCache {
 	rc := &RemoteCache{
-		cache:     newCache(a),
-		allocator: a,
+		cache:     newCache(remoteAlloc),
+		allocator: remoteAlloc,
 	}
 
 	a.remoteCachesMutex.Lock()
 	a.remoteCaches[rc] = struct{}{}
 	a.remoteCachesMutex.Unlock()
 
-	rc.cache.start(a)
+	rc.cache.start()
 
 	return rc
+}
+
+// NumEntries returns the number of entries in the remote cache
+func (rc *RemoteCache) NumEntries() int {
+	if rc == nil {
+		return 0
+	}
+
+	return rc.cache.numEntries()
 }
 
 // Close stops watching for identities in the kvstore associated with the

@@ -23,10 +23,10 @@ import (
 
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/comparator"
+	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/service"
 
@@ -59,7 +59,7 @@ func ParseServiceID(svc *types.Service) ServiceID {
 }
 
 // ParseService parses a Kubernetes service and returns a Service
-func ParseService(svc *types.Service) (ServiceID, *Service) {
+func ParseService(svc *types.Service, nodeAddressing datapath.NodeAddressing) (ServiceID, *Service) {
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.K8sSvcName:    svc.ObjectMeta.Name,
 		logfields.K8sNamespace:  svc.ObjectMeta.Namespace,
@@ -108,7 +108,7 @@ func ParseService(svc *types.Service) (ServiceID, *Service) {
 	}
 
 	svcInfo := NewService(clusterIP, svc.Spec.ExternalIPs, loadBalancerIPs, headless,
-		trafficPolicy, svc.Labels, svc.Spec.Selector)
+		trafficPolicy, uint16(svc.Spec.HealthCheckNodePort), svc.Labels, svc.Spec.Selector)
 	svcInfo.IncludeExternal = getAnnotationIncludeExternal(svc)
 	svcInfo.Shared = getAnnotationShared(svc)
 
@@ -129,7 +129,7 @@ func ParseService(svc *types.Service) (ServiceID, *Service) {
 		// so for now (until we have refactored the LB code) keep NodePort
 		// frontends in Service.NodePorts.
 		if svc.Spec.Type == v1.ServiceTypeNodePort || svc.Spec.Type == v1.ServiceTypeLoadBalancer {
-			if option.Config.EnableNodePort {
+			if option.Config.EnableNodePort && nodeAddressing != nil {
 				if _, ok := svcInfo.NodePorts[portName]; !ok {
 					svcInfo.NodePorts[portName] =
 						make(map[string]*loadbalancer.L3n4AddrID)
@@ -141,7 +141,7 @@ func ParseService(svc *types.Service) (ServiceID, *Service) {
 				if option.Config.EnableIPv4 &&
 					clusterIP != nil && !strings.Contains(svc.Spec.ClusterIP, ":") {
 
-					for _, ip := range []net.IP{net.IPv4(0, 0, 0, 0), node.GetNodePortIPv4(), node.GetInternalIPv4()} {
+					for _, ip := range nodeAddressing.IPv4().LoadBalancerNodeAddresses() {
 						nodePortFE := loadbalancer.NewL3n4AddrID(proto, ip, port, id)
 						svcInfo.NodePorts[portName][nodePortFE.String()] = nodePortFE
 					}
@@ -149,7 +149,7 @@ func ParseService(svc *types.Service) (ServiceID, *Service) {
 				if option.Config.EnableIPv6 &&
 					clusterIP != nil && strings.Contains(svc.Spec.ClusterIP, ":") {
 
-					for _, ip := range []net.IP{net.IPv6zero, node.GetNodePortIPv6(), node.GetIPv6Router()} {
+					for _, ip := range nodeAddressing.IPv6().LoadBalancerNodeAddresses() {
 						nodePortFE := loadbalancer.NewL3n4AddrID(proto, ip, port, id)
 						svcInfo.NodePorts[portName][nodePortFE.String()] = nodePortFE
 					}
@@ -214,6 +214,12 @@ type Service struct {
 	// node-local backends are chosen
 	TrafficPolicy loadbalancer.SVCTrafficPolicy
 
+	// HealthCheckNodePort defines on which port the node runs a HTTP health
+	// check server which may be used by external loadbalancers to determine
+	// if a node has local backends. This will only have effect if both
+	// LoadBalancerIPs is not empty and TrafficPolicy is SVCTrafficPolicyLocal.
+	HealthCheckNodePort uint16
+
 	Ports map[loadbalancer.FEPortName]*loadbalancer.L4Addr
 	// NodePorts stores mapping for port name => NodePort frontend addr string =>
 	// NodePort fronted addr. The string addr => addr indirection is to avoid
@@ -259,6 +265,7 @@ func (s *Service) DeepEquals(o *Service) bool {
 	}
 	if s.IsHeadless == o.IsHeadless &&
 		s.TrafficPolicy == o.TrafficPolicy &&
+		s.HealthCheckNodePort == o.HealthCheckNodePort &&
 		s.FrontendIP.Equal(o.FrontendIP) &&
 		comparator.MapStringEquals(s.Labels, o.Labels) &&
 		comparator.MapStringEquals(s.Selector, o.Selector) {
@@ -341,7 +348,7 @@ func parseIPs(externalIPs []string) map[string]net.IP {
 // NewService returns a new Service with the Ports map initialized.
 func NewService(ip net.IP, externalIPs []string, loadBalancerIPs []string,
 	headless bool, trafficPolicy loadbalancer.SVCTrafficPolicy,
-	labels, selector map[string]string) *Service {
+	healthCheckNodePort uint16, labels, selector map[string]string) *Service {
 
 	var k8sExternalIPs map[string]net.IP
 	var k8sLoadBalancerIPs map[string]net.IP
@@ -352,15 +359,19 @@ func NewService(ip net.IP, externalIPs []string, loadBalancerIPs []string,
 	}
 
 	return &Service{
-		FrontendIP:      ip,
-		IsHeadless:      headless,
-		TrafficPolicy:   trafficPolicy,
+		FrontendIP: ip,
+
+		IsHeadless:          headless,
+		TrafficPolicy:       trafficPolicy,
+		HealthCheckNodePort: healthCheckNodePort,
+
 		Ports:           map[loadbalancer.FEPortName]*loadbalancer.L4Addr{},
 		NodePorts:       map[loadbalancer.FEPortName]map[string]*loadbalancer.L3n4AddrID{},
 		K8sExternalIPs:  k8sExternalIPs,
 		LoadBalancerIPs: k8sLoadBalancerIPs,
-		Labels:          labels,
-		Selector:        selector,
+
+		Labels:   labels,
+		Selector: selector,
 	}
 }
 
@@ -405,14 +416,14 @@ func NewClusterService(id ServiceID, k8sService *Service, k8sEndpoints *Endpoint
 	return svc
 }
 
-type BackendIPGetter interface {
-	GetRandomBackendIP(svcID ServiceID) *loadbalancer.L3n4Addr
+type ServiceIPGetter interface {
+	GetServiceIP(svcID ServiceID) *loadbalancer.L3n4Addr
 }
 
-// CreateCustomDialer returns a custom dialer that picks a random backend IP,
-// from the given BackendIPGetter, if the address the used to dial is a k8s
+// CreateCustomDialer returns a custom dialer that picks the service IP,
+// from the given ServiceIPGetter, if the address the used to dial is a k8s
 // service.
-func CreateCustomDialer(b BackendIPGetter, log *logrus.Entry) func(s string, duration time.Duration) (conn net.Conn, e error) {
+func CreateCustomDialer(b ServiceIPGetter, log *logrus.Entry) func(s string, duration time.Duration) (conn net.Conn, e error) {
 	return func(s string, duration time.Duration) (conn net.Conn, e error) {
 		// If the service is available, do the service translation to
 		// the service IP. Otherwise dial with the original service
@@ -421,9 +432,9 @@ func CreateCustomDialer(b BackendIPGetter, log *logrus.Entry) func(s string, dur
 		if err == nil {
 			svc := ParseServiceIDFrom(u.Host)
 			if svc != nil {
-				backendIP := b.GetRandomBackendIP(*svc)
-				if backendIP != nil {
-					s = backendIP.String()
+				svcIP := b.GetServiceIP(*svc)
+				if svcIP != nil {
+					s = svcIP.String()
 				}
 			} else {
 				log.Debug("Service not found")

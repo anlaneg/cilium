@@ -1,29 +1,14 @@
-/*
- *  Copyright (C) 2016-2019 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 /*
  * Packet forwarding notification via perf event ring buffer.
  *
  * API:
- * void send_trace_notify(skb, obs_point, src, dst, dst_id, ifindex, reason, monitor)
+ * void send_trace_notify(ctx, obs_point, src, dst, dst_id, ifindex, reason, monitor)
  *
  * If TRACE_NOTIFY is not defined, the API will be compiled in as a NOP.
  */
-
 #ifndef __LIB_TRACE__
 #define __LIB_TRACE__
 
@@ -71,20 +56,20 @@ enum {
 
 /**
  * update_trace_metrics
- * @skb:	socket buffer
+ * @ctx:	socket buffer
  * @obs_point:	observation point (TRACE_*)
  * @reason:	reason for forwarding the packet (TRACE_REASON_*)
  *
  * Update metrics based on a trace event
  */
-static inline void
-update_trace_metrics(struct __sk_buff *skb, __u8 obs_point, __u8 reason)
+static __always_inline void
+update_trace_metrics(struct __ctx_buff *ctx, __u8 obs_point, __u8 reason)
 {
 	__u8 encrypted;
 
 	switch (obs_point) {
 		case TRACE_TO_LXC:
-			update_metrics(skb->len, METRIC_INGRESS, REASON_FORWARDED);
+			update_metrics(ctx_full_len(ctx), METRIC_INGRESS, REASON_FORWARDED);
 			break;
 
 		/* TRACE_FROM_LXC, i.e endpoint-to-endpoint delivery
@@ -99,21 +84,20 @@ update_trace_metrics(struct __sk_buff *skb, __u8 obs_point, __u8 reason)
 		case TRACE_TO_HOST:
 		case TRACE_TO_STACK:
 		case TRACE_TO_OVERLAY:
-			update_metrics(skb->len, METRIC_EGRESS, REASON_FORWARDED);
+			update_metrics(ctx_full_len(ctx), METRIC_EGRESS, REASON_FORWARDED);
 			break;
 		case TRACE_FROM_OVERLAY:
 		case TRACE_FROM_NETWORK:
 			encrypted = reason & TRACE_REASON_ENCRYPTED;
 			if (!encrypted)
-				update_metrics(skb->len, METRIC_INGRESS, REASON_PLAINTEXT);
+				update_metrics(ctx_full_len(ctx), METRIC_INGRESS, REASON_PLAINTEXT);
 			else
-				update_metrics(skb->len, METRIC_INGRESS, REASON_DECRYPT);
+				update_metrics(ctx_full_len(ctx), METRIC_INGRESS, REASON_DECRYPT);
 			break;
 	}
 }
 
 #ifdef TRACE_NOTIFY
-
 struct trace_notify {
 	NOTIFY_CAPTURE_HDR
 	__u32		src_label;
@@ -134,7 +118,7 @@ struct trace_notify {
 	};
 };
 
-static inline bool emit_trace_notify(__u8 obs_point, __u32 monitor)
+static __always_inline bool emit_trace_notify(__u8 obs_point, __u32 monitor)
 {
 	if (MONITOR_AGGREGATION >= TRACE_AGGREGATE_RX) {
 		switch (obs_point) {
@@ -155,11 +139,11 @@ static inline bool emit_trace_notify(__u8 obs_point, __u32 monitor)
 	return true;
 }
 
-static inline void
-send_trace_notify(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst,
+static __always_inline void
+send_trace_notify(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst,
 		   __u16 dst_id, __u32 ifindex, __u8 reason, __u32 monitor)
 {
-	update_trace_metrics(skb, obs_point, reason);
+	update_trace_metrics(ctx, obs_point, reason);
 
 	if (!emit_trace_notify(obs_point, monitor))
 		return;
@@ -167,14 +151,15 @@ send_trace_notify(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst,
 	if (!monitor)
 		monitor = TRACE_PAYLOAD_LEN;
 
-	uint64_t skb_len = (uint64_t)skb->len, cap_len = min((uint64_t)monitor, (uint64_t)skb_len);
-	uint32_t hash = get_hash_recalc(skb);
+	__u64 ctx_len = (__u64)ctx_full_len(ctx);
+	__u64 cap_len = min((__u64)monitor, (__u64)ctx_len);
+	__u32 hash = get_hash_recalc(ctx);
 	struct trace_notify msg = {
 		.type = CILIUM_NOTIFY_TRACE,
 		.subtype = obs_point,
 		.source = EVENT_SOURCE,
 		.hash = hash,
-		.len_orig = skb_len,
+		.len_orig = ctx_len,
 		.len_cap = cap_len,
 		.version = NOTIFY_CAPTURE_VER,
 		.src_label = src,
@@ -189,16 +174,16 @@ send_trace_notify(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst,
 		.orig_pad2 = 0,
 		.orig_pad3 = 0,
 	};
-	skb_event_output(skb, &EVENTS_MAP,
+	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
 }
 
-static inline void
-send_trace_notify4(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, __be32 orig_addr,
+static __always_inline void
+send_trace_notify4(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst, __be32 orig_addr,
 		   __u16 dst_id, __u32 ifindex, __u8 reason, __u32 monitor)
 {
-	update_trace_metrics(skb, obs_point, reason);
+	update_trace_metrics(ctx, obs_point, reason);
 
 	if (!emit_trace_notify(obs_point, monitor))
 		return;
@@ -206,14 +191,15 @@ send_trace_notify4(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, 
 	if (!monitor)
 		monitor = TRACE_PAYLOAD_LEN;
 
-	uint64_t skb_len = (uint64_t)skb->len, cap_len = min((uint64_t)monitor, (uint64_t)skb_len);
-	uint32_t hash = get_hash_recalc(skb);
+	__u64 ctx_len = (__u64)ctx_full_len(ctx);
+	__u64 cap_len = min((__u64)monitor, (__u64)ctx_len);
+	__u32 hash = get_hash_recalc(ctx);
 	struct trace_notify msg = {
 		.type = CILIUM_NOTIFY_TRACE,
 		.subtype = obs_point,
 		.source = EVENT_SOURCE,
 		.hash = hash,
-		.len_orig = skb_len,
+		.len_orig = ctx_len,
 		.len_cap = cap_len,
 		.version = NOTIFY_CAPTURE_VER,
 		.src_label = src,
@@ -228,16 +214,16 @@ send_trace_notify4(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, 
 		.orig_pad2 = 0,
 		.orig_pad3 = 0,
 	};
-	skb_event_output(skb, &EVENTS_MAP,
+	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
 }
 
-static inline void
-send_trace_notify6(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, union v6addr *orig_addr,
+static __always_inline void
+send_trace_notify6(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst, union v6addr *orig_addr,
 		   __u16 dst_id, __u32 ifindex, __u8 reason, __u32 monitor)
 {
-	update_trace_metrics(skb, obs_point, reason);
+	update_trace_metrics(ctx, obs_point, reason);
 
 	if (!emit_trace_notify(obs_point, monitor))
 		return;
@@ -245,14 +231,15 @@ send_trace_notify6(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, 
 	if (!monitor)
 		monitor = TRACE_PAYLOAD_LEN;
 
-	uint64_t skb_len = (uint64_t)skb->len, cap_len = min((uint64_t)monitor, (uint64_t)skb_len);
-	uint32_t hash = get_hash_recalc(skb);
+	__u64 ctx_len = (__u64)ctx_full_len(ctx);
+	__u64 cap_len = min((__u64)monitor, (__u64)ctx_len);
+	__u32 hash = get_hash_recalc(ctx);
 	struct trace_notify msg = {
 		.type = CILIUM_NOTIFY_TRACE,
 		.subtype = obs_point,
 		.source = EVENT_SOURCE,
 		.hash = hash,
-		.len_orig = skb_len,
+		.len_orig = ctx_len,
 		.len_cap = cap_len,
 		.version = NOTIFY_CAPTURE_VER,
 		.src_label = src,
@@ -266,34 +253,30 @@ send_trace_notify6(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, 
 
 	ipv6_addr_copy(&msg.orig_ip6, orig_addr);
 
-	skb_event_output(skb, &EVENTS_MAP,
+	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
 }
-
 #else
-
-static inline void
-send_trace_notify(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst,
+static __always_inline void
+send_trace_notify(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst,
 		  __u16 dst_id, __u32 ifindex, __u8 reason, __u32 monitor)
 {
-	update_trace_metrics(skb, obs_point, reason);
+	update_trace_metrics(ctx, obs_point, reason);
 }
 
-static inline void
-send_trace_notify4(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, __be32 orig_addr,
+static __always_inline void
+send_trace_notify4(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst, __be32 orig_addr,
 		   __u16 dst_id, __u32 ifindex, __u8 reason, __u32 monitor)
 {
-	update_trace_metrics(skb, obs_point, reason);
+	update_trace_metrics(ctx, obs_point, reason);
 }
 
-static inline void
-send_trace_notify6(struct __sk_buff *skb, __u8 obs_point, __u32 src, __u32 dst, union v6addr *orig_addr,
+static __always_inline void
+send_trace_notify6(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst, union v6addr *orig_addr,
 		   __u16 dst_id, __u32 ifindex, __u8 reason, __u32 monitor)
 {
-	update_trace_metrics(skb, obs_point, reason);
+	update_trace_metrics(ctx, obs_point, reason);
 }
-
-#endif
-
+#endif /* TRACE_NOTIFY */
 #endif /* __LIB_TRACE__ */

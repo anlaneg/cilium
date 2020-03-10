@@ -18,13 +18,15 @@ contribute to Cilium:
 +----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
 | Dependency                                                                       | Version / Commit ID      | Download Command                                                              |
 +==================================================================================+==========================+===============================================================================+
-| git                                                                              | latest                   | N/A (OS-specific)                                                             |
+|  git                                                                             | latest                   | N/A (OS-specific)                                                             |
 +----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
-|  glibc-devel (32-bit)                                                            | latest                   | N/A (OS-specific)                                                             |
+|  clang                                                                           | >= 7.0                   | N/A (OS-specific)                                                             |
 +----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
-| `go <https://golang.org/dl/>`_                                                   | 1.13.5                   | N/A (OS-specific)                                                             |
+|  llvm                                                                            | >= 7.0                   | N/A (OS-specific)                                                             |
 +----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
-| `go-bindata <https://github.com/cilium/go-bindata>`_                             | ``a0ff2567cfb``          | ``go get -u github.com/cilium/go-bindata/...``                                |
+|  libelf-devel                                                                    | latest                   | N/A (OS-specific)                                                             |
++----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
+| `go <https://golang.org/dl/>`_                                                   | |GO_RELEASE|             | N/A (OS-specific)                                                             |
 +----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
 + `ginkgo <https://github.com/onsi/ginkgo>`__                                      | >= 1.4.0                 | ``go get -u github.com/onsi/ginkgo/ginkgo``                                   |
 +----------------------------------------------------------------------------------+--------------------------+-------------------------------------------------------------------------------+
@@ -181,6 +183,21 @@ and ports to enable NFS.
    always fails when using VirtualBox on OSX, but it is safe to let
    the startup script to reset the prefix length to 16.
 
+.. note::
+
+   Make sure your host NFS configuration is setup to use tcp:
+
+   .. code-block:: none
+
+      # cat /etc/nfs.conf
+      ...
+      [nfsd]
+      # grace-time=90
+      tcp=y
+      # vers2=n
+      # vers3=y
+      ...
+
 If for some reason, running of the provisioning script fails, you should bring the VM down before trying again:
 
 ::
@@ -270,9 +287,10 @@ Lets assume we want to add ``github.com/containernetworking/cni`` version ``v0.5
 
 .. code:: bash
 
-    $ ./contrib/go-mod/pin-dependency.sh github.com/containernetworking/cni v0.5.2
-    $ ./contrib/go-mod/update-vendor.sh
-    $ git add vendor/
+    $ go get github.com/containernetworking/cni@v0.5.2
+    $ go mod tidy
+    $ go mod vendor
+    $ git add go.mod go.sum vendor/
 
 For a first run, it can take a while as it will download all dependencies to
 your local cache but the remaining runs will be faster.
@@ -281,16 +299,14 @@ Updating k8s is a special case, for that one needs to do:
 
 .. code:: bash
 
-    $ ./contrib/go-mod/pin-dependency.sh k8s.io/kubernetes v1.16.2
-    $ # get the commit id of the tag we are updating (c97fe50)
-    $ # open go.mod and look for a line similar to '// v0.0.0-20191001043732-d647ddbd755f -> k8s v1.16.1'
-    $ # Search and replace 'v0.0.0-20191001043732-d647ddbd755f' with 'c97fe50' and close the file
-    $ # Run the update-vendor.sh and ignore the errors 'version "c97fe50" invalid: must be of the form v1.2.3'
-    $ ./contrib/go-mod/update-vendor.sh
-    $ # open go.mod again and replace 'c97fe50 -> k8s v1.16.1'
-    $ # with 'v0.0.0-20191012044237-c97fe5036ef3 -> k8s v1.16.2'
+    $ # get the tag we are updating (for example ``v0.17.3`` corresponds to k8s ``v1.17.3``)
+    $ # open go.mod and search and replace all ``v0.17.3`` with the version
+    $ # that we are trying to upgrade with, for example: ``v0.17.4``.
+    $ # Close the file and run:
+    $ go mod tidy
+    $ go mod vendor
     $ make generate-k8s-api
-    $ git add vendor/
+    $ git add go.mod go.sum vendor/
 
 Debugging
 ~~~~~~~~~

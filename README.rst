@@ -24,16 +24,20 @@ Stable Releases
 
 The Cilium community maintains minor stable releases for the last three major
 Cilium versions. Older Cilium stable versions from major releases prior to that
-are considered EOL. Listed below are the actively maintained release branches
-along with their latest minor release, corresponding image pull tags and their
-release notes:
+are considered EOL.
+
+For upgrades to new major releases please consult the `Cilium Upgrade Guide
+<https://docs.cilium.io/en/stable/install/upgrade/>`_.
+
+Listed below are the actively maintained release branches along with their latest
+minor release, corresponding image pull tags and their release notes:
 
 +-------------------------------------------------------+------------+-------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
-| `v1.6 <https://github.com/cilium/cilium/tree/v1.6>`__ | 2019-12-17 | ``docker.io/cilium/cilium:v1.6.5``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.6.5>`__  | `General Announcement <https://cilium.io/blog/2019/08/20/cilium-16>`__ |
+| `v1.7 <https://github.com/cilium/cilium/tree/v1.7>`__ | 2020-03-04 | ``docker.io/cilium/cilium:v1.7.1``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.7.1>`__  | `General Announcement <https://cilium.io/blog/2020/02/18/cilium-17>`__ |
 +-------------------------------------------------------+------------+-------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
-| `v1.5 <https://github.com/cilium/cilium/tree/v1.5>`__ | 2019-12-17 | ``docker.io/cilium/cilium:v1.5.11`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.5.11>`__ | `General Announcement <https://cilium.io/blog/2019/04/24/cilium-15>`__ |
+| `v1.6 <https://github.com/cilium/cilium/tree/v1.6>`__ | 2020-03-04 | ``docker.io/cilium/cilium:v1.6.7``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.6.7>`__  | `General Announcement <https://cilium.io/blog/2019/08/20/cilium-16>`__ |
 +-------------------------------------------------------+------------+-------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
-| `v1.4 <https://github.com/cilium/cilium/tree/v1.4>`__ | 2019-12-17 | ``docker.io/cilium/cilium:v1.4.10``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.4.10>`_ | `General Announcement <https://cilium.io/blog/2019/02/12/cilium-14>`__ |
+| `v1.5 <https://github.com/cilium/cilium/tree/v1.5>`__ | 2020-03-04 | ``docker.io/cilium/cilium:v1.5.13`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.5.13>`__ | `General Announcement <https://cilium.io/blog/2019/04/24/cilium-15>`__ |
 +-------------------------------------------------------+------------+-------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
 
 Functionality Overview
@@ -247,8 +251,8 @@ Weekly Developer meeting
 ------------------------
 * The developer community is hanging out on zoom on a weekly basis to chat.
   Everybody is welcome.
-* Weekly, Monday, 9:00 am PT, 12:00 pm (noon) ET, 6:00 pm CEST
-* `Join zoom <https://zoom.us/j/328820525>`_
+* Weekly, Monday, 8:00 am PT, 11:00 am ET, 5:00 pm CEST
+* `Join zoom <https://zoom.us/j/596609673>`_
 
 License
 =======
@@ -262,7 +266,7 @@ under the `General Public License, Version 2.0 <bpf/COPYING>`_.
 .. _`Architecture and Concepts`: http://docs.cilium.io/en/stable/concepts/
 .. _`Installing Cilium`: http://docs.cilium.io/en/stable/gettingstarted/#installation
 .. _`Frequently Asked Questions`: https://github.com/cilium/cilium/issues?utf8=%E2%9C%93&q=is%3Aissue+label%3Akind%2Fquestion+
-.. _Contributing: http://docs.cilium.io/en/stable/contributing/contributing/
+.. _Contributing: http://docs.cilium.io/en/stable/contributing/development/
 .. _Prerequisites: http://docs.cilium.io/en/doc-1.0/install/system_requirements
 .. _`BPF and XDP Reference Guide`: http://docs.cilium.io/en/stable/bpf/
 

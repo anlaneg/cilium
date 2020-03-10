@@ -1,35 +1,24 @@
-/*
- *  Copyright (C) 2018-2019 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
-#include <stdio.h>
-#include <linux/byteorder.h>
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2018-2020 Authors of Cilium */
 
 /* Ensure declaration of notification event types */
 #define DEBUG
 #define TRACE_NOTIFY
 #define DROP_NOTIFY
+#define POLICY_VERDICT_NOTIFY
+
+#include <bpf/ctx/unspec.h>
+#include <bpf/api.h>
 
 #include "node_config.h"
 #include "lib/conntrack.h"
 #include "lib/dbg.h"
 #include "lib/drop.h"
+#define SKIP_UNDEF_LPM_LOOKUP_FN
 #include "lib/maps.h"
 #include "lib/nat.h"
 #include "lib/trace.h"
+#include "lib/policy_log.h"
 #include "sockops/bpf_sockops.h"
 
 // DECLARE_STRUCT declares a unique usage of the struct 'x' on the stack.
@@ -71,6 +60,7 @@ int main() {
     DECLARE_STRUCT(ipv6_nat_entry, iter);
     DECLARE_STRUCT(trace_notify, iter);
     DECLARE_STRUCT(drop_notify, iter);
+    DECLARE_STRUCT(policy_verdict_notify, iter);
     DECLARE_STRUCT(debug_msg, iter);
     DECLARE_STRUCT(debug_capture_msg, iter);
 

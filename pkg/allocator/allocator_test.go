@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -174,6 +174,10 @@ func (d *dummyBackend) ListAndWatch(ctx context.Context, handler CacheMutations,
 	<-stopChan
 }
 
+func (d *dummyBackend) RunLocksGC(_ context.Context, _ map[string]kvstore.Value) (map[string]kvstore.Value, error) {
+	return nil, nil
+}
+
 func (d *dummyBackend) RunGC(context.Context, map[string]uint64) (map[string]uint64, error) {
 	return nil, nil
 }
@@ -184,9 +188,11 @@ func (d *dummyBackend) Status() (string, error) {
 
 type TestAllocatorKey string
 
-func (t TestAllocatorKey) GetKey() string              { return string(t) }
-func (t TestAllocatorKey) GetAsMap() map[string]string { return map[string]string{string(t): string(t)} }
-func (t TestAllocatorKey) String() string              { return string(t) }
+func (t TestAllocatorKey) GetKey() string { return string(t) }
+func (t TestAllocatorKey) GetAsMap() map[string]string {
+	return map[string]string{string(t): string(t)}
+}
+func (t TestAllocatorKey) String() string { return string(t) }
 func (t TestAllocatorKey) PutKey(v string) AllocatorKey {
 	return TestAllocatorKey(v)
 }

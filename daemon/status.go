@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -109,20 +110,62 @@ func (d *Daemon) getK8sStatus() *models.K8sStatus {
 	return k8sStatus
 }
 
+func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
+	if !k8s.IsEnabled() {
+		return &models.KubeProxyReplacement{Mode: models.KubeProxyReplacementModeDisabled}
+	}
+
+	var mode string
+	switch option.Config.KubeProxyReplacement {
+	case option.KubeProxyReplacementStrict:
+		mode = models.KubeProxyReplacementModeStrict
+	case option.KubeProxyReplacementPartial:
+		mode = models.KubeProxyReplacementModePartial
+	case option.KubeProxyReplacementProbe:
+		mode = models.KubeProxyReplacementModeProbe
+	case option.KubeProxyReplacementDisabled:
+		mode = models.KubeProxyReplacementModeDisabled
+	}
+
+	features := &models.KubeProxyReplacementFeatures{
+		NodePort:              &models.KubeProxyReplacementFeaturesNodePort{},
+		ExternalIPs:           &models.KubeProxyReplacementFeaturesExternalIPs{},
+		HostReachableServices: &models.KubeProxyReplacementFeaturesHostReachableServices{},
+	}
+	if option.Config.EnableNodePort {
+		features.NodePort.Enabled = true
+		features.NodePort.Mode = strings.ToUpper(option.Config.NodePortMode)
+		features.NodePort.PortMin = int64(option.Config.NodePortMin)
+		features.NodePort.PortMax = int64(option.Config.NodePortMax)
+	}
+	if option.Config.EnableExternalIPs {
+		features.ExternalIPs.Enabled = true
+	}
+	if option.Config.EnableHostServicesTCP {
+		features.HostReachableServices.Enabled = true
+		protocols := []string{}
+		if option.Config.EnableHostServicesTCP {
+			protocols = append(protocols, "TCP")
+		}
+		if option.Config.EnableHostServicesUDP {
+			protocols = append(protocols, "UDP")
+		}
+		features.HostReachableServices.Protocols = protocols
+	}
+
+	return &models.KubeProxyReplacement{
+		Mode:     mode,
+		Features: features,
+	}
+
+}
+
 type getHealthz struct {
 	daemon *Daemon
 }
 
 func NewGetHealthzHandler(d *Daemon) GetHealthzHandler {
 	return &getHealthz{daemon: d}
-}
-
-func checkLocks(d *Daemon) {
-	// Try to acquire a couple of global locks to have the status API fail
-	// in case of a deadlock on these locks
-
-	option.Config.ConfigPatchMutex.Lock()
-	option.Config.ConfigPatchMutex.Unlock()
 }
 
 func (d *Daemon) getNodeStatus() *models.ClusterStatus {
@@ -592,6 +635,32 @@ func (d *Daemon) startStatusCollector() {
 				}
 			},
 		},
+		{
+			Name: "clustermesh",
+			Probe: func(ctx context.Context) (interface{}, error) {
+				if d.clustermesh == nil {
+					return nil, nil
+				}
+				return d.clustermesh.Status(), nil
+			},
+			OnStatusUpdate: func(status status.Status) {
+				d.statusCollectMutex.Lock()
+				defer d.statusCollectMutex.Unlock()
+
+				if status.Err == nil {
+					if s, ok := status.Data.(*models.ClusterMeshStatus); ok {
+						d.statusResponse.ClusterMesh = s
+					}
+				}
+			},
+		},
+	}
+
+	if k8s.IsEnabled() {
+		// kube-proxy replacement configuration does not change after
+		// initKubeProxyReplacementOptions() has been executed, so it's fine to
+		// statically set the field here.
+		d.statusResponse.KubeProxyReplacement = d.getKubeProxyReplacementStatus()
 	}
 
 	d.statusCollector = status.NewCollector(probes, status.Config{})

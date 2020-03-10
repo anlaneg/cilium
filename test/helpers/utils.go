@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,17 +24,18 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cilium/cilium/pkg/versioncheck"
 	"github.com/cilium/cilium/test/config"
-	"github.com/cilium/cilium/test/ginkgo-ext"
+	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 
 	go_version "github.com/blang/semver"
 	"github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"golang.org/x/sys/unix"
 )
 
 func init() {
@@ -218,14 +219,14 @@ func GetAppPods(apps []string, namespace string, kubectl *Kubectl, appFmt string
 // directly from test code to assist troubleshooting and test development.
 func HoldEnvironment(description ...string) {
 	test := ginkgo.CurrentGinkgoTestDescription()
-	pid := syscall.Getpid()
+	pid := unix.Getpid()
 
 	fmt.Fprintf(os.Stdout, "\n---\n%s", test.FullTestText)
 	fmt.Fprintf(os.Stdout, "\nat %s:%d", test.FileName, test.LineNumber)
 	fmt.Fprintf(os.Stdout, "\n\n%s", description)
 	fmt.Fprintf(os.Stdout, "\n\nPausing test for debug, use vagrant to access test setup.")
 	fmt.Fprintf(os.Stdout, "\nRun \"kill -SIGCONT %d\" to continue.\n", pid)
-	syscall.Kill(pid, syscall.SIGSTOP)
+	unix.Kill(pid, unix.SIGSTOP)
 }
 
 // Fail is a Ginkgo failure handler which raises a SIGSTOP for the test process
@@ -401,9 +402,11 @@ func getK8sSupportedConstraints(ciliumVersion string) (go_version.Range, error) 
 	case IsCiliumV1_5(cst):
 		return versioncheck.MustCompile(">=1.8.0 <1.16.0"), nil
 	case IsCiliumV1_6(cst):
-		return versioncheck.MustCompile(">=1.8.0 <1.16.0"), nil
+		return versioncheck.MustCompile(">=1.8.0 <1.18.0"), nil
 	case IsCiliumV1_7(cst):
-		return versioncheck.MustCompile(">=1.10.0 <1.17.0"), nil
+		return versioncheck.MustCompile(">=1.10.0 <1.18.0"), nil
+	case IsCiliumV1_8(cst):
+		return versioncheck.MustCompile(">=1.10.0 <1.19.0"), nil
 	default:
 		return nil, fmt.Errorf("unrecognized version '%s'", ciliumVersion)
 	}
@@ -452,12 +455,45 @@ func RunsOnNetNext() bool {
 	return os.Getenv("NETNEXT") == "true"
 }
 
-// DoesNotRunOnNetNext is the inverse function of RunsOnNetNext.
+// DoesNotRunOnNetNext is the complement function of RunsOnNetNext.
 func DoesNotRunOnNetNext() bool {
 	return !RunsOnNetNext()
 }
 
-// CiliumDevImage returns cilium docker image name based on cilium.registry option and const CiliumDevImage
-func CiliumDevImage() string {
-	return fmt.Sprintf(ciliumDeveloperImage, config.CiliumTestConfig.Registry)
+// DoesNotHaveHosts returns a function which returns true if a CI job
+// has less VMs than the given count.
+func DoesNotHaveHosts(count int) func() bool {
+	return func() bool {
+		if c, err := strconv.Atoi(os.Getenv("K8S_NODES")); err != nil {
+			return true
+		} else {
+			return c < count
+		}
+	}
+}
+
+// RunsWithKubeProxy returns true if cilium runs together with k8s' kube-proxy.
+func RunsWithKubeProxy() bool {
+	return os.Getenv("KUBEPROXY") != "0"
+}
+
+// RunsWithoutKubeProxy is the complement function of RunsWithKubeProxy.
+func RunsWithoutKubeProxy() bool {
+	return !RunsWithKubeProxy()
+}
+
+// ExistNodeWithoutCilium returns true if there is a node in a cluster which does
+// not run cilium.
+func ExistNodeWithoutCilium() bool {
+	return GetNodeWithoutCilium() != ""
+}
+
+// DoesNotExistNodeWithoutCilium is the complement function of ExistNodeWithoutCilium
+func DoesNotExistNodeWithoutCilium() bool {
+	return !ExistNodeWithoutCilium()
+}
+
+// GetNodeWithoutCilium returns a name of a node which does not run cilium.
+func GetNodeWithoutCilium() string {
+	return os.Getenv("NO_CILIUM_ON_NODE")
 }

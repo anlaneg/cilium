@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	stdlog "log"
 	"net"
 	"strings"
 	"sync"
@@ -43,7 +44,6 @@ import (
 	"github.com/cilium/cilium/pkg/uuid"
 
 	"github.com/go-openapi/runtime/middleware"
-	"github.com/op/go-logging"
 )
 
 type policyTriggerMetrics struct{}
@@ -110,7 +110,8 @@ func (h *getPolicyResolve) Handle(params GetPolicyResolveParams) middleware.Resp
 
 	var policyEnforcementMsg string
 	isPolicyEnforcementEnabled := true
-
+	fromEgress := true
+	toIngress := true
 	d.policy.Mutex.RLock()
 
 	// If policy enforcement isn't enabled, then traffic is allowed.
@@ -122,9 +123,9 @@ func (h *getPolicyResolve) Handle(params GetPolicyResolveParams) middleware.Resp
 		// the API request, that means that policy enforcement is not enabled
 		// for the endpoints corresponding to said sets of labels; thus, we allow
 		// traffic between these sets of labels, and do not enforce policy between them.
-		fromIngress, fromEgress := d.policy.GetRulesMatching(labels.NewSelectLabelArrayFromModel(params.TraceSelector.From.Labels))
-		toIngress, toEgress := d.policy.GetRulesMatching(labels.NewSelectLabelArrayFromModel(params.TraceSelector.To.Labels))
-		if !fromIngress && !fromEgress && !toIngress && !toEgress {
+		_, fromEgress = d.policy.GetRulesMatching(labels.NewSelectLabelArrayFromModel(params.TraceSelector.From.Labels))
+		toIngress, _ = d.policy.GetRulesMatching(labels.NewSelectLabelArrayFromModel(params.TraceSelector.To.Labels))
+		if !fromEgress && !toIngress {
 			policyEnforcementMsg = "Policy enforcement is disabled because " +
 				"no rules in the policy repository match any endpoint selector " +
 				"from the provided destination sets of labels."
@@ -143,7 +144,7 @@ func (h *getPolicyResolve) Handle(params GetPolicyResolveParams) middleware.Resp
 			Trace:   policy.TRACE_ENABLED,
 			To:      labels.NewSelectLabelArrayFromModel(ctx.To.Labels),
 			DPorts:  ctx.To.Dports,
-			Logging: logging.NewLogBackend(buffer, "", 0),
+			Logging: stdlog.New(buffer, "", 0),
 		}
 		if ctx.Verbose {
 			searchCtx.Trace = policy.TRACE_VERBOSE
@@ -165,7 +166,7 @@ func (h *getPolicyResolve) Handle(params GetPolicyResolveParams) middleware.Resp
 	ctx := params.TraceSelector
 	ingressSearchCtx := policy.SearchContext{
 		Trace:   policy.TRACE_ENABLED,
-		Logging: logging.NewLogBackend(ingressBuffer, "", 0),
+		Logging: stdlog.New(ingressBuffer, "", 0),
 		From:    labels.NewSelectLabelArrayFromModel(ctx.From.Labels),
 		To:      labels.NewSelectLabelArrayFromModel(ctx.To.Labels),
 		DPorts:  ctx.To.Dports,
@@ -174,20 +175,28 @@ func (h *getPolicyResolve) Handle(params GetPolicyResolveParams) middleware.Resp
 		ingressSearchCtx.Trace = policy.TRACE_VERBOSE
 	}
 
-	// TODO: GH-3394 (add egress trace to API for policy trace).
 	egressBuffer := new(bytes.Buffer)
 	egressSearchCtx := ingressSearchCtx
-	egressSearchCtx.Logging = logging.NewLogBackend(egressBuffer, "", 0)
+	egressSearchCtx.Logging = stdlog.New(egressBuffer, "", 0)
 
+	ingressVerdict := policyAPI.Allowed
+	egressVerdict := policyAPI.Allowed
 	d.policy.Mutex.RLock()
-
-	ingressVerdict := d.policy.AllowsIngressRLocked(&ingressSearchCtx)
-
+	if fromEgress {
+		egressVerdict = d.policy.AllowsEgressRLocked(&egressSearchCtx)
+	}
+	if toIngress {
+		ingressVerdict = d.policy.AllowsIngressRLocked(&ingressSearchCtx)
+	}
 	d.policy.Mutex.RUnlock()
 
 	result := models.PolicyTraceResult{
-		Verdict: ingressVerdict.String(),
-		Log:     ingressBuffer.String(),
+		Log: egressBuffer.String() + "\n" + ingressBuffer.String(),
+	}
+	if ingressVerdict == policyAPI.Allowed && egressVerdict == policyAPI.Allowed {
+		result.Verdict = policyAPI.Allowed.String()
+	} else {
+		result.Verdict = policyAPI.Denied.String()
 	}
 
 	return NewGetPolicyResolveOK().WithPayload(&result)

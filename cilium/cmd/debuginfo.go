@@ -49,13 +49,16 @@ const (
 	JSONPATH
 )
 
-var (
+const (
 	// Can't call it jsonOutput because another var in this package uses that.
 	jsonOutputDebuginfo = "json"
 	markdownOutput      = "markdown"
 	htmlOutput          = "html"
 	jsonpathOutput      = "jsonpath"
-	jsonPathRegExp      = regexp.MustCompile(`^jsonpath\=(.*)`)
+)
+
+var (
+	jsonPathRegExp = regexp.MustCompile(`^jsonpath\=(.*)`)
 )
 
 // outputTypes enum strings
@@ -278,7 +281,7 @@ func addKernelVersion(w *tabwriter.Writer, p *models.DebugInfo) {
 func addCiliumStatus(w *tabwriter.Writer, p *models.DebugInfo) {
 	printMD(w, "Cilium status", "")
 	printTicks(w)
-	pkg.FormatStatusResponse(w, p.CiliumStatus, true, true, true, true)
+	pkg.FormatStatusResponse(w, p.CiliumStatus, true, true, true, true, true)
 	printTicks(w)
 }
 

@@ -1,20 +1,6 @@
-/*
- *  Copyright (C) 2019 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2019-2020 Authors of Cilium */
+
 #ifndef __LIB_SIGNAL_H_
 #define __LIB_SIGNAL_H_
 
@@ -46,20 +32,22 @@ struct signal_msg {
 	};
 };
 
-static inline void send_signal(struct __sk_buff *skb, struct signal_msg *msg)
+static __always_inline void send_signal(struct __ctx_buff *ctx,
+					struct signal_msg *msg)
 {
-	skb_event_output(skb, &SIGNAL_MAP, BPF_F_CURRENT_CPU,
+	ctx_event_output(ctx, &SIGNAL_MAP, BPF_F_CURRENT_CPU,
 			 msg, sizeof(*msg));
 }
 
-static inline void send_signal_nat_fill_up(struct __sk_buff *skb, __u32 proto)
+static __always_inline void send_signal_nat_fill_up(struct __ctx_buff *ctx,
+						    __u32 proto)
 {
 	struct signal_msg msg = {
 		.signal_nr	= SIGNAL_NAT_FILL_UP,
 		.proto		= proto,
 	};
 
-	send_signal(skb, &msg);
+	send_signal(ctx, &msg);
 }
 
 #endif /* __LIB_SIGNAL_H_ */

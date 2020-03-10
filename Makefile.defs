@@ -10,6 +10,7 @@ BINDIR?=$(PREFIX)/bin
 CNIBINDIR?=/opt/cni/bin
 CNICONFDIR?=/etc/cni/net.d
 LIBDIR?=$(PREFIX)/lib
+LOCALSTATEDIR?=/var
 RUNDIR?=/var/run
 CONFDIR?=/etc
 
@@ -18,7 +19,7 @@ ifeq ($(GO),)
 	GO = go
 endif
 
-INSTALL = $(QUIET)install
+INSTALL = install
 
 CGO_DISABLED = CGO_ENABLED=0
 VERSION = $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))/VERSION)
@@ -29,12 +30,18 @@ ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git),)
 else
 	GIT_VERSION = $(shell cat $(ROOT_DIR)/GIT_VERSION)
 endif
-BUILD = $(VERSION) $(GIT_VERSION) $(shell go version)
+BUILD = $(VERSION) $(GIT_VERSION) $(shell $(GO) version)
 GOLDFLAGS = -X "github.com/cilium/cilium/pkg/version.Version=$(BUILD)"
 
 CILIUM_ENVOY_SHA=$(shell grep -o "FROM.*cilium/cilium-envoy:[0-9a-fA-F]*" $(ROOT_DIR)/Dockerfile | cut -d : -f 2)
 GOLDFLAGS += -X "github.com/cilium/cilium/pkg/envoy.RequiredEnvoyVersionSHA=$(CILIUM_ENVOY_SHA)"
-GOLDFLAGS += -X "github.com/cilium/cilium/pkg/datapath/loader.DatapathSHA=$(GO_BINDATA_SHA1SUM)"
+
+BPF_FILES_EVAL := $(shell git ls-files $(ROOT_DIR)/bpf/ | grep -v .gitignore | tr "\n" ' ')
+BPF_FILES ?= $(BPF_FILES_EVAL)
+BPF_SRCFILES := $(subst ../,,$(BPF_FILES))
+
+CILIUM_DATAPATH_SHA=$(shell cat $(BPF_FILES) | sha1sum | awk '{print $$1}')
+GOLDFLAGS += -X "github.com/cilium/cilium/pkg/datapath/loader.DatapathSHA=$(CILIUM_DATAPATH_SHA)"
 
 # Set DOCKER_IMAGE_TAG with "latest" by default
 ifeq ($(DOCKER_IMAGE_TAG),)
@@ -51,9 +58,9 @@ ifeq ($(GO111MODULE),on)
     GOCLEAN ?= -mod=vendor
 endif
 # Compile with '-mod=vendor' if go >= 1.13
-GO_MAJOR_VERSION_GE_1 := $(shell expr `go version | grep -E 'go[0-9]{1}+' -o | sed 's/go//g'` \>= 1)
+GO_MAJOR_VERSION_GE_1 := $(shell expr `$(GO) version | grep -E 'go[0-9]{1}+' -o | sed 's/go//g'` \>= 1)
 ifeq ($(GO_MAJOR_VERSION_GE_1),1)
-    GO_MINOR_VERSION_GE_13 := $(shell expr `go version | grep -E 'go[^ ]+' -o | sed 's/go1.//g'` \>= 13)
+    GO_MINOR_VERSION_GE_13 := $(shell expr `$(GO) version | grep -E 'go[^ ]+' -o | sed 's/go1.//g'` \>= 13)
     ifeq ($(GO_MINOR_VERSION_GE_13),1)
         GOFLAGS ?= -mod=vendor
         GOCLEAN ?= -mod=vendor
@@ -75,3 +82,9 @@ endif
 # Container engine
 CONTAINER_ENGINE?=docker
 CONTAINER_ENGINE_FULL=$(QUIET)$(CONTAINER_ENGINE)
+
+ifeq ($(shell uname -m),aarch64)
+    ETCD_IMAGE=quay.io/coreos/etcd:v3.2.17-arm64
+else
+    ETCD_IMAGE=quay.io/coreos/etcd:v3.2.17
+endif

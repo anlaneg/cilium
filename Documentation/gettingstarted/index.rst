@@ -37,7 +37,8 @@ Security Tutorials
    :glob:
 
    http
-   dns 
+   dns
+   tls-visibility
    kafka
    grpc
    elasticsearch
@@ -53,12 +54,12 @@ Advanced Networking
 
    aws-eni
    kube-router
+   bird
    clustermesh
    flannel-integration
    ipvlan
    encryption
    host-services
-   nodeport
    kubeproxy-free
    kata-gce
    ipam
