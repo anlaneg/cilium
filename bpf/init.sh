@@ -262,6 +262,7 @@ function rnd_mac_addr()
     printf '%02x%s' $upper $lower
 }
 
+#编译bpf程序
 function bpf_compile()
 {
 	IN=$1
@@ -281,6 +282,7 @@ function bpf_compile()
 	llc -march=bpf -mcpu=probe -mattr=dwarfris -filetype=$TYPE -o $OUT
 }
 
+#xdp程序加载
 function xdp_load()
 {
 	DEV=$1
@@ -312,6 +314,7 @@ function bpf_unload()
 	tc filter del dev $DEV $WHERE 2> /dev/null || true
 }
 
+#bpf filter程序加载
 function bpf_load()
 {
 	DEV=$1
