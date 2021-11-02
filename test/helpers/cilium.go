@@ -1,16 +1,5 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2020 Authors of Cilium
 
 package helpers
 
@@ -18,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -29,7 +17,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/test/config"
-	"github.com/cilium/cilium/test/ginkgo-ext"
+	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers/logutils"
 
 	"github.com/sirupsen/logrus"
@@ -158,12 +146,12 @@ func (s *SSHMeta) SetAndWaitForEndpointConfiguration(endpointID, optionName, exp
 // is exceeded, false otherwise.
 func (s *SSHMeta) WaitEndpointsDeleted() bool {
 	logger := s.logger.WithFields(logrus.Fields{"functionName": "WaitEndpointsDeleted"})
-	// cilium-health endpoint is always running.
-	desiredState := "1"
+	// cilium-health endpoint is always running, as is the host endpoint.
+	desiredState := "2"
 	body := func() bool {
-		cmd := fmt.Sprintf(`cilium endpoint list -o json | jq '. | length'`)
+		cmd := `cilium endpoint list -o json | jq '. | length'`
 		res := s.Exec(cmd)
-		numEndpointsRunning := strings.TrimSpace(res.GetStdOut())
+		numEndpointsRunning := strings.TrimSpace(res.Stdout())
 		if numEndpointsRunning == desiredState {
 			return true
 		}
@@ -181,6 +169,25 @@ func (s *SSHMeta) WaitEndpointsDeleted() bool {
 
 }
 
+func (s *SSHMeta) MonitorDebug(on bool, epID string) bool {
+	logger := s.logger.WithFields(logrus.Fields{"functionName": "MonitorDebug"})
+	dbg := "Disabled"
+	mode := ""
+	if on {
+		dbg = "Enabled"
+	}
+	if epID != "" {
+		mode = "endpoint"
+	}
+
+	res := s.ExecCilium(fmt.Sprintf("%s config %s Debug=%s", mode, epID, dbg))
+	if !res.WasSuccessful() {
+		logger.Errorf("cannot set BPF datapath debugging to %s", strings.ToLower(dbg))
+		return false
+	}
+	return true
+}
+
 // WaitEndpointsReady waits up until timeout reached for all endpoints to not be
 // in any regenerating or waiting-for-identity state. Returns true if all
 // endpoints regenerate before HelperTimeout is exceeded, false otherwise.
@@ -188,7 +195,7 @@ func (s *SSHMeta) WaitEndpointsReady() bool {
 	logger := s.logger.WithFields(logrus.Fields{"functionName": "WaitEndpointsReady"})
 	desiredState := string(models.EndpointStateReady)
 	body := func() bool {
-		filter := `{range [*]}{@.status.external-identifiers.container-name}{"="}{@.status.state},{@.status.identity.id}{"\n"}{end}`
+		filter := `{range [*]}{@.id}{"="}{@.status.state},{@.status.identity.id}{"\n"}{end}`
 		cmd := fmt.Sprintf(`cilium endpoint list -o jsonpath='%s'`, filter)
 
 		res := s.Exec(cmd)
@@ -343,12 +350,12 @@ func (s *SSHMeta) BasePath() string {
 	return s.basePath
 }
 
-// MonitorStart starts the  monitor command in background and returns a callback
-// function wich stops the monitor when the user needs. When the callback is
+// MonitorStart starts the  monitor command in background and returns CmdREs and a callback
+// function which stops the monitor when the user needs. When the callback is
 // called the command will stop and monitor's output is saved on
 // `monitorLogFileName` file.
-func (s *SSHMeta) MonitorStart() func() error {
-	cmd := "cilium monitor -v | ts '[%Y-%m-%d %H:%M:%S]'"
+func (s *SSHMeta) MonitorStart(opts ...string) (*CmdRes, func() error) {
+	cmd := "cilium monitor -vv " + strings.Join(opts, " ") + " | ts '[%Y-%m-%d %H:%M:%S]'"
 	ctx, cancel := context.WithCancel(context.Background())
 	res := s.ExecInBackground(ctx, cmd, ExecOptions{SkipLog: true})
 
@@ -361,7 +368,7 @@ func (s *SSHMeta) MonitorStart() func() error {
 			return err
 		}
 
-		err = ioutil.WriteFile(
+		err = os.WriteFile(
 			filepath.Join(testPath, MonitorLogFileName),
 			res.CombineOutput().Bytes(),
 			LogPerm)
@@ -370,7 +377,7 @@ func (s *SSHMeta) MonitorStart() func() error {
 		}
 		return nil
 	}
-	return cb
+	return res, cb
 }
 
 // GetFullPath returns the path of file name prepended with the absolute path
@@ -419,7 +426,7 @@ func (s *SSHMeta) SetPolicyEnforcement(status string) *CmdRes {
 	// We check before setting PolicyEnforcement; if we do not, EndpointWait
 	// will fail due to the status of the endpoints not changing.
 	log.Infof("setting %s=%s", PolicyEnforcement, status)
-	res := s.ExecCilium(fmt.Sprintf("config -o json | jq -r '.status.realized[\"policy-enforcement\"]'"))
+	res := s.ExecCilium("config -o json | jq -r '.status.realized[\"policy-enforcement\"]'")
 	if res.SingleOut() == status {
 		return res
 	}
@@ -552,7 +559,7 @@ func (s *SSHMeta) PolicyImport(path string) error {
 func (s *SSHMeta) PolicyRenderAndImport(policy string) (int, error) {
 	filename := fmt.Sprintf("policy_%s.json", MakeUID())
 	s.logger.Debugf("PolicyRenderAndImport: render policy to '%s'", filename)
-	err := RenderTemplateToFile(filename, policy, os.ModePerm)
+	err := s.RenderTemplateToFile(filename, policy, os.ModePerm)
 	if err != nil {
 		s.logger.Errorf("PolicyRenderAndImport: cannot create policy file on '%s'", filename)
 		return 0, fmt.Errorf("cannot render the policy:  %s", err)
@@ -588,7 +595,7 @@ func (s *SSHMeta) ReportFailed(commands ...string) {
 	ginkgoext.GinkgoPrint(res.GetDebugMessage())
 
 	for _, cmd := range commands {
-		res = s.ExecWithSudo(fmt.Sprintf("%s", cmd), ExecOptions{SkipLog: true})
+		res = s.ExecWithSudo(cmd, ExecOptions{SkipLog: true})
 		ginkgoext.GinkgoPrint(res.GetDebugMessage())
 	}
 
@@ -632,7 +639,7 @@ func (s *SSHMeta) ValidateEndpointsAreCorrect(dockerNetwork string) error {
 func (s *SSHMeta) ValidateNoErrorsInLogs(duration time.Duration) {
 	logsCmd := fmt.Sprintf(`sudo journalctl -au %s --since '%v seconds ago'`,
 		DaemonName, duration.Seconds())
-	logs := s.Exec(logsCmd, ExecOptions{SkipLog: true}).Output().String()
+	logs := s.Exec(logsCmd, ExecOptions{SkipLog: true}).Stdout()
 
 	defer func() {
 		// Keep the cilium logs for the given test in a separate file.
@@ -641,7 +648,7 @@ func (s *SSHMeta) ValidateNoErrorsInLogs(duration time.Duration) {
 			s.logger.WithError(err).Error("Cannot create report directory")
 			return
 		}
-		err = ioutil.WriteFile(
+		err = os.WriteFile(
 			fmt.Sprintf("%s/%s", testPath, CiliumTestLog),
 			[]byte(logs), LogPerm)
 
@@ -650,9 +657,10 @@ func (s *SSHMeta) ValidateNoErrorsInLogs(duration time.Duration) {
 		}
 	}()
 
-	failIfContainsBadLogMsg(logs)
+	blacklist := GetBadLogMessages()
+	failIfContainsBadLogMsg(logs, "Cilium", blacklist)
 
-	fmt.Fprintf(CheckLogs, logutils.LogErrorsSummary(logs))
+	fmt.Fprint(CheckLogs, logutils.LogErrorsSummary(logs))
 }
 
 // PprofReport runs pprof each 5 minutes and saves the data into the test
@@ -713,7 +721,7 @@ func (s *SSHMeta) DumpCiliumCommandOutput() {
 	// No need to create file for bugtool because it creates an archive of files
 	// for us.
 	res := s.ExecWithSudo(
-		fmt.Sprintf("%s -t %s", CiliumBugtool, filepath.Join(s.basePath, testPath)),
+		fmt.Sprintf("%s -t %q", CiliumBugtool, filepath.Join(s.basePath, testPath)),
 		ExecOptions{SkipLog: true})
 	if !res.WasSuccessful() {
 		s.logger.Errorf("Error running bugtool: %s", res.CombineOutput())
@@ -869,7 +877,7 @@ func (s *SSHMeta) ServiceDelAll() *CmdRes {
 // SetUpCilium sets up Cilium as a systemd service with a hardcoded set of options. It
 // returns an error if any of the operations needed to start Cilium fails.
 func (s *SSHMeta) SetUpCilium() error {
-	return s.SetUpCiliumWithOptions("--tofqdns-enable-poller=true")
+	return s.SetUpCiliumWithOptions("")
 }
 
 // SetUpCiliumWithOptions sets up Cilium as a systemd service with a given set of options. It
@@ -884,13 +892,14 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
 CILIUM_OPTS=--kvstore consul --kvstore-opt consul.address=127.0.0.1:8500 --debug --pprof=true --log-system-load %s
 INITSYSTEM=SYSTEMD`
 
-	err := RenderTemplateToFile("cilium", fmt.Sprintf(systemdTemplate, ciliumOpts), os.ModePerm)
+	ciliumConfig := "cilium.conf.ginkgo"
+	err := s.RenderTemplateToFile(ciliumConfig, fmt.Sprintf(systemdTemplate, ciliumOpts), os.ModePerm)
 	if err != nil {
 		return err
 	}
-	defer os.Remove("cilium")
 
-	res := s.Exec("sudo cp /vagrant/cilium /etc/sysconfig/cilium")
+	confPath := filepath.Join("/home/vagrant/go/src/github.com/cilium/cilium/test", ciliumConfig)
+	res := s.Exec(fmt.Sprintf("sudo cp %s /etc/sysconfig/cilium", confPath))
 	if !res.WasSuccessful() {
 		return fmt.Errorf("%s", res.CombineOutput())
 	}
@@ -901,8 +910,12 @@ INITSYSTEM=SYSTEMD`
 	return nil
 }
 
+func (s *SSHMeta) SetUpCiliumWithHubble() error {
+	return s.SetUpCiliumWithOptions("--enable-hubble")
+}
+
 func (s *SSHMeta) SetUpCiliumWithSockops() error {
-	return s.SetUpCiliumWithOptions("--sockops-enable --tofqdns-enable-poller=true")
+	return s.SetUpCiliumWithOptions("--sockops-enable")
 }
 
 // WaitUntilReady waits until the output of `cilium status` returns with code

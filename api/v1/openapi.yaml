@@ -37,7 +37,7 @@ paths:
       description: |
         Returns health and status information of the Cilium daemon and related
         components such as the local container runtime, connected datastore,
-        Kubernetes integration.
+        Kubernetes integration and Hubble.
       tags:
       - daemon
       parameters:
@@ -111,6 +111,8 @@ paths:
             "$ref": "#/definitions/Error"
         '404':
           description: Endpoint not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
     put:
       summary: Create endpoint
       description: |
@@ -136,6 +138,8 @@ paths:
           x-go-name: Failed
           schema:
             "$ref": "#/definitions/Error"
+        '429':
+          description: Rate-limiting too many requests in the given time frame
     patch:
       summary: Modify existing endpoint
       deprecated: true
@@ -161,6 +165,8 @@ paths:
           x-go-name: Failed
           schema:
             "$ref": "#/definitions/Error"
+        '429':
+          description: Rate-limiting too many requests in the given time frame
     delete:
       summary: Delete endpoint
       description: |
@@ -194,6 +200,8 @@ paths:
             "$ref": "#/definitions/Error"
         '404':
           description: Endpoint not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
   "/endpoint":
     get:
       summary: Retrieves a list of endpoints that have metadata matching the provided parameters.
@@ -212,6 +220,8 @@ paths:
               "$ref": "#/definitions/Endpoint"
         '404':
           description: Endpoints with provided parameters not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
   "/endpoint/{id}/config":
     get:
       summary: Retrieve endpoint configuration
@@ -228,6 +238,8 @@ paths:
             "$ref": "#/definitions/EndpointConfigurationStatus"
         '404':
           description: Endpoint not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
     patch:
       summary: Modify mutable endpoint configuration
       description: |
@@ -255,6 +267,8 @@ paths:
           x-go-name: Failed
           schema:
             "$ref": "#/definitions/Error"
+        '429':
+          description: Rate-limiting too many requests in the given time frame
   "/endpoint/{id}/labels":
     get:
       summary: Retrieves the list of labels associated with an endpoint.
@@ -269,6 +283,8 @@ paths:
             "$ref": "#/definitions/LabelConfiguration"
         '404':
           description: Endpoint not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
     patch:
       summary: Set label configuration of endpoint
       description: |
@@ -293,6 +309,8 @@ paths:
           x-go-name: UpdateFailed
           schema:
             "$ref": "#/definitions/Error"
+        '429':
+          description: Rate-limiting too many requests in the given time frame
   "/endpoint/{id}/log":
     get:
       summary: Retrieves the status logs associated with this endpoint.
@@ -310,6 +328,8 @@ paths:
           x-go-name: Invalid
         '404':
           description: Endpoint not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
 
   "/endpoint/{id}/healthz":
     get:
@@ -328,6 +348,8 @@ paths:
           x-go-name: Invalid
         '404':
           description: Endpoint not found
+        '429':
+          description: Rate-limiting too many requests in the given time frame
   "/identity":
     get:
       summary: Retrieves a list of identities that have metadata matching the provided parameters.
@@ -556,6 +578,18 @@ paths:
           description: Success
           schema:
             "$ref": "#/definitions/SelectorCache"
+  "/lrp":
+    get:
+      summary: Retrieve list of all local redirect policies
+      tags:
+      - service
+      responses:
+        '200':
+          description: Success
+          schema:
+            type: array
+            items:
+              "$ref": "#/definitions/LRPSpec"
   "/service":
     get:
       summary: Retrieve list of all services
@@ -622,6 +656,77 @@ paths:
           description: Service not found
         '500':
           description: Service deletion failed
+          x-go-name: Failure
+          schema:
+            "$ref": "#/definitions/Error"
+  "/recorder":
+    get:
+      summary: Retrieve list of all recorders
+      tags:
+      - recorder
+      responses:
+        '200':
+          description: Success
+          schema:
+            type: array
+            items:
+              "$ref": "#/definitions/Recorder"
+  "/recorder/masks":
+    get:
+      summary: Retrieve list of all recorder masks
+      tags:
+      - recorder
+      responses:
+        '200':
+          description: Success
+          schema:
+            type: array
+            items:
+              "$ref": "#/definitions/RecorderMask"
+  "/recorder/{id}":
+    get:
+      summary: Retrieve configuration of a recorder
+      tags:
+      - recorder
+      parameters:
+      - "$ref": "#/parameters/recorder-id"
+      responses:
+        '200':
+          description: Success
+          schema:
+            "$ref": "#/definitions/Recorder"
+        '404':
+          description: Recorder not found
+    put:
+      summary: Create or update recorder
+      tags:
+      - recorder
+      parameters:
+      - "$ref": "#/parameters/recorder-id"
+      - "$ref": "#/parameters/recorder-config"
+      responses:
+        '200':
+          description: Updated
+        '201':
+          description: Created
+        '500':
+          description: Error while creating recorder
+          x-go-name: Failure
+          schema:
+            "$ref": "#/definitions/Error"
+    delete:
+      summary: Delete a recorder
+      tags:
+      - recorder
+      parameters:
+      - "$ref": "#/parameters/recorder-id"
+      responses:
+        '200':
+          description: Success
+        '404':
+          description: Recorder not found
+        '500':
+          description: Recorder deletion failed
           x-go-name: Failure
           schema:
             "$ref": "#/definitions/Error"
@@ -925,6 +1030,19 @@ parameters:
     required: true
     schema:
       "$ref": "#/definitions/ServiceSpec"
+  recorder-id:
+    name: id
+    description: ID of recorder
+    required: true
+    in: path
+    type: integer
+  recorder-config:
+    name: config
+    description: Recorder configuration
+    in: body
+    required: true
+    schema:
+      "$ref": "#/definitions/RecorderSpec"
   prefilter-spec:
     name: prefilter-spec
     description: List of CIDR ranges for filter table
@@ -1085,6 +1203,10 @@ definitions:
           Installs a route in the Linux routing table pointing to the device of
           the endpoint's interface.
         type: boolean
+      disable-sip-verification:
+        description: >
+          Disable source IP verification for the endpoint.
+        type: boolean
   EndpointStatus:
     description: The current state and configuration of the endpoint, its policy & datapath, and subcomponents
     type: object
@@ -1121,6 +1243,9 @@ definitions:
       health:
         description: Summary overall endpoint & subcomponent health
         "$ref": "#/definitions/EndpointHealth"
+      namedPorts:
+        description: List of named ports that can be used in Network Policy
+        "$ref": "#/definitions/NamedPorts"
   EndpointState:
     description: State of endpoint
     type: string
@@ -1133,8 +1258,12 @@ definitions:
       - ready
       - disconnecting
       - disconnected
+      - invalid
   EndpointHealth:
-    description: Health of the endpoint
+    description: |-
+      Health of the endpoint
+
+      +deepequal-gen=true
     type: object
     properties:
       overallHealth:
@@ -1169,7 +1298,10 @@ definitions:
     items:
       "$ref": "#/definitions/EndpointStatusChange"
   EndpointStatusChange:
-    description: Indication of a change of status
+    description: |-
+      Indication of a change of status
+
+      +deepequal-gen=true
     type: object
     properties:
       timestamp:
@@ -1212,9 +1344,14 @@ definitions:
       - ingress
       - egress
       - both
-
+      - audit-ingress
+      - audit-egress
+      - audit-both
   EndpointPolicy:
-    description: Policy information of an endpoint
+    description: |-
+      Policy information of an endpoint
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       policy-revision:
@@ -1235,9 +1372,21 @@ definitions:
         type: array
         items:
           type: integer
+      denied-ingress-identities:
+        description: |
+          List of identities not allowed to communicate to this endpoint
+        type: array
+        items:
+          type: integer
       allowed-egress-identities:
         description: |
           List of identities to which this endpoint is allowed to communicate
+        type: array
+        items:
+          type: integer
+      denied-egress-identities:
+        description: |
+          List of identities to which this endpoint is not allowed to communicate
         type: array
         items:
           type: integer
@@ -1246,7 +1395,10 @@ definitions:
       cidr-policy:
         "$ref": "#/definitions/CIDRPolicy"
   PolicyRule:
-    description: A policy rule including the rule labels it derives from
+    description: |-
+      A policy rule including the rule labels it derives from
+
+      +k8s:deepcopy-gen=true
     properties:
       rule:
         description: The policy rule as json
@@ -1259,7 +1411,10 @@ definitions:
           items:
             type: string
   L4Policy:
-    description: L4 endpoint policy
+    description: |-
+      L4 endpoint policy
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       ingress:
@@ -1273,7 +1428,10 @@ definitions:
         items:
           "$ref": "#/definitions/PolicyRule"
   CIDRPolicy:
-    description: CIDR endpoint policy
+    description: |-
+      CIDR endpoint policy
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       ingress:
@@ -1354,6 +1512,12 @@ definitions:
         type: object
         additionalProperties:
           type: string
+      encryption:
+        type: object
+        properties:
+          wireguard:
+            description: Status of the Wireguard agent
+            "$ref": "#/definitions/WireguardStatus"
   IPAMResponse:
     description: IPAM configuration of an endpoint
     type: object
@@ -1392,6 +1556,10 @@ definitions:
         description: |
           The UUID for the expiration timer. Set when expiration has been
           enabled while allocating.
+      interface-number:
+        type: string
+        description: |
+          InterfaceNumber is a field for generically identifying an interface. This is only useful in ENI mode.
   AddressPair:
     description: Addressing information of an endpoint
     type: object
@@ -1468,7 +1636,10 @@ definitions:
         description: Index of network device
         type: integer
   EndpointIdentifiers:
-    description: Unique identifiers for this endpoint from outside cilium
+    description: |-
+      Unique identifiers for this endpoint from outside cilium
+
+      +deepequal-gen=true
     type: object
     properties:
       container-id:
@@ -1531,7 +1702,10 @@ definitions:
         description: "Labels derived from orchestration system which have been disabled."
         "$ref": "#/definitions/Labels"
   StatusResponse:
-    description: Health and status information of daemon
+    description: |-
+      Health and status information of daemon
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       cilium:
@@ -1543,6 +1717,12 @@ definitions:
       container-runtime:
         description: Status of local container runtime
         "$ref": "#/definitions/Status"
+      host-firewall:
+        description: Status of the host firewall
+        "$ref": "#/definitions/HostFirewall"
+      hubble:
+        description: Status of Hubble server
+        "$ref": "#/definitions/HubbleStatus"
       kubernetes:
         description: Status of Kubernetes integration
         "$ref": "#/definitions/K8sStatus"
@@ -1564,6 +1744,18 @@ definitions:
       proxy:
         description: Status of proxy
         "$ref": "#/definitions/ProxyStatus"
+      bandwidth-manager:
+        description: Status of bandwidth manager
+        "$ref": "#/definitions/BandwidthManager"
+      masquerading:
+        description: Status of masquerading
+        "$ref": "#/definitions/Masquerading"
+      host-routing:
+        description: Status of host routing
+        "$ref": "#/definitions/HostRouting"
+      clock-source:
+        description: Status of clock source
+        "$ref": "#/definitions/ClockSource"
       stale:
         description: List of stale information in the status
         type: object
@@ -1580,6 +1772,12 @@ definitions:
       cluster-mesh:
         description: Status of ClusterMesh
         "$ref": "#/definitions/ClusterMeshStatus"
+      bpf-maps:
+        description: Status of BPF maps
+        "$ref": "#/definitions/BPFMapStatus"
+      encryption:
+        description: Status of transparent encryption
+        "$ref": "#/definitions/EncryptionStatus"
   Status:
     description: Status of an individual component
     type: object
@@ -1595,8 +1793,77 @@ definitions:
       msg:
         type: string
         description: Human readable status/error/warning message
+  HostFirewall:
+    description: |-
+      Status of the host firewall
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      mode:
+        type: string
+        enum:
+        - Disabled
+        - Enabled
+      devices:
+        type: array
+        items:
+          type: string
+  HubbleStatus:
+    description: |-
+      Status of the Hubble server
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      state:
+        type: string
+        description: State the component is in
+        enum:
+          - Ok
+          - Warning
+          - Failure
+          - Disabled
+      msg:
+        type: string
+        description: Human readable status/error/warning message
+      observer:
+        type: object
+        description: |-
+          Status of the Hubble observer
+
+          +k8s:deepcopy-gen=true
+        properties:
+          max-flows:
+            type: integer
+            description: Maximum number of flows this Hubble observer is able to store
+          current-flows:
+            type: integer
+            description: Current number of flows this Hubble observer stores
+          seen-flows:
+            type: integer
+            description: Total number of flows this Hubble observer has seen
+          uptime:
+            type: string
+            format: duration
+            description: Uptime of this Hubble observer instance
+      metrics:
+        type: object
+        description: Status of the Hubble metrics server
+        properties:
+          state:
+            type: string
+            description: State of the Hubble metrics
+            enum:
+              - Ok
+              - Warning
+              - Failure
+              - Disabled
   K8sStatus:
-    description: Status of Kubernetes integration
+    description: |-
+      Status of Kubernetes integration
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       state:
@@ -1615,7 +1882,10 @@ definitions:
         type: string
         description: Human readable status/error/warning message
   KubeProxyReplacement:
-    description: Status of kube-proxy replacement
+    description: |-
+      Status of kube-proxy replacement
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       mode:
@@ -1625,10 +1895,47 @@ definitions:
         - Strict
         - Probe
         - Partial
+      devices:
+        type: array
+        items:
+          type: string
+      deviceList:
+        description: |-
+
+
+          +k8s:deepcopy-gen=true
+        type: array
+        items:
+          description: |-
+
+
+            +k8s:deepcopy-gen=true
+          type: object
+          properties:
+            name:
+              type: string
+            ip:
+              description: |-
+
+
+                +k8s:deepcopy-gen=true
+              type: array
+              items:
+                type: string
+      directRoutingDevice:
+        type: string
       features:
+        description: |-
+
+
+          +k8s:deepcopy-gen=true
         type: object
         properties:
           nodePort:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
             type: object
             properties:
               enabled:
@@ -1638,17 +1945,47 @@ definitions:
                 enum:
                 - SNAT
                 - DSR
-                - HYBRID
+                - Hybrid
+              algorithm:
+                type: string
+                enum:
+                - Random
+                - Maglev
+              acceleration:
+                type: string
+                enum:
+                - None
+                - Native
+                - Generic
               portMin:
                 type: integer
               portMax:
                 type: integer
+              lutSize:
+                type: integer
+          hostPort:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
+            type: object
+            properties:
+              enabled:
+                type: boolean
           externalIPs:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
             type: object
             properties:
               enabled:
                 type: boolean
           hostReachableServices:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
             type: object
             properties:
               enabled:
@@ -1657,6 +1994,15 @@ definitions:
                 type: array
                 items:
                   type: string
+          sessionAffinity:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
+            type: object
+            properties:
+              enabled:
+                type: boolean
   AllocationMap:
     description: |
       Map of allocated IPs
@@ -1664,7 +2010,10 @@ definitions:
     additionalProperties:
       type: string
   IPAMStatus:
-    description: Status of IP address management
+    description: |-
+      Status of IP address management
+
+      +k8s:deepcopy-gen=true
     properties:
       allocations:
         "$ref": "#/definitions/AllocationMap"
@@ -1679,7 +2028,10 @@ definitions:
       status:
         type: string
   ClusterStatus:
-    description: Status of cluster
+    description: |-
+      Status of cluster
+
+      +k8s:deepcopy-gen=true
     properties:
       ciliumHealth:
         description: Status of local cilium-health daemon
@@ -1712,7 +2064,10 @@ definitions:
         description: ID that should be used by the client to receive a diff from the previous request
         type: integer
   ClusterMeshStatus:
-    description: Status of ClusterMesh
+    description: |-
+      Status of ClusterMesh
+
+      +k8s:deepcopy-gen=true
     properties:
       clusters:
         description: List of remote clusters
@@ -1723,7 +2078,10 @@ definitions:
         description: Number of global services
         type: integer
   RemoteCluster:
-    description: Status of remote cluster
+    description: |-
+      Status of remote cluster
+
+      +k8s:deepcopy-gen=true
     properties:
       name:
         description: Name of the cluster
@@ -1743,6 +2101,13 @@ definitions:
       status:
         description: Status of the control plane
         type: string
+      num-failures:
+        description: Number of failures reaching the cluster
+        type: integer
+      last-failure:
+        description: Time of last failure that occurred while attempting to reach the cluster
+        type: string
+        format: date-time
   MonitorStatus:
     description: Status of the node monitor
     properties:
@@ -1838,8 +2203,24 @@ definitions:
         description: Configured IPAM mode
         type: string
       masquerade:
-        description: Status of masquerading feature
         type: boolean
+      masqueradeProtocols:
+        description: Status of masquerading feature
+        type: object
+        properties:
+          ipv4:
+            description: Status of masquerading for IPv4 traffic
+            type: boolean
+          ipv6:
+            description: Status of masquerading for IPv6 traffic
+            type: boolean
+      egress-multi-home-ip-rule-compat:
+        description: Configured compatibility mode for --egress-multi-home-ip-rule-compat
+        type: boolean
+      daemonConfigurationMap:
+        description: Config map which contains all the active daemon configurations
+        additionalProperties:
+          type: object
   DatapathMode:
     description: Datapath mode
     type: string
@@ -1889,7 +2270,10 @@ definitions:
     additionalProperties:
       type: string
   NodeElement:
-    description: Known node in the cluster
+    description: |-
+      Known node in the cluster
+
+      +k8s:deepcopy-gen=true
     properties:
       name:
         type: string
@@ -1908,7 +2292,10 @@ definitions:
         description: Address used for probing cluster connectivity
         "$ref": "#/definitions/NodeAddressing"
   NodeAddressing:
-    description: Addressing information of a node for all address families
+    description: |-
+      Addressing information of a node for all address families
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       ipv6:
@@ -1952,7 +2339,10 @@ definitions:
       log:
         type: string
   Port:
-    description: Layer 4 port / protocol pair
+    description: |-
+      Layer 4 port / protocol pair
+
+      +deepequal-gen=true
     type: object
     properties:
       protocol:
@@ -1961,11 +2351,16 @@ definitions:
         enum:
           - TCP
           - UDP
+          - ICMP
+          - ICMPV6
           - ANY
       port:
         description: Layer 4 port number
         type: integer
         format: uint16
+      name:
+        description: Optional layer 4 port name
+        type: string
   SelectorCache:
     description: cache of which identities match selectors in the policy repository
     type: array
@@ -2033,6 +2428,12 @@ definitions:
         - tcp
         - udp
         - any
+      scope:
+        description: Load balancing scope for frontend address
+        type: string
+        enum:
+        - external
+        - internal
       port:
         description: Layer 4 port number
         type: integer
@@ -2053,6 +2454,53 @@ definitions:
       nodeName:
         description: Optional name of the node on which this backend runs
         type: string
+  LRPBackend:
+    description: Pod backend of an LRP
+    type: object
+    properties:
+      pod-id:
+        description: Namespace and name of the backend pod
+        type: string
+      backend-address:
+        "$ref": "#/definitions/BackendAddress"
+  FrontendMapping:
+    description: Mapping of frontend to backend pods of an LRP
+    type: object
+    properties:
+      frontend-address:
+        "$ref": "#/definitions/FrontendAddress"
+      backends:
+        description: Pod backends of an LRP
+        type: array
+        items:
+          "$ref": "#/definitions/LRPBackend"
+  LRPSpec:
+    description: Configuration of an LRP
+    type: object
+    properties:
+      uid:
+        description: Unique identification
+        type: string
+      name:
+        description: LRP service name
+        type: string
+      namespace:
+        description: LRP service namespace
+        type: string
+      frontend-type:
+        description: LRP frontend type
+        type: string
+      lrp-type:
+        description: LRP config type
+        type: string
+      service-id:
+        description: matching k8s service namespace and name
+        type: string
+      frontend-mappings:
+        description: mapping of frontends to pod backends
+        type: array
+        items:
+          "$ref": "#/definitions/FrontendMapping"
   Service:
     description: Collection of endpoints to be served
     type: object
@@ -2089,6 +2537,9 @@ definitions:
             - ClusterIP
             - NodePort
             - ExternalIPs
+            - HostPort
+            - LoadBalancer
+            - LocalRedirect
           trafficPolicy:
             description: Service traffic policy
             type: string
@@ -2111,8 +2562,103 @@ definitions:
     properties:
       realized:
         "$ref": "#/definitions/ServiceSpec"
+  Recorder:
+    description: Collection of wildcard filters for pcap recorder
+    type: object
+    properties:
+      spec:
+        "$ref": "#/definitions/RecorderSpec"
+      status:
+        "$ref": "#/definitions/RecorderStatus"
+  RecorderMask:
+    description: Individual mask for pcap recorder
+    type: object
+    properties:
+      status:
+        "$ref": "#/definitions/RecorderMaskStatus"
+  RecorderFilter:
+    description: n-tuple filter to match traffic to be recorded
+    type: object
+    properties:
+      src-prefix:
+        description: Layer 3 source CIDR
+        type: string
+      src-port:
+        description: Layer 4 source port, zero (or in future range)
+        type: string
+      dst-prefix:
+        description: Layer 3 destination CIDR
+        type: string
+      dst-port:
+        description: Layer 4 destination port, zero (or in future range)
+        type: string
+      protocol:
+        description: Layer 4 protocol
+        type: string
+        enum:
+        - TCP
+        - UDP
+        - ANY
+  RecorderSpec:
+    description: Configuration of a recorder
+    type: object
+    required:
+    - id
+    - filters
+    properties:
+      id:
+        description: Unique identification
+        type: integer
+      capture-length:
+        description: Maximum packet length or zero for full packet length
+        type: integer
+      filters:
+        description: List of wildcard filters for given recorder
+        type: array
+        items:
+          "$ref": "#/definitions/RecorderFilter"
+  RecorderMaskSpec:
+    description: Configuration of a recorder mask
+    type: object
+    properties:
+      users:
+        description: Number of users of this mask
+        type: integer
+      priority:
+        description: Priority of this mask
+        type: integer
+      src-prefix-mask:
+        description: Layer 3 source IP mask
+        type: string
+      src-port-mask:
+        description: Layer 4 source port mask
+        type: string
+      dst-prefix-mask:
+        description: Layer 3 destination IP mask
+        type: string
+      dst-port-mask:
+        description: Layer 4 destination port mask
+        type: string
+      protocol-mask:
+        description: Layer 4 protocol mask
+        type: string
+  RecorderStatus:
+    description: Configuration of a recorder
+    type: object
+    properties:
+      realized:
+        "$ref": "#/definitions/RecorderSpec"
+  RecorderMaskStatus:
+    description: Configuration of a recorder mask
+    type: object
+    properties:
+      realized:
+        "$ref": "#/definitions/RecorderMaskSpec"
   ProxyStatus:
-    description: Status of proxy
+    description: |-
+      Status of proxy
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       port-range:
@@ -2146,7 +2692,10 @@ definitions:
         description: Host port that this redirect points to
         type: integer
   ProxyStatistics:
-    description: Statistics of a set of proxy redirects for an endpoint
+    description: |-
+      Statistics of a set of proxy redirects for an endpoint
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       protocol:
@@ -2168,7 +2717,10 @@ definitions:
         description: Statistics of this set of proxy redirect
         "$ref": "#/definitions/RequestResponseStatistics"
   RequestResponseStatistics:
-    description: Statistics of a proxy redirect
+    description: |-
+      Statistics of a proxy redirect
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       requests:
@@ -2191,13 +2743,101 @@ definitions:
       forwarded:
         description: Number of messages forwarded
         type: integer
+  BandwidthManager:
+    description: |-
+      Status of bandwidth manager
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      enabled:
+        description: Is bandwidth manager enabled
+        type: boolean
+      devices:
+        type: array
+        items:
+          type: string
+  Masquerading:
+    description: |-
+      Status of masquerading
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      enabled:
+        type: boolean
+      enabledProtocols:
+        description: Is masquerading enabled
+        type: object
+        properties:
+          ipv4:
+            description: Is masquerading enabled for IPv4 traffic
+            type: boolean
+          ipv6:
+            description: Is masquerading enabled for IPv6 traffic
+            type: boolean
+      mode:
+        type: string
+        enum:
+        - BPF
+        - iptables
+      ip-masq-agent:
+        description: Is BPF ip-masq-agent enabled
+        type: boolean
+      snat-exclusion-cidr:
+        description: |-
+          This field is obsolete, please use snat-exclusion-cidr-v4 or snat-exclusion-cidr-v6.
+        type: string
+      snat-exclusion-cidr-v4:
+        description: |-
+          SnatExclusionCIDRv4 exempts SNAT from being performed on any packet sent to
+          an IPv4 address that belongs to this CIDR.
+        type: string
+      snat-exclusion-cidr-v6:
+        description: |-
+          SnatExclusionCIDRv6 exempts SNAT from being performed on any packet sent to
+          an IPv6 address that belongs to this CIDR.
+          For IPv6 we only do masquerading in iptables mode.
+        type: string
+  ClockSource:
+    description: |-
+      Status of BPF clock source
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      mode:
+        description: Datapath clock source
+        type: string
+        enum:
+        - ktime
+        - jiffies
+      hertz:
+        description: Kernel Hz
+        type: integer
+  HostRouting:
+    description: |-
+      Status of host routing
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      mode:
+        description: Datapath routing mode
+        type: string
+        enum:
+        - BPF
+        - Legacy
   ControllerStatuses:
     description: Collection of controller statuses
     type: array
     items:
       "$ref": "#/definitions/ControllerStatus"
   ControllerStatus:
-    description: Status of a controller
+    description: |-
+      Status of a controller
+
+      +k8s:deepcopy-gen=true
     type: object
     properties:
       name:
@@ -2208,7 +2848,11 @@ definitions:
         type: string
         format: uuid
       configuration:
-        description: Configuration of controller
+        description: |-
+          Configuration of controller
+
+          +deepequal-gen=true
+          +k8s:deepcopy-gen=true
         type: object
         properties:
           interval:
@@ -2223,7 +2867,10 @@ definitions:
             description: Retry on error
             type: boolean
       status:
-        description: Current status of controller
+        description: |-
+          Current status of controller
+
+          +k8s:deepcopy-gen=true
         type: object
         properties:
           success-count:
@@ -2268,7 +2915,7 @@ definitions:
         items:
           "$ref": "#/definitions/BPFMapEntry"
   BPFMapEntry:
-    description: BPF map cache entry"
+    description: BPF map cache entry
     type: object
     properties:
       key:
@@ -2287,6 +2934,31 @@ definitions:
       last-error:
         description: Last error seen while performing desired action
         type: string
+  BPFMapProperties:
+    description: BPF map properties
+    type: object
+    properties:
+      name:
+        description: Name of the BPF map
+        type: string
+      size:
+        description: Size of the BPF map
+        type: integer
+  BPFMapStatus:
+    description: |
+      BPF map status
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      dynamic-size-ratio:
+        description: Ratio of total system memory to use for dynamic sizing of BPF maps
+        type: number
+      maps:
+        description: BPF maps
+        type: array
+        items:
+          "$ref": "#/definitions/BPFMapProperties"
   Metric:
     description: Metric information
     type: object
@@ -2392,3 +3064,91 @@ definitions:
       name:
         description: Name assigned to the IP (e.g. Kubernetes pod name)
         type: string
+  NamedPorts:
+    description: |-
+      List of named Layer 4 port and protocol pairs which will be used in Network
+      Policy specs.
+
+      +deepequal-gen=true
+    type: array
+    items:
+      "$ref": "#/definitions/Port"
+  EncryptionStatus:
+    description: |-
+      Status of transparent encryption
+
+      +k8s:deepcopy-gen=true
+    properties:
+      mode:
+        type: string
+        enum:
+          - Disabled
+          - IPsec
+          - Wireguard
+      msg:
+        type: string
+        description: Human readable status/error/warning message
+      wireguard:
+        description: Status of the Wireguard agent
+        "$ref": "#/definitions/WireguardStatus"
+  WireguardStatus:
+    description: |-
+      Status of the Wireguard agent
+
+      +k8s:deepcopy-gen=true
+    properties:
+      interfaces:
+        description: Wireguard interfaces managed by this Cilium instance
+        type: array
+        items:
+          "$ref": "#/definitions/WireguardInterface"
+  WireguardInterface:
+    description: |-
+      Status of a Wireguard interface
+
+      +k8s:deepcopy-gen=true
+    properties:
+      name:
+        description: Name of the interface
+        type: string
+      public-key:
+        description: Public key of this interface
+        type: string
+      listen-port:
+        description: Port on which the Wireguard endpoint is exposed
+        type: integer
+      peer-count:
+        description: Number of peers configured on this interface
+        type: integer
+      peers:
+        description: Optional list of wireguard peers
+        type: array
+        items:
+          "$ref": "#/definitions/WireguardPeer"
+  WireguardPeer:
+    description: |-
+      Status of a Wireguard peer
+
+      +k8s:deepcopy-gen=true
+    properties:
+      public-key:
+        description: Public key of this peer
+        type: string
+      endpoint:
+        description: Endpoint on which we are connected to this peer
+        type: string
+      last-handshake-time:
+        description: Timestamp of the last handshake with this peer
+        type: string
+        format: date-time
+      transfer-tx:
+        description: Number of sent bytes
+        type: integer
+      transfer-rx:
+        description: Number of received bytes
+        type: integer
+      allowed-ips:
+        description: List of IPs which may be routed through this peer
+        type: array
+        items:
+          type: string

@@ -1,26 +1,49 @@
+// This jenkinsfile sets tag based on git commit hash. Built docker image is tagged accordingly and pushed to local docker registry (living on the node)
+// This allows multiple jobs to use the same registry.
+
 @Library('cilium') _
 
 pipeline {
     agent {
-        label 'baremetal'
+        label 'gke'
     }
 
     environment {
         PROJ_PATH = "src/github.com/cilium/cilium"
-        GINKGO_TIMEOUT="108m"
+        GINKGO_TIMEOUT="180m"
         TESTDIR="${WORKSPACE}/${PROJ_PATH}/test"
         GOPATH="${WORKSPACE}"
         GKE_KEY=credentials('gke-key')
-        GKE_ZONE="us-west1-a"
+        TAG="${GIT_COMMIT}"
+        HOME="${WORKSPACE}"
+        RUN_QUARANTINED="""${sh(
+                returnStdout: true,
+                script: 'if [ "${RunQuarantined}" = "" ]; then echo -n "false"; else echo -n "${RunQuarantined}"; fi'
+            )}"""
     }
 
     options {
-        timeout(time: 260, unit: 'MINUTES')
+        timeout(time: 300, unit: 'MINUTES')
         timestamps()
         ansiColor('xterm')
     }
 
     stages {
+        stage('Set build name') {
+            when {
+                not {
+                    anyOf {
+                        environment name: 'ghprbPullTitle', value: null
+                        environment name: 'ghprbPullLink', value: null
+                    }
+                }
+            }
+            steps {
+                   script {
+                       currentBuild.displayName = env.getProperty('ghprbPullTitle') + '  ' + env.getProperty('ghprbPullLink') + '  ' + currentBuild.displayName
+                   }
+            }
+        }
         stage('Checkout') {
             options {
                 timeout(time: 20, unit: 'MINUTES')
@@ -31,28 +54,6 @@ pipeline {
                 checkout scm
                 sh 'mkdir -p ${PROJ_PATH}'
                 sh 'ls -A | grep -v src | xargs mv -t ${PROJ_PATH}'
-                sh '/usr/local/bin/cleanup || true'
-            }
-        }
-        stage('Precheck') {
-            options {
-                timeout(time: 20, unit: 'MINUTES')
-            }
-
-            steps {
-               sh "cd ${WORKSPACE}/${PROJ_PATH}; make jenkins-precheck"
-            }
-            post {
-               always {
-                   sh "cd ${WORKSPACE}/${PROJ_PATH}; make clean-jenkins-precheck || true"
-               }
-               unsuccessful {
-                   script {
-                       if  (!currentBuild.displayName.contains('fail')) {
-                           currentBuild.displayName = 'precheck fail\n' + currentBuild.displayName
-                       }
-                   }
-               }
             }
         }
         stage('Authenticate in gke') {
@@ -60,26 +61,40 @@ pipeline {
                 dir("/tmp") {
                     withCredentials([file(credentialsId: 'gke-key', variable: 'KEY_PATH')]) {
                         sh 'gcloud auth activate-service-account --key-file ${KEY_PATH}'
+                        sh 'gcloud config set project cilium-ci'
                     }
                 }
             }
         }
-        stage('Make Cilium images and prepare gke cluster') {
+        stage('Set programmatic env vars') {
+            steps {
+                script {
+                    if (env.ghprbActualCommit?.trim()) {
+                        env.DOCKER_TAG = env.ghprbActualCommit
+                    } else {
+                        env.DOCKER_TAG = env.GIT_COMMIT
+                    }
+                    if (env.run_with_race_detection?.trim()) {
+                        env.DOCKER_TAG = env.DOCKER_TAG + "-race"
+                        env.RACE = 1
+                        env.LOCKDEBUG = 1
+                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:f6698fe61dbe11019946e5cf5a92077cc8d4a6a9@sha256:9acfa5f4c64482d3dbe19c319f135f5e856f02b479b5eba06efa8691d74e1d4d"
+                    }
+                }
+            }
+        }
+        stage('Wait for Cilium images and prepare gke cluster') {
             parallel {
-                stage('Make Cilium images') {
-                    environment {
-                        TESTDIR="${WORKSPACE}/${PROJ_PATH}/test"
+                stage('Wait for images') {
+                    options {
+                        timeout(time: 20, unit: 'MINUTES')
                     }
                     steps {
-                        sh 'cd ${TESTDIR}; ./make-images-push-to-local-registry.sh $(./print-node-ip.sh) latest'
-                    }
-                    post {
-                        unsuccessful {
-                            script {
-                                if  (!currentBuild.displayName.contains('fail')) {
-                                    currentBuild.displayName = 'building or pushing Cilium images failed ' + currentBuild.displayName
-                                }
-                            }
+                        retry(25) {
+                            sleep(time: 60)
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/cilium-ci/tag/${DOCKER_TAG}/images"'
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/operator-generic-ci/tag/${DOCKER_TAG}/images"'
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/hubble-relay-ci/tag/${DOCKER_TAG}/images"'
                         }
                     }
                 }
@@ -92,7 +107,14 @@ pipeline {
                     }
                     steps {
                         dir("${TESTDIR}/gke") {
-                            sh './select-cluster.sh'
+                            retry(3){
+                                sh './release-cluster.sh || true'
+                                sh './select-cluster.sh'
+                            }
+                            script {
+                                def name = readFile file: 'cluster-name'
+                                currentBuild.displayName = currentBuild.displayName + " running on " + name
+                            }
                         }
                     }
                     post {
@@ -116,16 +138,36 @@ pipeline {
                 CONTAINER_RUNTIME=setIfLabel("area/containerd", "containerd", "docker")
                 KUBECONFIG="${TESTDIR}/gke/gke-kubeconfig"
                 CNI_INTEGRATION="gke"
+                CILIUM_IMAGE = "quay.io/cilium/cilium-ci"
+                CILIUM_TAG = "${DOCKER_TAG}"
+                CILIUM_OPERATOR_IMAGE= "quay.io/cilium/operator"
+                CILIUM_OPERATOR_TAG = "${DOCKER_TAG}"
+                HUBBLE_RELAY_IMAGE= "quay.io/cilium/hubble-relay-ci"
+                HUBBLE_RELAY_TAG = "${DOCKER_TAG}"
+                K8S_VERSION= """${sh(
+                        returnStdout: true,
+                        script: 'cat ${TESTDIR}/gke/cluster-version'
+                        )}"""
+                FOCUS= """${sh(
+                        returnStdout: true,
+                        script: 'echo ${ghprbCommentBody} | sed -r "s/([^ ]* |^[^ ]*$)//" | sed "s/^$/K8s*/" | tr -d \'\n\''
+                        )}"""
+                KERNEL="419"
+                NATIVE_CIDR= """${sh(
+                        returnStdout: true,
+                        script: 'cat ${TESTDIR}/gke/cluster-cidr | tr -d \'\n\''
+                        )}"""
             }
             steps {
                 dir("${TESTDIR}"){
-                    sh 'K8S_VERSION=$(${TESTDIR}/gke/get-cluster-version.sh) CILIUM_IMAGE=$(./print-node-ip.sh)/cilium/cilium:latest CILIUM_OPERATOR_IMAGE=$(./print-node-ip.sh)/cilium/operator:latest ginkgo --focus="$(echo ${ghprbCommentBody} | sed -r "s/([^ ]* |^[^ ]*$)//" | sed "s/^$/K8s*/")" -v --failFast=${FAILFAST} -- -cilium.provision=false -cilium.timeout=${GINKGO_TIMEOUT} -cilium.kubeconfig=${TESTDIR}/gke/gke-kubeconfig -cilium.passCLIEnvironment=true -cilium.registry=$(./print-node-ip.sh)'
+                    sh 'env'
+                    sh 'ginkgo --focus="${FOCUS}" --tags=integration_tests -v -- -cilium.provision=false -cilium.timeout=${GINKGO_TIMEOUT} -cilium.kubeconfig=${KUBECONFIG} -cilium.passCLIEnvironment=true -cilium.image=${CILIUM_IMAGE} -cilium.tag=${CILIUM_TAG} -cilium.operator-image=${CILIUM_OPERATOR_IMAGE} -cilium.operator-tag=${CILIUM_OPERATOR_TAG} -cilium.hubble-relay-image=${HUBBLE_RELAY_IMAGE} -cilium.hubble-relay-tag=${HUBBLE_RELAY_TAG} -cilium.holdEnvironment=false -cilium.runQuarantined=${RUN_QUARANTINED} -cilium.operator-suffix="-ci"'
                 }
             }
             post {
                 always {
                     sh 'cd ${TESTDIR}; ./archive_test_results_eks.sh || true'
-                    archiveArtifacts artifacts: 'src/github.com/cilium/cilium/*.zip'
+                    archiveArtifacts artifacts: '**/*.zip'
                     junit testDataPublishers: [[$class: 'AttachmentPublisher']], testResults: 'src/github.com/cilium/cilium/test/*.xml'
                 }
                 unsuccessful {

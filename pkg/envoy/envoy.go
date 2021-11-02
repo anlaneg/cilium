@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017, 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package envoy
 
@@ -18,7 +7,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os/exec"
@@ -99,7 +87,7 @@ func (a *admin) transact(query string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -173,7 +161,7 @@ func StartEnvoy(stateDir, logPath string, baseID uint64) *Envoy {
 	nodeId := "host~127.0.0.1~no-id~localdomain"
 
 	// Create static configuration
-	createBootstrap(bootstrapPath, nodeId, ingressClusterName, "version1",
+	createBootstrap(bootstrapPath, nodeId, ingressClusterName,
 		xdsPath, egressClusterName, ingressClusterName, adminPath)
 
 	log.Debugf("Envoy: Starting: %v", *e)
@@ -325,6 +313,11 @@ func newEnvoyLogPiper() io.WriteCloser {
 			case "off", "critical", "error":
 				scopedLog.Error(msg)
 			case "warning":
+				// Silently drop expected warnings if flowdebug is not enabled
+				// TODO: Remove this special case when https://github.com/envoyproxy/envoy/issues/13504 is fixed.
+				if !flowdebug.Enabled() && strings.Contains(msg, "Unable to use runtime singleton for feature envoy.http.headermap.lazy_map_min_size") {
+					continue
+				}
 				scopedLog.Warn(msg)
 			case "info":
 				scopedLog.Info(msg)

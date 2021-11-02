@@ -1,26 +1,19 @@
-// Copyright 2019 Authors of Cilium
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 // Copyright 2017 Lyft, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package eni
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"time"
+	"sync"
 
+	"github.com/aws/smithy-go"
+	"github.com/cilium/cilium/operator/option"
+	"github.com/cilium/cilium/pkg/aws/eni/limits"
 	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ipam"
@@ -29,27 +22,25 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/math"
 
-	"github.com/aws/aws-sdk-go-v2/aws/awserr"
 	"github.com/sirupsen/logrus"
 )
 
 const (
-	// warningInterval is the interval for warnings which should be done
-	// once and then repeated if the warning persists.
-	warningInterval = time.Hour
-
 	// maxAttachRetries is the maximum number of attachment retries
 	maxAttachRetries = 5
+
+	getMaximumAllocatableIPv4FailureWarningStr = "maximum allocatable ipv4 addresses will be 0 (unlimited)" +
+		" this could lead to ip allocation overflows if the max-allocate flag is not set"
 )
 
 // Node represents a Kubernetes node running Cilium with an associated
 // CiliumNode custom resource
 type Node struct {
-	// mutex protects all members of this structure
-	mutex lock.RWMutex
-
 	// node contains the general purpose fields of a node
 	node *ipam.Node
+
+	// mutex protects members below this field
+	mutex lock.RWMutex
 
 	// enis is the list of ENIs attached to the node indexed by ENI ID.
 	// Protected by Node.mutex.
@@ -60,92 +51,80 @@ type Node struct {
 
 	// manager is the EC2 node manager responsible for this node
 	manager *InstancesManager
+
+	// instanceID of the node
+	instanceID string
+}
+
+// NewNode returns a new Node
+func NewNode(node *ipam.Node, k8sObj *v2.CiliumNode, manager *InstancesManager) *Node {
+	return &Node{
+		node:       node,
+		k8sObj:     k8sObj,
+		manager:    manager,
+		instanceID: node.InstanceID(),
+	}
 }
 
 // UpdatedNode is called when an update to the CiliumNode is received.
 func (n *Node) UpdatedNode(obj *v2.CiliumNode) {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
 	n.k8sObj = obj
 }
 
-// GetMaxAboveWatermark returns the max-above-watermark setting for an AWS node
-func (n *Node) GetMaxAboveWatermark() int {
-	if n.k8sObj.Spec.IPAM.MaxAboveWatermark != 0 {
-		return n.k8sObj.Spec.IPAM.MaxAboveWatermark
-	}
-	return n.k8sObj.Spec.ENI.MaxAboveWatermark
-}
-
-// GetPreAllocate returns the pre-allocation setting for an AWS node
-func (n *Node) GetPreAllocate() int {
-	if n.k8sObj.Spec.IPAM.PreAllocate != 0 {
-		return n.k8sObj.Spec.IPAM.PreAllocate
-	}
-	if n.k8sObj.Spec.ENI.PreAllocate != 0 {
-		return n.k8sObj.Spec.ENI.PreAllocate
-	}
-	return defaults.ENIPreAllocation
-}
-
-// GetMinAllocate returns the minimum-allocation setting of an AWS node
-func (n *Node) GetMinAllocate() int {
-	if n.k8sObj.Spec.IPAM.MinAllocate != 0 {
-		return n.k8sObj.Spec.IPAM.MinAllocate
-	}
-	return n.k8sObj.Spec.ENI.MinAllocate
-}
-
-func (n *Node) logger() *logrus.Entry {
-	if n == nil {
-		return log
-	}
-
-	n.mutex.RLock()
-	defer n.mutex.RUnlock()
-
-	return n.loggerLocked()
-}
-
 func (n *Node) loggerLocked() *logrus.Entry {
-	if n == nil {
+	if n == nil || n.instanceID == "" {
 		return log
 	}
 
-	if n.k8sObj != nil {
-		return log.WithField("instanceID", n.k8sObj.Spec.ENI.InstanceID)
-	}
-
-	return log
+	return log.WithField("instanceID", n.instanceID)
 }
 
 // PopulateStatusFields fills in the status field of the CiliumNode custom
 // resource with ENI specific information
 func (n *Node) PopulateStatusFields(k8sObj *v2.CiliumNode) {
-	k8sObj.Status.ENI.ENIs = n.getENIs()
-}
+	k8sObj.Status.ENI.ENIs = map[string]eniTypes.ENI{}
 
-// PopulateSpecFields fills in the spec field of the CiliumNode custom resource
-// with ENI specific information
-func (n *Node) PopulateSpecFields(k8sObj *v2.CiliumNode) {
-	if k8sObj.Spec.IPAM.PreAllocate == 0 {
-		k8sObj.Spec.IPAM.PreAllocate = defaults.ENIPreAllocation
-	}
+	n.manager.ForeachInstance(n.node.InstanceID(),
+		func(instanceID, interfaceID string, rev ipamTypes.InterfaceRevision) error {
+			e, ok := rev.Resource.(*eniTypes.ENI)
+			if ok {
+				k8sObj.Status.ENI.ENIs[interfaceID] = *e.DeepCopy()
+			}
+			return nil
+		})
+
+	return
 }
 
 // getLimits returns the interface and IP limits of this node
 func (n *Node) getLimits() (ipamTypes.Limits, bool) {
-	return getLimits(n.k8sObj.Spec.ENI.InstanceType)
+	n.mutex.RLock()
+	l, b := n.getLimitsLocked()
+	n.mutex.RUnlock()
+	return l, b
+}
+
+// getLimitsLocked is the same function as getLimits, but assumes the n.mutex
+// is read locked.
+func (n *Node) getLimitsLocked() (ipamTypes.Limits, bool) {
+	return limits.Get(n.k8sObj.Spec.ENI.InstanceType)
 }
 
 // PrepareIPRelease prepares the release of ENI IPs.
 func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry) *ipam.ReleaseAction {
 	r := &ipam.ReleaseAction{}
 
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
 	// Iterate over ENIs on this node, select the ENI with the most
 	// addresses available for release
 	for key, e := range n.enis {
 		scopedLog.WithFields(logrus.Fields{
 			fieldEniID:     e.ID,
-			"needIndex":    n.k8sObj.Spec.ENI.FirstInterfaceIndex,
+			"needIndex":    *n.k8sObj.Spec.ENI.FirstInterfaceIndex,
 			"index":        e.Number,
 			"numAddresses": len(e.Addresses),
 		}).Debug("Considering ENI for IP release")
@@ -177,12 +156,12 @@ func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry) *ipam.Re
 		}).Debug("ENI has unused IPs that can be released")
 		maxReleaseOnENI := math.IntMin(freeOnENICount, excessIPs)
 
-		firstEniWithFreeIpFound := r.IPsToRelease == nil
-		eniWithMoreFreeIpsFound := maxReleaseOnENI > len(r.IPsToRelease)
+		firstENIWithFreeIPFound := r.IPsToRelease == nil
+		eniWithMoreFreeIPsFound := maxReleaseOnENI > len(r.IPsToRelease)
 		// Select the ENI with the most addresses available for release
-		if firstEniWithFreeIpFound || eniWithMoreFreeIpsFound {
+		if firstENIWithFreeIPFound || eniWithMoreFreeIPsFound {
 			r.InterfaceID = key
-			r.PoolID = ipam.PoolID(e.Subnet.ID)
+			r.PoolID = ipamTypes.PoolID(e.Subnet.ID)
 			r.IPsToRelease = freeIpsOnENI[:maxReleaseOnENI]
 		}
 	}
@@ -205,10 +184,13 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 
 	a = &ipam.AllocationAction{}
 
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
+
 	for key, e := range n.enis {
 		scopedLog.WithFields(logrus.Fields{
 			fieldEniID:     e.ID,
-			"needIndex":    n.k8sObj.Spec.ENI.FirstInterfaceIndex,
+			"needIndex":    *n.k8sObj.Spec.ENI.FirstInterfaceIndex,
 			"index":        e.Number,
 			"addressLimit": limits.IPv4,
 			"numAddresses": len(e.Addresses),
@@ -218,7 +200,9 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 			continue
 		}
 
-		availableOnENI := math.IntMax(limits.IPv4-len(e.Addresses), 0)
+		// The limits include the primary IP, so we need to take it into account
+		// when computing the amount of available addresses on the ENI.
+		availableOnENI := math.IntMax(limits.IPv4-len(e.Addresses)-1, 0)
 		if availableOnENI <= 0 {
 			continue
 		} else {
@@ -238,7 +222,7 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 				}).Debug("Subnet has IPs available")
 
 				a.InterfaceID = key
-				a.PoolID = ipam.PoolID(subnet.ID)
+				a.PoolID = ipamTypes.PoolID(subnet.ID)
 				a.AvailableForAllocation = math.IntMin(subnet.AvailableAddresses, availableOnENI)
 			}
 		}
@@ -250,26 +234,14 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 
 // AllocateIPs performs the ENI allocation oepration
 func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction) error {
-	return n.manager.api.AssignPrivateIpAddresses(ctx, a.InterfaceID, int64(a.AvailableForAllocation))
+	return n.manager.api.AssignPrivateIpAddresses(ctx, a.InterfaceID, int32(a.AvailableForAllocation))
 }
 
-// getENIs returns a copy of all ENIs attached to the node
-func (n *Node) getENIs() (enis map[string]eniTypes.ENI) {
-	enis = map[string]eniTypes.ENI{}
-	n.mutex.RLock()
-	for _, e := range n.enis {
-		enis[e.ID] = e
-	}
-	n.mutex.RUnlock()
-	return
-}
-
-func (n *Node) getSecurityGroupIDs(ctx context.Context) ([]string, error) {
+func (n *Node) getSecurityGroupIDs(ctx context.Context, eniSpec eniTypes.ENISpec) ([]string, error) {
 	// 1. check explicit security groups associations via checking Spec.ENI.SecurityGroups
 	// 2. check if Spec.ENI.SecurityGroupTags is passed and if so filter by those
 	// 3. if 1 and 2 give no results derive the security groups from eth0
 
-	eniSpec := n.k8sObj.Spec.ENI
 	if len(eniSpec.SecurityGroups) > 0 {
 		return eniSpec.SecurityGroups, nil
 	}
@@ -290,11 +262,23 @@ func (n *Node) getSecurityGroupIDs(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	if eni := n.manager.GetENI(n.k8sObj.Spec.ENI.InstanceID, 0); eni != nil {
-		return eni.SecurityGroups, nil
+	var securityGroups []string
+
+	n.manager.ForeachInstance(n.node.InstanceID(),
+		func(instanceID, interfaceID string, rev ipamTypes.InterfaceRevision) error {
+			e, ok := rev.Resource.(*eniTypes.ENI)
+			if ok && e.Number == 0 {
+				securityGroups = make([]string, len(e.SecurityGroups))
+				copy(securityGroups, e.SecurityGroups)
+			}
+			return nil
+		})
+
+	if securityGroups == nil {
+		return nil, fmt.Errorf("failed to get security group ids")
 	}
 
-	return nil, fmt.Errorf("failed to get security group ids")
+	return securityGroups, nil
 }
 
 func (n *Node) errorInstanceNotRunning(err error) (notRunning bool) {
@@ -303,20 +287,23 @@ func (n *Node) errorInstanceNotRunning(err error) (notRunning bool) {
 	// deletion event to not have been sent out yet. The next ENI resync
 	// will cause the instance to be marked as inactive.
 	if strings.Contains(err.Error(), "is not 'running'") {
-		n.node.SetRunningLocked(false)
+		n.node.SetRunning(false)
 		log.Info("Marking node as not running")
 	}
 	return
 }
 
 func isAttachmentIndexConflict(err error) bool {
-	e, ok := err.(awserr.Error)
-	return ok && e.Code() == "InvalidParameterValue" && strings.Contains(e.Message(), "interface attached at device")
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "InvalidParameterValue" && strings.Contains(apiErr.ErrorMessage(), "interface attached at device")
+	}
+	return false
 }
 
 // indexExists returns true if the specified index is occupied by an ENI in the
 // slice of ENIs
-func indexExists(enis map[string]eniTypes.ENI, index int64) bool {
+func indexExists(enis map[string]eniTypes.ENI, index int32) bool {
 	for _, e := range enis {
 		if e.Number == int(index) {
 			return true
@@ -326,12 +313,16 @@ func indexExists(enis map[string]eniTypes.ENI, index int64) bool {
 }
 
 // findNextIndex returns the next available index with the provided index being
-// the first candidate
-func (n *Node) findNextIndex(index int64) int64 {
+// the first candidate. When calling this function, ensure that the mutex is
+// not held as this function read-locks the mutex to protect access to
+// `n.enis`.
+func (n *Node) findNextIndex(index int32) int32 {
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
 	for indexExists(n.enis, index) {
 		index++
 	}
-	return index
+	return int32(index)
 }
 
 // The following error constants represent the error conditions for
@@ -356,18 +347,38 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 		return 0, errUnableToDetermineLimits, fmt.Errorf(errUnableToDetermineLimits)
 	}
 
-	bestSubnet := n.manager.FindSubnetByTags(n.k8sObj.Spec.ENI.VpcID, n.k8sObj.Spec.ENI.AvailabilityZone, n.k8sObj.Spec.ENI.SubnetTags)
+	n.mutex.RLock()
+	resource := *n.k8sObj
+	n.mutex.RUnlock()
+
+	var bestSubnet *ipamTypes.Subnet
+	if len(resource.Spec.ENI.SubnetIDs) > 0 {
+		bestSubnet = n.manager.FindSubnetByIDs(resource.Spec.ENI.VpcID, resource.Spec.ENI.AvailabilityZone, resource.Spec.ENI.SubnetIDs)
+	} else {
+		bestSubnet = n.manager.FindSubnetByTags(resource.Spec.ENI.VpcID, resource.Spec.ENI.AvailabilityZone, resource.Spec.ENI.SubnetTags)
+	}
+
 	if bestSubnet == nil {
-		return 0, errUnableToFindSubnet, fmt.Errorf("No matching subnet available for interface creation (VPC=%s AZ=%s SubnetTags=%s",
-			n.k8sObj.Spec.ENI.VpcID, n.k8sObj.Spec.ENI.AvailabilityZone, n.k8sObj.Spec.ENI.SubnetTags)
+		return 0,
+			errUnableToFindSubnet,
+			fmt.Errorf(
+				"No matching subnet available for interface creation (VPC=%s AZ=%s SubnetIDs=%v SubnetTags=%s)",
+				resource.Spec.ENI.VpcID,
+				resource.Spec.ENI.AvailabilityZone,
+				resource.Spec.ENI.SubnetIDs,
+				resource.Spec.ENI.SubnetTags,
+			)
 	}
 
-	securityGroupIDs, err := n.getSecurityGroupIDs(ctx)
+	securityGroupIDs, err := n.getSecurityGroupIDs(ctx, resource.Spec.ENI)
 	if err != nil {
-		return 0, errUnableToGetSecurityGroups, fmt.Errorf("%s %s", errUnableToGetSecurityGroups, err)
+		return 0,
+			errUnableToGetSecurityGroups,
+			fmt.Errorf("%s %s", errUnableToGetSecurityGroups, err)
 	}
 
-	desc := "Cilium-CNI (" + n.k8sObj.Spec.ENI.InstanceID + ")"
+	desc := "Cilium-CNI (" + n.node.InstanceID() + ")"
+
 	// Must allocate secondary ENI IPs as needed, up to ENI instance limit - 1 (reserve 1 for primary IP)
 	toAllocate := math.IntMin(allocation.MaxIPsToAllocate, limits.IPv4-1)
 	// Validate whether request has already been fulfilled in the meantime
@@ -375,7 +386,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 		return 0, "", nil
 	}
 
-	index := n.findNextIndex(int64(*n.k8sObj.Spec.ENI.FirstInterfaceIndex))
+	index := n.findNextIndex(int32(*resource.Spec.ENI.FirstInterfaceIndex))
 
 	scopedLog = scopedLog.WithFields(logrus.Fields{
 		"securityGroupIDs": securityGroupIDs,
@@ -384,7 +395,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	})
 	scopedLog.Info("No more IPs available, creating new ENI")
 
-	eniID, eni, err := n.manager.api.CreateNetworkInterface(ctx, int64(toAllocate), bestSubnet.ID, desc, securityGroupIDs)
+	eniID, eni, err := n.manager.api.CreateNetworkInterface(ctx, int32(toAllocate), bestSubnet.ID, desc, securityGroupIDs)
 	if err != nil {
 		return 0, errUnableToCreateENI, fmt.Errorf("%s %s", errUnableToCreateENI, err)
 	}
@@ -394,7 +405,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 
 	var attachmentID string
 	for attachRetries := 0; attachRetries < maxAttachRetries; attachRetries++ {
-		attachmentID, err = n.manager.api.AttachNetworkInterface(ctx, index, n.k8sObj.Spec.ENI.InstanceID, eniID)
+		attachmentID, err = n.manager.api.AttachNetworkInterface(ctx, index, n.node.InstanceID(), eniID)
 
 		// The index is already in use, this can happen if the local
 		// list of ENIs is oudated.  Retry the attachment to avoid
@@ -416,7 +427,9 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 			return toAllocate, "", nil
 		}
 
-		return 0, errUnableToAttachENI, fmt.Errorf("%s at index %d: %s", errUnableToAttachENI, index, err)
+		return 0,
+			errUnableToAttachENI,
+			fmt.Errorf("%s at index %d: %s", errUnableToAttachENI, index, err)
 	}
 
 	scopedLog = scopedLog.WithFields(logrus.Fields{
@@ -428,7 +441,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 
 	scopedLog.Info("Attached ENI to instance")
 
-	if n.k8sObj.Spec.ENI.DeleteOnTermination == nil || *n.k8sObj.Spec.ENI.DeleteOnTermination {
+	if resource.Spec.ENI.DeleteOnTermination == nil || *resource.Spec.ENI.DeleteOnTermination {
 		// We have an attachment ID from the last API, which lets us mark the
 		// interface as delete on termination
 		err = n.manager.api.ModifyNetworkInterface(ctx, eniID, attachmentID, true)
@@ -446,53 +459,159 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 		}
 	}
 
-	if len(n.manager.eniTags) != 0 {
-		if err := n.manager.api.TagENI(ctx, eniID, n.manager.eniTags); err != nil {
-			// treating above as a warn rather than error since it's not mandatory for ENI tagging to succeed
-			// given at this point given that it won't affect IPAM functionality
-			scopedLog.WithError(err).Warning("Unable to tag ENI")
-		}
-	}
-
 	// Add the information of the created ENI to the instances manager
-	n.manager.UpdateENI(n.k8sObj.Spec.ENI.InstanceID, eni)
+	n.manager.UpdateENI(n.node.InstanceID(), eni)
 	return toAllocate, "", nil
-}
-
-// LogFields extends the log entry with ENI specific fields
-func (n *Node) LogFields(logger *logrus.Entry) *logrus.Entry {
-	if n.k8sObj != nil {
-		logger = logger.WithField("instanceID", n.k8sObj.Spec.ENI.InstanceID)
-	}
-	return logger
 }
 
 // ResyncInterfacesAndIPs is called to retrieve and ENIs and IPs as known to
 // the EC2 API and return them
 func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, error) {
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
-
+	// n.node does not need to be protected by n.mutex as it is only written to
+	// upon creation of `n`
+	instanceID := n.node.InstanceID()
 	available := ipamTypes.AllocationMap{}
+
+	n.mutex.Lock()
 	n.enis = map[string]eniTypes.ENI{}
-	enis := n.manager.GetENIs(n.k8sObj.Spec.ENI.InstanceID)
+
+	n.manager.ForeachInstance(instanceID,
+		func(instanceID, interfaceID string, rev ipamTypes.InterfaceRevision) error {
+			e, ok := rev.Resource.(*eniTypes.ENI)
+			if !ok {
+				return nil
+			}
+
+			n.enis[e.ID] = *e
+			index := *n.k8sObj.Spec.ENI.FirstInterfaceIndex
+
+			if e.Number < index {
+				return nil
+			}
+
+			for _, ip := range e.Addresses {
+				available[ip] = ipamTypes.AllocationIP{Resource: e.ID}
+			}
+			return nil
+		})
+	enis := len(n.enis)
+	n.mutex.Unlock()
+
 	// An ec2 instance has at least one ENI attached, no ENI found implies instance not found.
-	if len(enis) == 0 {
+	if enis == 0 {
 		scopedLog.Warning("Instance not found! Please delete corresponding ciliumnode if instance has already been deleted.")
 		return nil, fmt.Errorf("unable to retrieve ENIs")
 	}
 
-	for _, e := range enis {
-		n.enis[e.ID] = *e
+	return available, nil
+}
 
-		if e.Number < *n.k8sObj.Spec.ENI.FirstInterfaceIndex {
-			continue
-		}
-
-		for _, ip := range e.Addresses {
-			available[ip] = ipamTypes.AllocationIP{Resource: e.ID}
-		}
+// GetMaximumAllocatableIPv4 returns the maximum amount of IPv4 addresses
+// that can be allocated to the instance
+func (n *Node) GetMaximumAllocatableIPv4() int {
+	if n == nil {
+		log.Warningf("Could not determine first interface index, %s", getMaximumAllocatableIPv4FailureWarningStr)
+		return 0
 	}
 
-	return available, nil
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
+
+	// Retrieve FirstInterfaceIndex from node spec
+	if n.k8sObj == nil ||
+		n.k8sObj.Spec.ENI.FirstInterfaceIndex == nil {
+		n.loggerLocked().WithFields(logrus.Fields{
+			"first-interface-index": "unknown",
+		}).Warningf("Could not determine first interface index, %s", getMaximumAllocatableIPv4FailureWarningStr)
+		return 0
+	}
+	firstInterfaceIndex := *n.k8sObj.Spec.ENI.FirstInterfaceIndex
+
+	// Retrieve limits for the instance type
+	limits, limitsAvailable := n.getLimitsLocked()
+	if !limitsAvailable {
+		n.loggerLocked().WithFields(logrus.Fields{
+			"adaptors-limit":        "unknown",
+			"first-interface-index": firstInterfaceIndex,
+		}).Warningf("Could not determined instance limits, %s", getMaximumAllocatableIPv4FailureWarningStr)
+		return 0
+	}
+
+	// Validate the amount of adapters is bigger than the configured FirstInterfaceIndex
+	if limits.Adapters < firstInterfaceIndex {
+		n.loggerLocked().WithFields(logrus.Fields{
+			"adaptors-limit":        limits.Adapters,
+			"first-interface-index": firstInterfaceIndex,
+		}).Warningf(
+			"Instance type network adapters limit is lower than the configured FirstInterfaceIndex, %s",
+			getMaximumAllocatableIPv4FailureWarningStr,
+		)
+		return 0
+	}
+
+	// limits.IPv4 contains the primary IP which is not available for allocation
+	maxPerInterface := math.IntMax(limits.IPv4-1, 0)
+
+	// Return the maximum amount of IP addresses allocatable on the instance
+	return (limits.Adapters - firstInterfaceIndex) * maxPerInterface
+}
+
+var adviseOperatorFlagOnce sync.Once
+
+// GetMinimumAllocatableIPv4 returns the minimum amount of IPv4 addresses that
+// must be allocated to the instance.
+func (n *Node) GetMinimumAllocatableIPv4() int {
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
+
+	minimum := defaults.IPAMPreAllocation
+
+	if n.k8sObj == nil || n.k8sObj.Spec.ENI.FirstInterfaceIndex == nil {
+		n.loggerLocked().WithFields(logrus.Fields{
+			"adaptors-limit": "unknown",
+			"pre-allocate":   minimum,
+		}).Warning("Could not determine first-interface-index, falling back to default pre-allocate value")
+		return minimum
+	}
+
+	index := *n.k8sObj.Spec.ENI.FirstInterfaceIndex
+
+	// In ENI mode, we must adjust the PreAllocate value based on the instance
+	// type. An adjustment is necessary when the number of possible IPs
+	// corresponding to the instance type limit is smaller than the default
+	// PreAllocate value. Otherwise, we fallback to the default PreAllocate.
+	//
+	// If we don't adjust the PreAllocate value, then it would be impossible to
+	// allocate IPs for smaller instance types because the PreAllocate would
+	// exceed the maximum possible number of IPs per instance.
+
+	limits, limitsAvailable := n.getLimitsLocked()
+	if !limitsAvailable {
+		adviseOperatorFlagOnce.Do(func() {
+			n.loggerLocked().WithFields(logrus.Fields{
+				"instance-type": n.k8sObj.Spec.ENI.InstanceType,
+			}).Warningf(
+				"Unable to find limits for instance type, consider setting --%s=true on the Operator",
+				option.UpdateEC2AdapterLimitViaAPI,
+			)
+		})
+
+		n.loggerLocked().WithFields(logrus.Fields{
+			"adaptors-limit":        "unknown",
+			"first-interface-index": index,
+			"pre-allocate":          minimum,
+		}).Warning("Could not determine instance limits, falling back to default pre-allocate value")
+		return minimum
+	}
+
+	// We cannot allocate any IPs if this is the case because all the ENIs will
+	// be skipped.
+	if index >= limits.Adapters {
+		return 0
+	}
+
+	// limits.IPv4 contains the primary IP which is not available for allocation
+	maxPerInterface := math.IntMax(limits.IPv4-1, 0)
+
+	return math.IntMin(minimum, (limits.Adapters-index)*maxPerInterface)
 }

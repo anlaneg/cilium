@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package api
 
@@ -50,6 +39,10 @@ const (
 	// which corresponds to policy_verdict_notify defined in bpf/lib/policy_log.h
 	MessageTypePolicyVerdict
 
+	// MessageTypeRecCapture is a BPF datapath notification carrying a RecorderCapture
+	// which corresponds to capture_msg defined in bpf/lib/pcap.h
+	MessageTypeRecCapture
+
 	// 129-255 are reserved for agent level events
 
 	// MessageTypeAccessLog contains a pkg/proxy/accesslog.LogRecord
@@ -67,6 +60,7 @@ const (
 	MessageTypeNameL7            = "l7"
 	MessageTypeNameAgent         = "agent"
 	MessageTypeNamePolicyVerdict = "policy-verdict"
+	MessageTypeNameRecCapture    = "recorder"
 )
 
 type MessageTypeFilter []int
@@ -81,6 +75,7 @@ var (
 		MessageTypeNameL7:            MessageTypeAccessLog,
 		MessageTypeNameAgent:         MessageTypeAgent,
 		MessageTypeNamePolicyVerdict: MessageTypePolicyVerdict,
+		MessageTypeNameRecCapture:    MessageTypeRecCapture,
 	}
 )
 
@@ -143,6 +138,7 @@ const (
 	TraceFromStack
 	TraceFromOverlay
 	TraceFromNetwork
+	TraceToNetwork
 )
 
 // TraceObservationPoints is a map of all supported trace observation points
@@ -152,6 +148,7 @@ var TraceObservationPoints = map[uint8]string{
 	TraceToHost:      "to-host",
 	TraceToStack:     "to-stack",
 	TraceToOverlay:   "to-overlay",
+	TraceToNetwork:   "to-network",
 	TraceFromLxc:     "from-endpoint",
 	TraceFromProxy:   "from-proxy",
 	TraceFromHost:    "from-host",
@@ -168,10 +165,47 @@ func TraceObservationPoint(obsPoint uint8) string {
 	return fmt.Sprintf("%d", obsPoint)
 }
 
-// AgentNotify is a notification from the agent
+// TraceObservationPointHasConnState returns true if the observation point
+// obsPoint populates the TraceNotify.Reason field with connection tracking
+// information.
+func TraceObservationPointHasConnState(obsPoint uint8) bool {
+	switch obsPoint {
+	case TraceToLxc,
+		TraceToProxy,
+		TraceToHost,
+		TraceToStack,
+		TraceToNetwork:
+		return true
+	default:
+		return false
+	}
+}
+
+// AgentNotify is a notification from the agent. The notification is stored
+// in its JSON-encoded representation
 type AgentNotify struct {
 	Type AgentNotification
 	Text string
+}
+
+// AgentNotifyMessage is a notification from the agent. It is similar to
+// AgentNotify, but the notification is an unencoded struct. See the *Message
+// constructors in this package for possible values.
+type AgentNotifyMessage struct {
+	Type         AgentNotification
+	Notification interface{}
+}
+
+// ToJSON encodes a AgentNotifyMessage to its JSON-based AgentNotify representation
+func (m *AgentNotifyMessage) ToJSON() (AgentNotify, error) {
+	repr, err := json.Marshal(m.Notification)
+	if err != nil {
+		return AgentNotify{}, err
+	}
+	return AgentNotify{
+		Type: m.Type,
+		Text: string(repr),
+	}, nil
 }
 
 // AgentNotification specifies the type of agent notification
@@ -193,7 +227,8 @@ const (
 	AgentNotifyServiceDeleted
 )
 
-var notifyTable = map[AgentNotification]string{
+// AgentNotifications is a map of all supported agent notification types.
+var AgentNotifications = map[AgentNotification]string{
 	AgentNotifyUnspec:                    "unspecified",
 	AgentNotifyGeneric:                   "Message",
 	AgentNotifyStart:                     "Cilium agent started",
@@ -210,7 +245,7 @@ var notifyTable = map[AgentNotification]string{
 }
 
 func resolveAgentType(t AgentNotification) string {
-	if n, ok := notifyTable[t]; ok {
+	if n, ok := AgentNotifications[t]; ok {
 		return n
 	}
 
@@ -238,29 +273,32 @@ type PolicyUpdateNotification struct {
 	RuleCount int      `json:"rule_count"`
 }
 
-// PolicyUpdateRepr returns string representation of monitor notification
-func PolicyUpdateRepr(numRules int, labels []string, revision uint64) (string, error) {
+// PolicyUpdateMessage constructs an agent notification message for policy updates
+func PolicyUpdateMessage(numRules int, labels []string, revision uint64) AgentNotifyMessage {
 	notification := PolicyUpdateNotification{
 		Labels:    labels,
 		Revision:  revision,
 		RuleCount: numRules,
 	}
 
-	repr, err := json.Marshal(notification)
-
-	return string(repr), err
+	return AgentNotifyMessage{
+		Type:         AgentNotifyPolicyUpdated,
+		Notification: notification,
+	}
 }
 
-// PolicyDeleteRepr returns string representation of monitor notification
-func PolicyDeleteRepr(deleted int, labels []string, revision uint64) (string, error) {
+// PolicyDeleteMessage constructs an agent notification message for policy deletion
+func PolicyDeleteMessage(deleted int, labels []string, revision uint64) AgentNotifyMessage {
 	notification := PolicyUpdateNotification{
 		Labels:    labels,
 		Revision:  revision,
 		RuleCount: deleted,
 	}
-	repr, err := json.Marshal(notification)
 
-	return string(repr), err
+	return AgentNotifyMessage{
+		Type:         AgentNotifyPolicyDeleted,
+		Notification: notification,
+	}
 }
 
 // EndpointRegenNotification structures regeneration notification
@@ -270,32 +308,35 @@ type EndpointRegenNotification struct {
 	Error  string   `json:"error,omitempty"`
 }
 
-// EndpointRegenRepr returns string representation of monitor notification
-func EndpointRegenRepr(e notifications.RegenNotificationInfo, err error) (string, error) {
+// EndpointRegenMessage constructs an agent notification message for endpoint regeneration
+func EndpointRegenMessage(e notifications.RegenNotificationInfo, err error) AgentNotifyMessage {
 	notification := EndpointRegenNotification{
 		ID:     e.GetID(),
 		Labels: e.GetOpLabels(),
 	}
 
+	typ := AgentNotifyEndpointRegenerateSuccess
 	if err != nil {
 		notification.Error = err.Error()
+		typ = AgentNotifyEndpointRegenerateFail
 	}
 
-	repr, err := json.Marshal(notification)
-
-	return string(repr), err
+	return AgentNotifyMessage{
+		Type:         typ,
+		Notification: notification,
+	}
 }
 
-// EndpointCreateNotification structures the endpoint create notification
-type EndpointCreateNotification struct {
+// EndpointNotification structures the endpoint create or delete notification
+type EndpointNotification struct {
 	EndpointRegenNotification
 	PodName   string `json:"pod-name,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// EndpointCreateRepr returns string representation of monitor notification
-func EndpointCreateRepr(e notifications.RegenNotificationInfo) (string, error) {
-	notification := EndpointCreateNotification{
+// EndpointCreateMessage constructs an agent notification message for endpoint creation
+func EndpointCreateMessage(e notifications.RegenNotificationInfo) AgentNotifyMessage {
+	notification := EndpointNotification{
 		EndpointRegenNotification: EndpointRegenNotification{
 			ID:     e.GetID(),
 			Labels: e.GetOpLabels(),
@@ -304,21 +345,15 @@ func EndpointCreateRepr(e notifications.RegenNotificationInfo) (string, error) {
 		Namespace: e.GetK8sNamespace(),
 	}
 
-	repr, err := json.Marshal(notification)
-
-	return string(repr), err
+	return AgentNotifyMessage{
+		Type:         AgentNotifyEndpointCreated,
+		Notification: notification,
+	}
 }
 
-// EndpointDeleteNotification structures the an endpoint delete notification
-type EndpointDeleteNotification struct {
-	EndpointRegenNotification
-	PodName   string `json:"pod-name,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-}
-
-// EndpointDeleteRepr returns string representation of monitor notification
-func EndpointDeleteRepr(e notifications.RegenNotificationInfo) (string, error) {
-	notification := EndpointDeleteNotification{
+// EndpointDeleteMessage constructs an agent notification message for endpoint deletion
+func EndpointDeleteMessage(e notifications.RegenNotificationInfo) AgentNotifyMessage {
+	notification := EndpointNotification{
 		EndpointRegenNotification: EndpointRegenNotification{
 			ID:     e.GetID(),
 			Labels: e.GetOpLabels(),
@@ -327,9 +362,10 @@ func EndpointDeleteRepr(e notifications.RegenNotificationInfo) (string, error) {
 		Namespace: e.GetK8sNamespace(),
 	}
 
-	repr, err := json.Marshal(notification)
-
-	return string(repr), err
+	return AgentNotifyMessage{
+		Type:         AgentNotifyEndpointDeleted,
+		Notification: notification,
+	}
 }
 
 // IPCacheNotification structures ipcache change notifications
@@ -346,9 +382,9 @@ type IPCacheNotification struct {
 	PodName    string `json:"pod-name,omitempty"`
 }
 
-// IPCacheNotificationRepr returns string representation of monitor notification
-func IPCacheNotificationRepr(cidr string, id uint32, oldID *uint32, hostIP net.IP, oldHostIP net.IP,
-	encryptKey uint8, namespace, podName string) (string, error) {
+// IPCacheUpsertedMessage constructs an agent notification message for ipcache upsertions
+func IPCacheUpsertedMessage(cidr string, id uint32, oldID *uint32, hostIP net.IP, oldHostIP net.IP,
+	encryptKey uint8, namespace, podName string) AgentNotifyMessage {
 	notification := IPCacheNotification{
 		CIDR:        cidr,
 		Identity:    id,
@@ -360,9 +396,30 @@ func IPCacheNotificationRepr(cidr string, id uint32, oldID *uint32, hostIP net.I
 		PodName:     podName,
 	}
 
-	repr, err := json.Marshal(notification)
+	return AgentNotifyMessage{
+		Type:         AgentNotifyIPCacheUpserted,
+		Notification: notification,
+	}
+}
 
-	return string(repr), err
+// IPCacheDeletedMessage constructs an agent notification message for ipcache deletions
+func IPCacheDeletedMessage(cidr string, id uint32, oldID *uint32, hostIP net.IP, oldHostIP net.IP,
+	encryptKey uint8, namespace, podName string) AgentNotifyMessage {
+	notification := IPCacheNotification{
+		CIDR:        cidr,
+		Identity:    id,
+		OldIdentity: oldID,
+		HostIP:      hostIP,
+		OldHostIP:   oldHostIP,
+		EncryptKey:  encryptKey,
+		Namespace:   namespace,
+		PodName:     podName,
+	}
+
+	return AgentNotifyMessage{
+		Type:         AgentNotifyIPCacheDeleted,
+		Notification: notification,
+	}
 }
 
 // TimeNotification structures agent start notification
@@ -370,13 +427,16 @@ type TimeNotification struct {
 	Time string `json:"time"`
 }
 
-// TimeRepr returns string representation of monitor notification
-func TimeRepr(t time.Time) (string, error) {
+// StartMessage constructs an agent notification message when the agent starts
+func StartMessage(t time.Time) AgentNotifyMessage {
 	notification := TimeNotification{
-		Time: t.String(),
+		Time: t.Format(time.RFC3339Nano),
 	}
-	repr, err := json.Marshal(notification)
-	return string(repr), err
+
+	return AgentNotifyMessage{
+		Type:         AgentNotifyStart,
+		Notification: notification,
+	}
 }
 
 // ServiceUpsertNotificationAddr is part of ServiceUpsertNotification
@@ -399,13 +459,13 @@ type ServiceUpsertNotification struct {
 	Namespace string `json:"namespace,,omitempty"`
 }
 
-// ServiceUpsertRepr returns string representation of monitor notification
-func ServiceUpsertRepr(
+// ServiceUpsertMessage constructs an agent notification message for service upserts
+func ServiceUpsertMessage(
 	id uint32,
 	frontend ServiceUpsertNotificationAddr,
 	backends []ServiceUpsertNotificationAddr,
 	svcType, svcTrafficPolicy, svcName, svcNamespace string,
-) (string, error) {
+) AgentNotifyMessage {
 	notification := ServiceUpsertNotification{
 		ID:            id,
 		Frontend:      frontend,
@@ -415,8 +475,11 @@ func ServiceUpsertRepr(
 		Name:          svcName,
 		Namespace:     svcNamespace,
 	}
-	repr, err := json.Marshal(notification)
-	return string(repr), err
+
+	return AgentNotifyMessage{
+		Type:         AgentNotifyServiceUpserted,
+		Notification: notification,
+	}
 }
 
 // ServiceDeleteNotification structures service delete notifications
@@ -424,13 +487,56 @@ type ServiceDeleteNotification struct {
 	ID uint32 `json:"id"`
 }
 
-// ServiceDeleteRepr returns string representation of monitor notification
-func ServiceDeleteRepr(
-	id uint32,
-) (string, error) {
+// ServiceDeleteMessage constructs an agent notification message for service deletions
+func ServiceDeleteMessage(id uint32) AgentNotifyMessage {
 	notification := ServiceDeleteNotification{
 		ID: id,
 	}
-	repr, err := json.Marshal(notification)
-	return string(repr), err
+
+	return AgentNotifyMessage{
+		Type:         AgentNotifyServiceDeleted,
+		Notification: notification,
+	}
+}
+
+const (
+	// PolicyIngress is the value of Flags&PolicyNotifyFlagDirection for ingress traffic
+	PolicyIngress = 1
+
+	// PolicyEgress is the value of Flags&PolicyNotifyFlagDirection for egress traffic
+	PolicyEgress = 2
+
+	// PolicyMatchNone is the value of MatchType indicatating no policy match
+	PolicyMatchNone = 0
+
+	// PolicyMatchL3Only is the value of MatchType indicating a L3-only match
+	PolicyMatchL3Only = 1
+
+	// PolicyMatchL3L4 is the value of MatchType indicating a L3+L4 match
+	PolicyMatchL3L4 = 2
+
+	// PolicyMatchL4Only is the value of MatchType indicating a L4-only match
+	PolicyMatchL4Only = 3
+
+	// PolicyMatchAll is the value of MatchType indicating an allow-all match
+	PolicyMatchAll = 4
+)
+
+type PolicyMatchType int
+
+func (m PolicyMatchType) String() string {
+	switch m {
+	case PolicyMatchL3Only:
+		return "L3-Only"
+	case PolicyMatchL3L4:
+		return "L3-L4"
+	case PolicyMatchL4Only:
+		return "L4-Only"
+	case PolicyMatchAll:
+		return "all"
+	case PolicyMatchNone:
+		return "none"
+
+	}
+	return "unknown"
 }

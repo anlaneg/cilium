@@ -4,8 +4,9 @@
 #ifndef __BPF_COMPILER_H_
 #define __BPF_COMPILER_H_
 
-#include <stdbool.h>
-#include <stddef.h>
+#ifndef __non_bpf_context
+# include "stddef.h"
+#endif
 
 #ifndef __section
 # define __section(X)		__attribute__((section(X), used))
@@ -27,12 +28,24 @@
 # define __packed		__attribute__((packed))
 #endif
 
+#ifndef __nobuiltin
+# if __clang_major__ >= 10
+#  define __nobuiltin(X)	__attribute__((no_builtin(X)))
+# else
+#  define __nobuiltin(X)
+# endif
+#endif
+
 #ifndef likely
 # define likely(X)		__builtin_expect(!!(X), 1)
 #endif
 
 #ifndef unlikely
 # define unlikely(X)		__builtin_expect(!!(X), 0)
+#endif
+
+#ifndef always_succeeds		/* Mainly for documentation purpose. */
+# define always_succeeds(X)	likely(X)
 #endif
 
 #undef __always_inline		/* stddef.h defines its own */
@@ -43,23 +56,40 @@
 #endif
 
 #ifndef __fetch
-# define __fetch(X)		(__u32)(&(X))
+# define __fetch(X)		(__u32)(__u64)(&(X))
+#endif
+
+#ifndef __aligned
+# define __aligned(X)		__attribute__((aligned(X)))
 #endif
 
 #ifndef build_bug_on
 # define build_bug_on(E)	((void)sizeof(char[1 - 2*!!(E)]))
 #endif
 
+#ifndef __throw_build_bug
+# define __throw_build_bug()	__builtin_trap()
+#endif
+
 #ifndef __printf
 # define __printf(X, Y)		__attribute__((__format__(printf, X, Y)))
+#endif
+
+#ifndef barrier
+# define barrier()		asm volatile("": : :"memory")
+#endif
+
+#ifndef barrier_data
+# define barrier_data(ptr)	asm volatile("": :"r"(ptr) :"memory")
 #endif
 
 static __always_inline void bpf_barrier(void)
 {
 	/* Workaround to avoid verifier complaint:
-	 * "dereference of modified ctx ptr R5 off=48+0, ctx+const is allowed, ctx+const+const is not"
+	 * "dereference of modified ctx ptr R5 off=48+0, ctx+const is allowed,
+	 *        ctx+const+const is not"
 	 */
-	asm volatile("" ::: "memory");
+	barrier();
 }
 
 #ifndef ARRAY_SIZE
@@ -78,14 +108,13 @@ static __always_inline void bpf_barrier(void)
 
 #ifndef READ_ONCE
 # define READ_ONCE(X)						\
-				({ typeof(X) __val;		\
-				   __val = __READ_ONCE(X);	\
-				   bpf_barrier();		\
-				   __val; })
+			({ typeof(X) __val = __READ_ONCE(X);	\
+			   bpf_barrier();			\
+			   __val; })
 #endif
 
 #ifndef WRITE_ONCE
-# define WRITE_ONCE(X, V)       				\
+# define WRITE_ONCE(X, V)					\
 				({ typeof(X) __val = (V);	\
 				   __WRITE_ONCE(X, __val);	\
 				   bpf_barrier();		\

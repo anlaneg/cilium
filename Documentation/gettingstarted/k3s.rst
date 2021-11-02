@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _k3s_install:
 
@@ -10,24 +10,22 @@
 Getting Started Using K3s
 *************************
 
-This guide walks you through installation of Cilium on `K3s <http://k3s.io>`_, a
-highly available, certified Kubernetes distribution designed for production
+This guide walks you through installation of Cilium on `K3s <https://k3s.io/>`_,
+a highly available, certified Kubernetes distribution designed for production
 workloads in unattended, resource-constrained, remote locations or inside IoT
 appliances.
 
-This guide assumes installation on amd64 architecture. Cilium is presently
-supported on amd64 architecture with `ARM support planned <https://github.com/cilium/cilium/issues/9898>`_
-for a future release.
+Cilium is presently supported on amd64 and arm64 architectures.
 
 Install a Master Node
 =====================
 
 The first step is to install a K3s master node making sure to disable support
-for the default CNI plugin:
+for the default CNI plugin and the built-in network policy enforcer:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--flannel-backend=none --no-flannel' sh -
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--flannel-backend=none --disable-network-policy' sh -
 
 Install Agent Nodes (Optional)
 ==============================
@@ -40,9 +38,9 @@ node using a node-token which can be found on the master node at
 Install K3s on agent nodes and join them to the master node making sure to
 replace the variables with values from your environment:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--no-flannel' K3S_URL='https://${MASTER_IP}:6443' K3S_TOKEN=${NODE_TOKEN}
+    curl -sfL https://get.k3s.io | K3S_URL='https://${MASTER_IP}:6443' K3S_TOKEN=${NODE_TOKEN} sh -
 
 Should you encounter any issues during the installation, please refer to the
 :ref:`troubleshooting_k8s` section and / or seek help on the `Slack channel`.
@@ -50,28 +48,22 @@ Should you encounter any issues during the installation, please refer to the
 Please consult the Kubernetes :ref:`k8s_requirements` for information on  how
 you need to configure your Kubernetes cluster to operate with Cilium.
 
-Mount the BPF Filesystem
-========================
-On each node, run the following to mount the BPF Filesystem:
-::
-
-     sudo mount bpffs -t bpf /sys/fs/bpf
-
 Install Cilium
 ==============
 
-.. parsed-literal::
+.. include:: cli-download.rst
 
-    kubectl create -f \ |SCM_WEB|\/install/kubernetes/quick-install.yaml
+Install Cilium by running:
 
-.. include:: k8s-install-validate.rst
-.. include:: hubble-install.rst
-.. include:: getting-started-next-steps.rst
+.. code-block:: shell-session
 
-Now that you have a Kubernetes cluster with Cilium up and running, you can take
-a couple of next steps to explore various capabilities:
+    cilium install
 
-* :ref:`gs_http`
-* :ref:`gs_dns`
-* :ref:`gs_cassandra`
-* :ref:`gs_kafka`
+Validate the Installation
+=========================
+
+.. include:: cli-status.rst
+.. include:: cli-connectivity-test.rst
+
+.. include:: next-steps.rst
+

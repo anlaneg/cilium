@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 cilium
 ======
@@ -17,3 +17,4 @@ cilium
       cilium_*
       cilium-bugtool*
       cilium-health_*
+      cilium-operator*

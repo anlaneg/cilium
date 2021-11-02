@@ -1,24 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package envoy
 
 import (
 	"context"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -30,6 +19,7 @@ import (
 	"github.com/cilium/cilium/pkg/envoy/xds"
 	"github.com/cilium/cilium/pkg/flowdebug"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
@@ -77,9 +67,10 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 		c.Skip("skipping envoy unit test; CILIUM_ENABLE_ENVOY_UNIT_TEST not set")
 	}
 
+	logging.SetLogLevelToDebug()
 	flowdebug.Enable()
 
-	stateLogDir, err := ioutil.TempDir("", "envoy_go_test")
+	stateLogDir, err := os.MkdirTemp("", "envoy_go_test")
 	c.Assert(err, IsNil)
 
 	log.Debugf("state log directory: %s", stateLogDir)
@@ -89,9 +80,17 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 	StartAccessLogServer(stateLogDir, xdsServer, &dummyEndpointInfoRegistry{})
 
 	// launch debug variant of the Envoy proxy
-	envoyProxy := StartEnvoy(stateLogDir, filepath.Join(stateLogDir, "cilium-envoy.log"), 42)
+	envoyProxy := StartEnvoy(stateLogDir, filepath.Join(stateLogDir, "cilium-envoy.log"), 0)
 	c.Assert(envoyProxy, NotNil)
 	log.Debug("started Envoy")
+
+	log.Debug("adding metrics listener")
+	xdsServer.AddMetricsListener(9095, s.waitGroup)
+
+	err = s.waitForProxyCompletion()
+	c.Assert(err, IsNil)
+	log.Debug("completed adding metrics listener")
+	s.waitGroup = completion.NewWaitGroup(ctx)
 
 	log.Debug("adding listener1")
 	xdsServer.AddListener("listener1", policy.ParserTypeHTTP, 8081, true, false, s.waitGroup)
@@ -151,7 +150,7 @@ func (s *EnvoySuite) TestEnvoyNACK(c *C) {
 
 	flowdebug.Enable()
 
-	stateLogDir, err := ioutil.TempDir("", "envoy_go_test")
+	stateLogDir, err := os.MkdirTemp("", "envoy_go_test")
 	c.Assert(err, IsNil)
 
 	log.Debugf("state log directory: %s", stateLogDir)
@@ -172,7 +171,7 @@ func (s *EnvoySuite) TestEnvoyNACK(c *C) {
 
 	err = s.waitForProxyCompletion()
 	c.Assert(err, Not(IsNil))
-	c.Assert(err, checker.DeepEquals, &xds.ProxyError{Err: xds.ErrNackReceived, Detail: "Error adding/updating listener(s) listener:22: cannot bind '[::]:22': Address already in use"})
+	c.Assert(err, checker.DeepEquals, &xds.ProxyError{Err: xds.ErrNackReceived, Detail: "Error adding/updating listener(s) listener:22: cannot bind '[::]:22': Address already in use\n"})
 
 	s.waitGroup = completion.NewWaitGroup(ctx)
 	// Remove listener1

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipcache
 
@@ -21,10 +10,10 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/types"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/types"
 
 	"golang.org/x/sys/unix"
 )
@@ -44,7 +33,7 @@ const (
 	// BPF code generation to exceed the verifier instruction limit.
 	// It applies to Linux versions that lack support for LPM, ie < v4.11.
 	//
-	// This is based upon the defines in bpf/lxc_config.h, which in turn
+	// This is based upon the defines in bpf/ep_config.h, which in turn
 	// are derived by building the bpf/ directory and running the script
 	// test/bpf/verifier-test.sh, then adjusting the number of unique
 	// prefix lengths until the script passes.
@@ -90,7 +79,7 @@ func (k Key) String() string {
 		ipStr := k.IP.String()
 		return fmt.Sprintf("%s/%d", ipStr, prefixLen)
 	}
-	return fmt.Sprintf("<unknown>")
+	return "<unknown>"
 }
 
 // getPrefixLen determines the length that should be set inside the Key so that
@@ -170,7 +159,7 @@ func NewMap(name string) *Map {
 			MaxEntries,
 			bpf.BPF_F_NO_PREALLOC, 0,
 			bpf.ConvertKeyValue,
-		).WithCache(),
+		).WithCache().WithPressureMetric(),
 		deleteSupport: true,
 	}
 }

@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package loadbalancer
@@ -88,8 +78,8 @@ func TestL4Addr_Equals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			l := tt.fields
-			if got := l.Equals(tt.args.o); got != tt.want {
-				t.Errorf("L4Addr.Equals() = %v, want %v", got, tt.want)
+			if got := l.DeepEqual(tt.args.o); got != tt.want {
+				t.Errorf("L4Addr.DeepEqual() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -218,17 +208,18 @@ func TestL3n4AddrID_Equals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := tt.fields
-			if got := f.Equals(tt.args.o); got != tt.want {
+			if got := f.DeepEqual(tt.args.o); got != tt.want {
 				t.Errorf("L3n4AddrID.Equals() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCreateSvcFlag(t *testing.T) {
+func TestNewSvcFlag(t *testing.T) {
 	type args struct {
-		svcTypes []SVCType
-		svcLocal bool
+		svcType     SVCType
+		svcLocal    bool
+		svcRoutable bool
 	}
 	tests := []struct {
 		name string
@@ -237,104 +228,79 @@ func TestCreateSvcFlag(t *testing.T) {
 	}{
 		{
 			args: args{
-				svcTypes: []SVCType{SVCTypeClusterIP},
-				svcLocal: false,
+				svcType:     SVCTypeClusterIP,
+				svcLocal:    false,
+				svcRoutable: true,
 			},
-			want: serviceFlagNone,
+			want: serviceFlagNone | serviceFlagRoutable,
 		},
 		{
 			args: args{
-				svcTypes: []SVCType{SVCTypeNodePort},
-				svcLocal: false,
+				svcType:     SVCTypeNodePort,
+				svcLocal:    false,
+				svcRoutable: true,
 			},
-			want: serviceFlagNodePort,
+			want: serviceFlagNodePort | serviceFlagRoutable,
 		},
 		{
 			args: args{
-				svcTypes: []SVCType{SVCTypeExternalIPs},
-				svcLocal: false,
+				svcType:     SVCTypeExternalIPs,
+				svcLocal:    false,
+				svcRoutable: true,
 			},
-			want: serviceFlagExternalIPs,
+			want: serviceFlagExternalIPs | serviceFlagRoutable,
 		},
 		{
 			args: args{
-				svcTypes: []SVCType{SVCTypeClusterIP},
-				svcLocal: true,
+				svcType:     SVCTypeClusterIP,
+				svcLocal:    true,
+				svcRoutable: true,
 			},
-			want: serviceFlagNone | serviceFlagLocalScope,
+			want: serviceFlagNone | serviceFlagLocalScope | serviceFlagRoutable,
 		},
 		{
 			args: args{
-				svcTypes: []SVCType{SVCTypeNodePort},
-				svcLocal: true,
+				svcType:     SVCTypeNodePort,
+				svcLocal:    true,
+				svcRoutable: true,
 			},
-			want: serviceFlagNodePort | serviceFlagLocalScope,
+			want: serviceFlagNodePort | serviceFlagLocalScope | serviceFlagRoutable,
 		},
 		{
 			args: args{
-				svcTypes: []SVCType{SVCTypeExternalIPs},
-				svcLocal: true,
+				svcType:     SVCTypeExternalIPs,
+				svcLocal:    true,
+				svcRoutable: true,
+			},
+			want: serviceFlagExternalIPs | serviceFlagLocalScope | serviceFlagRoutable,
+		},
+		{
+			args: args{
+				svcType:     SVCTypeExternalIPs,
+				svcLocal:    true,
+				svcRoutable: false,
 			},
 			want: serviceFlagExternalIPs | serviceFlagLocalScope,
 		},
+		{
+			args: args{
+				svcType:     SVCTypeLocalRedirect,
+				svcLocal:    false,
+				svcRoutable: true,
+			},
+			want: serviceFlagLocalRedirect | serviceFlagRoutable,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := CreateSvcFlag(tt.args.svcLocal, tt.args.svcTypes...); got != tt.want {
-				t.Errorf("CreateSvcFlag() = %v, want %v", got, tt.want)
+			p := &SvcFlagParam{
+				SvcLocal:        tt.args.svcLocal,
+				SessionAffinity: false,
+				IsRoutable:      tt.args.svcRoutable,
+				SvcType:         tt.args.svcType,
 			}
-		})
-	}
-}
-
-func TestServiceFlags_IsSvcType(t *testing.T) {
-	type args struct {
-		svcType  SVCType
-		svcLocal bool
-	}
-	tests := []struct {
-		name string
-		s    ServiceFlags
-		args args
-		want bool
-	}{
-		{
-			args: args{
-				svcType:  SVCTypeExternalIPs,
-				svcLocal: false,
-			},
-			s:    serviceFlagExternalIPs,
-			want: true,
-		},
-		{
-			args: args{
-				svcType:  SVCTypeNodePort,
-				svcLocal: false,
-			},
-			s:    serviceFlagExternalIPs,
-			want: false,
-		},
-		{
-			args: args{
-				svcType:  SVCTypeExternalIPs,
-				svcLocal: true,
-			},
-			s:    serviceFlagExternalIPs | serviceFlagLocalScope,
-			want: true,
-		},
-		{
-			args: args{
-				svcType:  SVCTypeNodePort,
-				svcLocal: true,
-			},
-			s:    serviceFlagExternalIPs | serviceFlagLocalScope,
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.s.IsSvcType(tt.args.svcLocal, tt.args.svcType); got != tt.want {
-				t.Errorf("IsSvcType() = %v, want %v", got, tt.want)
+			if got := NewSvcFlag(p); got != tt.want {
+				t.Errorf("NewSvcFlag() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -348,23 +314,33 @@ func TestServiceFlags_String(t *testing.T) {
 	}{
 		{
 			name: "Test-1",
-			s:    serviceFlagExternalIPs,
+			s:    serviceFlagExternalIPs | serviceFlagRoutable,
 			want: "ExternalIPs",
 		},
 		{
 			name: "Test-2",
-			s:    serviceFlagNone,
+			s:    serviceFlagNone | serviceFlagRoutable,
 			want: "ClusterIP",
 		},
 		{
 			name: "Test-3",
-			s:    serviceFlagNodePort | serviceFlagLocalScope,
+			s:    serviceFlagNodePort | serviceFlagLocalScope | serviceFlagRoutable,
 			want: "NodePort, Local",
 		},
 		{
 			name: "Test-4",
-			s:    serviceFlagExternalIPs | serviceFlagLocalScope,
+			s:    serviceFlagExternalIPs | serviceFlagLocalScope | serviceFlagRoutable,
 			want: "ExternalIPs, Local",
+		},
+		{
+			name: "Test-5",
+			s:    serviceFlagLoadBalancer | serviceFlagRoutable,
+			want: "LoadBalancer",
+		},
+		{
+			name: "Test-6",
+			s:    serviceFlagLoadBalancer,
+			want: "LoadBalancer, non-routable",
 		},
 	}
 	for _, tt := range tests {
@@ -374,4 +350,36 @@ func TestServiceFlags_String(t *testing.T) {
 			}
 		})
 	}
+}
+
+func benchmarkHash(b *testing.B, addr *L3n4Addr) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		addr.Hash()
+	}
+}
+
+func BenchmarkL3n4Addr_Hash_IPv4(b *testing.B) {
+	addr := NewL3n4Addr(TCP, net.IPv4(1, 2, 3, 4), 8080, ScopeInternal)
+	benchmarkHash(b, addr)
+}
+
+func BenchmarkL3n4Addr_Hash_IPv4_4bytes(b *testing.B) {
+	addr := NewL3n4Addr(TCP, net.IPv4(1, 2, 3, 4).To4(), 8080, ScopeInternal)
+	benchmarkHash(b, addr)
+}
+
+func BenchmarkL3n4Addr_Hash_IPv6_Short(b *testing.B) {
+	addr := NewL3n4Addr(TCP, net.ParseIP("fd00::1:36c6"), 8080, ScopeInternal)
+	benchmarkHash(b, addr)
+}
+
+func BenchmarkL3n4Addr_Hash_IPv6_Long(b *testing.B) {
+	addr := NewL3n4Addr(TCP, net.ParseIP("2001:0db8:85a3::8a2e:0370:7334"), 8080, ScopeInternal)
+	benchmarkHash(b, addr)
+}
+
+func BenchmarkL3n4Addr_Hash_IPv6_Max(b *testing.B) {
+	addr := NewL3n4Addr(TCP, net.ParseIP("1020:3040:5060:7080:90a0:b0c0:d0e0:f000"), 30303, 100)
+	benchmarkHash(b, addr)
 }

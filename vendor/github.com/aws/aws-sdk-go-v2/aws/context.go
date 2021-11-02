@@ -5,21 +5,18 @@ import (
 	"time"
 )
 
-// SleepWithContext will wait for the timer duration to expire, or the context
-// is canceled. Which ever happens first. If the context is canceled the Context's
-// error will be returned.
-//
-// Expects Context to always return a non-nil error if the Done channel is closed.
-func SleepWithContext(ctx context.Context, dur time.Duration) error {
-	t := time.NewTimer(dur)
-	defer t.Stop()
+type suppressedContext struct {
+	context.Context
+}
 
-	select {
-	case <-t.C:
-		break
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+func (s *suppressedContext) Deadline() (deadline time.Time, ok bool) {
+	return time.Time{}, false
+}
 
+func (s *suppressedContext) Done() <-chan struct{} {
+	return nil
+}
+
+func (s *suppressedContext) Err() error {
 	return nil
 }

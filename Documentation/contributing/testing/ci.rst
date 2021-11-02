@@ -1,8 +1,8 @@
 .. only:: not (epub or latex or html)
-  
+
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _ci_jenkins:
 
@@ -22,10 +22,7 @@ verified. These tests must always pass.
 
 The configuration for this job is contained within ``ginkgo.Jenkinsfile``.
 
-It first runs unit tests using docker-compose using a YAML located at
-``test/docker-compose.yaml``.
-
-The next steps happens in parallel:
+The job runs the following steps in parallel:
 
     - Runs the single-node e2e tests using the Docker runtime.
     - Runs the multi-node Kubernetes e2e tests against the latest default
@@ -35,49 +32,80 @@ This job can be used to run tests on custom branches. To do so, log into Jenkins
 Then add your branch name to ``GitHub Organization -> cilium -> Filter by name (with wildcards) -> Include`` field and save changes.
 After you don't need to run tests on your branch, please remove the branch from this field.
 
+.. note::
+
+   It is also possible to run specific tests from this suite via ``test-only``.
+   The comment can contain 3 arguments: ``--focus`` which specifies which tests
+   should be run, ``--kernel_version`` for supported kernel version
+   (net-next, 49, 419 are possible values right now), ``--k8s_version`` for k8s
+   version. If you want to run only one ``It`` block, you need to prepend it
+   with a test suite and create a regex, e.g
+   ``/test-only --focus="K8sDatapathConfig.*Check connectivity with automatic direct nodes routes" --k8s_version=1.18 --kernel_version=net-next``
+   will run specified test in 1.18 Kubernetes cluster running on net-next nodes.
+   Kubernetes version defaults to 1.21, kernel version defaults to 4.19.
+
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8s"``                    | Runs all kubernetes tests                 |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sConformance"``         | Runs all k8s conformance tests            |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sChaos"``               | Runs all k8s chaos tests                  |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sDatapathConfig"``      | Runs all k8s datapath configuration tests |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sDemos"``               | Runs all k8s demo tests                   |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sKubeProxyFreeMatrix"`` | Runs all k8s kube-proxy free matrix tests |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sFQDNTest"``            | Runs all k8s fqdn tests                   |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sHealthTest"``          | Runs all k8s health tests                 |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sHubbleTest"``          | Runs all k8s Hubble tests                 |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sIdentity"``            | Runs all k8s identity tests               |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sIstioTest"``           | Runs all k8s Istio tests                  |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sKafkaPolicyTest"``     | Runs all k8s Kafka tests                  |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sPolicyTest"``          | Runs all k8s policy tests                 |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sServicesTest"``        | Runs all k8s services tests               |
+   +-------------------------------------------------+-------------------------------------------+
+   | ``/test-only --focus="K8sUpdates"``             | Runs k8s update tests                     |
+   +-------------------------------------------------+-------------------------------------------+
+
+
+   Running Runtime test suite is still done via ``/test-focus`` command.
+
+   +----------------------------------------+-------------------------------------------+
+   | ``/test-focus Runtime``                | Runs all runtime tests                    |
+   +----------------------------------------+-------------------------------------------+
+
+
+
+Cilium-PR-Ginkgo-Tests-Kernel
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Runs the Kubernetes e2e tests with a 4.19 kernel. The configuration for this
+job is contained within ``ginkgo-kernel.Jenkinsfile``.
+
 
 Cilium-PR-Ginkgo-Tests-k8s
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Runs the Kubernetes e2e tests against all Kubernetes versions that are not
 currently not tested as part of each pull-request, but which Cilium still
-supports, as well as the the most-recently-released versions of Kubernetes that
-that might not be declared stable by Kubernetes upstream. Check the contents of
+supports, as well as the most-recently-released versions of Kubernetes that
+might not be declared stable by Kubernetes upstream. Check the contents of
 ``ginkgo-kubernetes-all.Jenkinsfile`` in the branch of Cilium for which you are
 running tests to see which Kubernetes versions will be tested against.
 
 Ginkgo-CI-Tests-Pipeline
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-https://jenkins.cilium.io/job/Ginkgo-CI-Tests-Pipeline/
-
-Cilium-Nightly-Tests-PR
-^^^^^^^^^^^^^^^^^^^^^^^
-
-Runs long-lived tests which take extended time. Some of these tests have an
-expected failure rate.
-
-Nightly tests run once per day in the ``Cilium-Nightly-Tests Job``.  The
-configuration for this job is stored in ``Jenkinsfile.nightly``.
-
-To see the results of these tests, you can view the JUnit Report for an individual job:
-
-1. Click on the build number you wish to get test results from on the left hand
-   side of the ``Cilium-Nightly-Tests Job``.
-2. Click on 'Test Results' on the left side of the page to view the results from the build.
-   This will give you a report of which tests passed and failed. You can click on each test
-   to view its corresponding output created from Ginkgo.
-
-This first runs the Nightly tests with the following setup:
-
-    - 4 Kubernetes 1.8 nodes
-    - 4 GB of RAM per node.
-    - 4 vCPUs per node.
-
-Then, it runs tests Kubernetes tests against versions of Kubernetes that are currently not tested against
-as part of each pull-request, but that Cilium still supports.
-
-It also runs a variety of tests against Envoy to ensure that proxy functionality is working correctly.
+`Ginkgo-CI-Tests-Pipeline`_
 
 .. _packer_ci:
 
@@ -87,38 +115,55 @@ Packer-CI-Build
 As part of Cilium development, we use a custom base box with a bunch of
 pre-installed libraries and tools that we need to enhance our daily workflow.
 That base box is built with `Packer <https://www.packer.io/>`_ and it is hosted
-in the `packer-ci-build
-<https://jenkins.cilium.io/job/Vagrant-Master-Boxes-Packer-Build/>`_ GitHub
-repository.
+in the `packer-ci-build`_ GitHub repository.
 
-New versions of this box can be created via `Jenkins Packer Build
-<https://jenkins.cilium.io/job/Vagrant-Master-Boxes-Packer-Build/>`_, where
+New versions of this box can be created via `Jenkins Packer Build`_, where
 new builds of the image will be pushed to  `Vagrant Cloud
 <https://app.vagrantup.com/cilium>`_ . The version of the image corresponds to
-the `BUILD_ID <https://qa.nuxeo.org/jenkins/pipeline-syntax/globals#env>`_
+the `BUILD_ID <https://wiki.jenkins.io/display/JENKINS/Building+a+software+project#Buildingasoftwareproject-below>`_
 environment variable in the Jenkins job. That version ID will be used in Cilium
 `Vagrantfiles
 <https://github.com/cilium/cilium/blob/master/test/Vagrantfile#L10>`_.
 
 Changes to this image are made via contributions to the packer-ci-build
 repository. Authorized GitHub users can trigger builds with a GitHub comment on
-the PR containing the trigger phrase ``build-me-please``. In case that a new box
-needs to be rebased with a different branch than master, authorized developers
-can run the build with custom parameters. To use a different Cilium branch in
-the `job <https://jenkins.cilium.io/job/Vagrant-Master-Boxes-Packer-Build/>`_ go
-to *Build with parameters* and a base branch can be set as the user needs.
+the PR containing the trigger phrase ``/build``. In case that a new box needs to
+be rebased with a different branch than master, authorized developers can run
+the build with custom parameters. To use a different Cilium branch in the `job`_
+go to *Build with parameters* and a base branch can be set as the user needs.
 
 This box will need to be updated when a new developer needs a new dependency
 that is not installed in the current version of the box, or if a dependency that
 is cached within the box becomes stale.
 
-Make sure that you update vagrant box versions in `test Vagrantfile <https://github.com/cilium/cilium/blob/master/test/Vagrantfile>`__
-and `root Vagrantfile <https://github.com/cilium/cilium/blob/master/Vagrantfile>`__ after new box is built and tested.
+Make sure that you update vagrant box versions in `vagrant_box_defaults.rb
+<https://github.com/cilium/cilium/blob/master/vagrant_box_defaults.rb>`__ after
+new box is built and tested.
 
 Once you change the image versions locally, create a branch named
 ``pr/update-packer-ci-build`` and open a PR ``github.com/cilium/cilium``.
 It is important that you use that branch name so the VM images are cached into
 packet.net before the branch is merged.
+
+Once this PR is merged, ask `Cilium's CI team
+<https://github.com/orgs/cilium/teams/vagrant>`_ to ensure:
+
+1. The autoscaler provisioning code is up to date.
+
+2. That all Jenkins nodes are scaled down and then back up.
+
+.. _Jenkins Packer Build: Vagrant-Master-Boxes-Packer-Build_
+.. _job: Vagrant-Master-Boxes-Packer-Build_
+
+.. _test_matrix:
+
+Testing matrix
+^^^^^^^^^^^^^^
+
+Up to date CI testing information regarding k8s - kernel version pairs can
+always be found in the `Cilium CI matrix`_.
+
+.. _Cilium CI matrix: https://docs.google.com/spreadsheets/d/1TThkqvVZxaqLR-Ela4ZrcJ0lrTJByCqrbdCjnI32_X0
 
 .. _trigger_phrases:
 
@@ -128,37 +173,56 @@ Triggering Pull-Request Builds With Jenkins
 To ensure that build resources are used judiciously, builds on Jenkins
 are manually triggered via comments on each pull-request that contain
 "trigger-phrases". Only members of the Cilium GitHub organization are
-allowed to trigger these jobs. Refer to the table below for information
-regarding which phrase triggers which build, which build is required for
-a pull-request to be merged, etc. Each linked job contains a description
-illustrating which subset of tests the job runs.
+allowed to trigger these jobs.
 
+Depending on the PR target branch, a specific set of jobs is marked as required,
+as per the `Cilium CI matrix`_. They will be automatically featured in PR checks
+directly on the PR page. The following trigger phrases may be used to trigger
+them all at once:
 
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
-| Jenkins Job                                                                                             | Trigger Phrase    | Required To Merge? |
-+=========================================================================================================+===================+====================+
-| `Cilium-PR-Ginkgo-Tests-Validated <https://jenkins.cilium.io/job/Cilium-PR-Ginkgo-Tests-Validated/>`_   | test-me-please    | Yes                |
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
-| `Cilium-Pr-Ginkgo-Test-k8s <https://jenkins.cilium.io/job/Cilium-PR-Ginkgo-Tests-k8s/>`_                | test-missed-k8s   | No                 |
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
-| `Cilium-Nightly-Tests-PR <https://jenkins.cilium.io/job/Cilium-PR-Nightly-Tests-All/>`_                 | test-nightly      | No                 |
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
-| `Cilium-PR-Doc-Tests <https://jenkins.cilium.io/view/all/job/Cilium-PR-Doc-Tests/>`_                    | test-docs-please  | No                 |
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
-| `Cilium-PR-Kubernetes-Upstream <https://jenkins.cilium.io/view/PR/job/Cilium-PR-Kubernetes-Upstream/>`_ | test-upstream-k8s | No                 |
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
-| `Cilium-PR-Flannel <https://jenkins.cilium.io/job/Cilium-PR-Flannel/>`_                                 | test-flannel      | No                 |
-+---------------------------------------------------------------------------------------------------------+-------------------+--------------------+
++------------------+--------------------------+
+| PR target branch | Trigger required PR jobs |
++==================+==========================+
+| master           | /test                    |
++------------------+--------------------------+
+| v1.10            | /test-backport-1.10      |
++------------------+--------------------------+
+| v1.9             | /test-backport-1.9       |
++------------------+--------------------------+
+| v1.8             | /test-backport-1.8       |
++------------------+--------------------------+
+
+For ``master`` PRs: on top of ``/test``, one may use ``/test-missed-k8s`` to
+trigger all non-required K8s versions on Kernel 4.9 as per the `Cilium CI
+matrix`_.
+
+For all PRs: one may manually retrigger a specific job (e.g. in case of a flake)
+with the individual trigger featured directly in the PR check's name (e.g. for
+``K8s-1.20-kernel-4.9 (test-1.20-4.9)``, use ``/test-1.20-4.9``).
+
+For a full list of Jenkins PR jobs, see `Jenkins (PR tab)
+<https://jenkins.cilium.io/view/PR/>`_. Trigger phrases are configured within
+each job's build triggers advanced options.
 
 There are some feature flags based on Pull Requests labels, the list of labels
 are the following:
 
 - ``area/containerd``: Enable containerd runtime on all Kubernetes test.
-- ``ci/next-next``: Run tests on net-next kernel. This causes the
-  ``test-me-please`` target to only run on the net-next kernel. It is purely
-  for testing on a different kernel, to merge a PR it must pass the CI
-  without this flag.
+- ``ci/net-next``: Run tests on net-next kernel. This causes the  ``/test``
+  target to only run on the net-next kernel. It is purely for testing on a
+  different kernel, to merge a PR it must pass the CI without this flag.
 
+Testing with race condition detection enabled
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Optional non-required Jenkins are available for running the test suite with race
+condition detection enabled, and may be triggered using the trigger phrase
+``/test-race``.
+
+For a full list of Jenkins PR jobs with race detection enabled, see `Jenkins
+(Race Detection tab) <https://jenkins.cilium.io/view/Race%20Detection/>`_.
+Trigger phrases are configured within each job's build triggers advanced
+options.
 
 Using Jenkins for testing
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -180,12 +244,12 @@ example patch that shows how this can be achieved.
                  steps {
                      parallel(
                          "Runtime":{
-    -                        sh 'cd ${TESTDIR}; ginkgo --focus="RuntimeValidated*" -v -noColor'
-    +                        sh 'cd ${TESTDIR}; ginkgo --focus="XFoooo*" -v -noColor'
+    -                        sh 'cd ${TESTDIR}; ginkgo --focus="RuntimeValidated" --tags=integration_tests'
+    +                        sh 'cd ${TESTDIR}; ginkgo --focus="XFoooo" --tags=integration_tests'
                          },
                          "K8s-1.9":{
-    -                        sh 'cd ${TESTDIR}; K8S_VERSION=1.9 ginkgo --focus=" K8sValidated*" -v -noColor ${FAILFAST}'
-    +                        sh 'cd ${TESTDIR}; K8S_VERSION=1.9 ginkgo --focus=" K8sFooooo*" -v -noColor ${FAILFAST}'
+    -                        sh 'cd ${TESTDIR}; K8S_VERSION=1.9 ginkgo --focus="K8sValidated" --tags=integration_tests ${FAILFAST}'
+    +                        sh 'cd ${TESTDIR}; K8S_VERSION=1.9 ginkgo --focus="K8sFooooo" --tags=integration_tests ${FAILFAST}'
                          },
                          failFast: true
                      )
@@ -202,6 +266,8 @@ example patch that shows how this can be achieved.
                             podFilter := "k8s:zgroup=testapp"
 
                             //This test should run in each PR for now.
+
+.. _ci_failure_triage:
 
 CI Failure Triage
 ~~~~~~~~~~~~~~~~~
@@ -236,18 +302,15 @@ GitHub issues using the process below:
 +---------------------------------------+------------------------------------------------------------------+
 | `Ginkgo-CI-Tests-Pipeline`_           | Runs every two hours on the master branch                        |
 +---------------------------------------+------------------------------------------------------------------+
-| `Master-Nightly`_                     | Runs durability tests every night                                |
-+---------------------------------------+------------------------------------------------------------------+
-| `Vagrant-Master-Boxes-Packer-Build`_  | Runs on merge into `github.com/cilium/packer-ci-build`_.         |
+| `Vagrant-Master-Boxes-Packer-Build`_  | Runs on merge into `packer-ci-build`_ repository.                |
 +---------------------------------------+------------------------------------------------------------------+
 | :jenkins-branch:`Release-branch <>`   | Runs various Ginkgo tests on merge into branch "\ |SCM_BRANCH|"  |
 +---------------------------------------+------------------------------------------------------------------+
 
 .. _Ginkgo-Tests-Validated-master: https://jenkins.cilium.io/job/cilium-ginkgo/job/cilium/job/master/
 .. _Ginkgo-CI-Tests-Pipeline: https://jenkins.cilium.io/job/Ginkgo-CI-Tests-Pipeline/
-.. _Master-Nightly: https://jenkins.cilium.io/job/Cilium-Master-Nightly/
 .. _Vagrant-Master-Boxes-Packer-Build: https://jenkins.cilium.io/job/Vagrant-Master-Boxes-Packer-Build/
-.. _github.com/cilium/packer-ci-build: https://github.com/cilium/packer-ci-build/
+.. _packer-ci-build: https://github.com/cilium/packer-ci-build/
 
 Triage process
 ^^^^^^^^^^^^^^
@@ -257,7 +320,7 @@ Triage process
    setting the SINCE environment variable (it is a unix timestamp). The script
    checks the various test pipelines that need triage.
 
-   .. code-block:: bash
+   .. code-block:: shell-session
 
        $ contrib/scripts/jenkins-failures.sh
 
@@ -296,7 +359,7 @@ Triage process
       tests. A zipfile for all tests is also available.
    #. Check how much time has passed since the last reported occurrence of this
       failure and move this issue to the correct column in the `CI flakes
-      project <https://github.com/cilium/cilium/projects/8>`_ board.
+      project`_ board.
 
 #. If no existing GitHub issue was found, file a `new GitHub issue <https://github.com/cilium/cilium/issues/new>`_:
 
@@ -314,7 +377,7 @@ Triage process
          eventually deleted).
       #. Attach zipfile downloaded from Jenkins with logs from failing test
       #. Include the test name and whole Stacktrace section to help others find this issue.
-      #. Add issue to `CI flakes project <https://github.com/cilium/cilium/projects/8>`_
+      #. Add issue to `CI flakes project`_.
 
    .. note::
 
@@ -346,6 +409,7 @@ Triage process
 * ``CI-Bug, K8sValidatedPolicyTest: Namespaces, pod not ready, #9939``
 * ``Regression, k8s host policy, #1111``
 
+.. _CI flakes project: https://github.com/cilium/cilium/projects/8
 
 Bisect process
 ^^^^^^^^^^^^^^
@@ -377,7 +441,7 @@ Logging into VM running tests
 1. If you have access to credentials for Jenkins, log into the Jenkins slave running the test workload
 2. Identify the vagrant box running the specific test
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ vagrant global-status
     id       name                          provider   state   directory
@@ -390,7 +454,7 @@ Logging into VM running tests
 
 3. Log into the specific VM
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ JOB_BASE_NAME=PR-1588 BUILD_NUMBER=6 vagrant ssh 6e68c6c
 
@@ -409,3 +473,6 @@ simplify our Jenkinsfiles. The exported methods are:
   that specific Label.
 - **Status(String status, String context)**: set pull request check status on
   the given context, example ``Status("SUCCESS", "$JOB_BASE_NAME")``
+
+
+

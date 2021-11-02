@@ -1,21 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package logfields defines common logging fields which are used across packages
 package logfields
 
 const (
+	// Annotations are any annotations for Pods
+	Annotations = "annotations"
 
 	// LogSubsys is the field denoting the subsystem when logging
 	LogSubsys = "subsys"
@@ -28,6 +19,9 @@ const (
 
 	// NodeName is a human readable name for the node
 	NodeName = "nodeName"
+
+	// Endpoint is the endpoint name (e.g. wireguard)
+	Endpoint = "endpoint"
 
 	// EndpointID is the numeric endpoint identifier
 	EndpointID = "endpointID"
@@ -81,6 +75,12 @@ const (
 	// DeletedPolicyID is the .NumericIdentity, or set or them
 	DeletedPolicyID = "policyID.Deleted"
 
+	// AddedPolicyDenyID is the .NumericIdentity, or set or them
+	AddedPolicyDenyID = "policyID.Deny.Added"
+
+	// DeletedPolicyDenyID is the .NumericIdentity, or set or them
+	DeletedPolicyDenyID = "policyID.Deny.Deleted"
+
 	// L3PolicyID is the identifier of a L3 Policy
 	L3PolicyID = "policyID.L3"
 
@@ -96,6 +96,9 @@ const (
 	// DNSRequestID is the DNS request id used by dns-proxy
 	DNSRequestID = "DNSRequestID"
 
+	// MACAddr is a MAC address
+	MACAddr = "macAddr"
+
 	// IPAddr is an IPV4 or IPv6 address
 	IPAddr = "ipAddr"
 
@@ -108,20 +111,17 @@ const (
 	// IPv6 is an IPv6 address
 	IPv6 = "ipv6"
 
-	// BuildDuration is the time elapsed to build a BPF program
-	BuildDuration = "buildDuration"
-
 	// BPFCompilationTime is the time elapsed to build a BPF endpoint program
 	BPFCompilationTime = "BPFCompilationTime"
-
-	// EndpointRegenerationTime is the time elapsed to generate an endpoint
-	EndpointRegenerationTime = "endpointRegenerationTime"
 
 	// StartTime is the start time of an event
 	StartTime = "startTime"
 
 	// EndTime is the end time of an event
 	EndTime = "endTime"
+
+	// Interval is the duration for periodic execution of an operation.
+	Interval = "interval"
 
 	// Duration is the duration of a measured operation
 	Duration = "duration"
@@ -147,6 +147,12 @@ const (
 	// Port is a L4 port
 	Port = "port"
 
+	// PortName is a k8s ContainerPort Name
+	PortName = "portName"
+
+	// NamedPorts is a set of named ports
+	NamedPorts = "namedPorts"
+
 	// Family is the L3 protocol family
 	Family = "family"
 
@@ -158,6 +164,21 @@ const (
 
 	// V6Prefix is a IPv6 subnet/CIDR prefix
 	V6Prefix = "v6Prefix"
+
+	// IPv4CIDRs is a list of IPv4 CIDRs
+	IPv4CIDRs = "ipv4CIDRs"
+
+	// IPv6CIDRs is a list of IPv6 CIDRs
+	IPv6CIDRs = "ipv6CIDRs"
+
+	// CIDR is a IPv4/IPv4 subnet/CIDR
+	CIDR = "cidr"
+
+	// IPAddrs is a lsit of IP addrs
+	IPAddrs = "ipAddrs"
+
+	// MTU is the maximum transmission unit of one interface
+	MTU = "mtu"
 
 	// Interface is an interface id/name on the system
 	Interface = "interface"
@@ -174,6 +195,9 @@ const (
 	// NetNSName is a name of a network namespace
 	NetNSName = "netNSName"
 
+	// HardwareAddr is L2 addr of a network iface
+	HardwareAddr = "hardwareAddr"
+
 	// Hash is a hash of something
 	Hash = "hash"
 
@@ -182,6 +206,16 @@ const (
 
 	// ServiceNamespace is the orchestration framework namespace of a service name
 	ServiceNamespace = "serviceNamespace"
+
+	// SessionAffinity indicates whether the ClientIP session affinity is enabled
+	// for the service
+	SessionAffinity = "sessionAffinity"
+
+	// SessionAffinityTimeout is a timeout for the session affinity
+	SessionAffinityTimeout = "sessionAffinityTimeout"
+
+	// LoadBalancerSourceRanges is the LB SVC source ranges
+	LoadBalancerSourceRanges = "loadBalancerSourceRanges"
 
 	// ClusterName is the name of the cluster
 	ClusterName = "clusterName"
@@ -219,8 +253,8 @@ const (
 	// BackendName is the name of the backend
 	BackendName = "backendName"
 
-	// SlaveSlot is the slot number in a service BPF map
-	SlaveSlot = "slaveSlot"
+	// BackendSlot is the backend slot number in a service BPF map
+	BackendSlot = "backendSlot"
 
 	// CiliumNetworkPolicy is a cilium specific NetworkPolicy
 	CiliumNetworkPolicy = "ciliumNetworkPolicy"
@@ -228,17 +262,35 @@ const (
 	// CiliumNetworkPolicyName is the name of a CiliumNetworkPolicy
 	CiliumNetworkPolicyName = "ciliumNetworkPolicyName"
 
+	// CiliumClusterwideNetworkPolicyName is the name of the CiliumClusterWideNetworkPolicy
+	CiliumClusterwideNetworkPolicyName = "ciliumClusterwideNetworkPolicyName"
+
+	// BPFClockSource denotes the internal clock source (ktime vs jiffies)
+	BPFClockSource = "bpfClockSource"
+
+	// BPFInsnSet denotes the instruction set version
+	BPFInsnSet = "bpfInsnSet"
+
+	// CiliumLocalRedirectPolicyName is the name of a CiliumLocalRedirectPolicy
+	CiliumLocalRedirectName = "ciliumLocalRedirectPolicyName"
+
+	// CiliumEgressNATPolicyName is the name of a CiliumEgressNATPolicy
+	CiliumEgressNATPolicyName = "ciliumEgressNATPolicyName"
+
 	// BPFMapKey is a key from a BPF map
 	BPFMapKey = "bpfMapKey"
 
 	// BPFMapValue is a value from a BPF map
 	BPFMapValue = "bpfMapValue"
 
-	// XDPDevice is the device name
-	XDPDevice = "xdpDevice"
-
 	// Device is the device name
 	Device = "device"
+
+	// Devices is the devices name
+	Devices = "devices"
+
+	//DirectRoutingDevice is the name of the direct routing device
+	DirectRoutingDevice = "directRoutingDevice"
 
 	// IpvlanMasterDevice is the ipvlan master device name
 	IpvlanMasterDevice = "ipvlanMasterDevice"
@@ -266,6 +318,9 @@ const (
 	// Line is a line number within a file
 	Line = "line"
 
+	// LinkIndex is a network iface index
+	LinkIndex = "linkIndex"
+
 	// Object is used when "%+v" printing Go objects for debug or error handling.
 	// It is often paired with logfields.Repr to render the object.
 	Object = "obj"
@@ -281,11 +336,17 @@ const (
 	// It is often paired with logfields.Repr to render the object.
 	Response = "resp"
 
+	// Resource is a resource
+	Resource = "resource"
+
 	// Route is a L2 or L3 Linux route
 	Route = "route"
 
 	// RetryUUID is an UUID identical for all retries of a set
 	RetryUUID = "retryUUID"
+
+	// Rule is an ip rule
+	Rule = "rule"
 
 	// Envoy xDS-protocol-specific
 
@@ -316,6 +377,9 @@ const (
 	// XDSResource is an xDS resource message.
 	XDSResource = "xdsResource"
 
+	// XDSDetail is detail string included in XDS NACKs.
+	XDSDetail = "xdsDetail"
+
 	// K8s-specific
 
 	// K8sNodeID is the k8s ID of a K8sNode
@@ -326,6 +390,9 @@ const (
 
 	// K8sSvcName is the name of a K8s service
 	K8sSvcName = "k8sSvcName"
+
+	// K8sSvcID is the K8s service name and namespace
+	K8sSvcID = "k8sSvcID"
 
 	// K8sSvcType is the k8s service type (e.g. NodePort, Loadbalancer etc.)
 	K8sSvcType = "k8sSvcType"
@@ -353,6 +420,12 @@ const (
 
 	// K8sAPIVersion is the version of the k8s API an object has
 	K8sAPIVersion = "k8sApiVersion"
+
+	// K8sNodeIP is the k8s Node IP (either InternalIP or ExternalIP)
+	K8sNodeIP = "k8sNodeIP"
+
+	// K8sUID is the UID of a K8s object
+	K8sUID = "k8sUID"
 
 	// Attempt is the attempt number if an operation is attempted multiple times
 	Attempt = "attempt"
@@ -384,6 +457,12 @@ const (
 	// performed
 	Reason = "reason"
 
+	// Limit is a numerical limit that has been exceeded
+	Limit = "limit"
+
+	// Count is a measure being compared to the Limit
+	Count = "count"
+
 	// Debug is a boolean value for whether debug is set or not.
 	Debug = "debug"
 
@@ -399,9 +478,61 @@ const (
 	// Key is the identity of the encryption key
 	Key = "key"
 
+	// URL represents a Uniform Resource Locator.
+	URL = "url"
+
 	// SysParamName is the name of the kernel parameter (sysctl)
 	SysParamName = "sysParamName"
 
 	// SysParamValue is the value of the kernel parameter (sysctl)
 	SysParamValue = "sysParamValue"
+
+	// HashSeed is the seed value for the hashing algorithm
+	HashSeed = "hashSeed"
+
+	// HelpMessage is the help message corresponding to a log message.
+	// This is to make sure we keep separate contexts for logs and help messages.
+	HelpMessage = "helpMessage"
+
+	// LRPName is the parsed name of the Local Redirect Policy.
+	LRPName = "lrpName"
+
+	// LRPFrontend is the parsed frontend mappings of the Local Redirect Policy.
+	LRPFrontends = "lrpFrontends"
+
+	// LRPLocalEndpointSelector is the local endpoint selector of the Local Redirect Policy.
+	LRPLocalEndpointSelector = "lrpLocalEndpointSelector"
+
+	// LRPBackendPorts are the parsed backend ports of the Local Redirect Policy.
+	LRPBackendPorts = "lrpBackendPorts"
+
+	// ENPName is the name of the egress nat policy
+	ENPName = "enpName"
+
+	// Mode describes an operations mode
+	Mode = "mode"
+
+	// PubKey is the public key
+	PubKey = "pubKey"
+
+	// NodeIPv4 is the node IPv4 addr
+	NodeIPv4 = "nodeIPv4"
+
+	// NodeIPv6 is the node IPv4 addr
+	NodeIPv6 = "nodeIPv6"
+
+	// OldNode refers to the node before the update
+	OldNode = "oldNode"
+
+	// NewNode refers to the node after the update
+	NewNode = "newNode"
+
+	// AttachedENIs are the ENIs which have been attached to the node
+	AttachedENIs = "attachedENIs"
+
+	// ExpectedENIs are the ENIs which are expected to be available
+	ExpectedENIs = "expectedENIs"
+
+	// Hint helps nudge the user in the right direction when troubleshooting.
+	Hint = "hint"
 )

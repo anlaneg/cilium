@@ -1,26 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package types
 
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 
+	alibabaCloudTypes "github.com/cilium/cilium/pkg/alibabacloud/eni/types"
 	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
+	azureTypes "github.com/cilium/cilium/pkg/azure/types"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 
 	cniTypes "github.com/containernetworking/cni/pkg/types"
@@ -31,11 +22,14 @@ import (
 // NetConf is the Cilium specific CNI network configuration
 type NetConf struct {
 	cniTypes.NetConf
-	MTU         int                `json:"mtu"`
-	Args        Args               `json:"args"`
-	ENI         eniTypes.ENISpec   `json:"eni,omitempty"`
-	IPAM        ipamTypes.IPAMSpec `json:"ipam,omitempty"`
-	EnableDebug bool               `json:"enable-debug"`
+	MTU          int                    `json:"mtu"`
+	Args         Args                   `json:"args"`
+	ENI          eniTypes.ENISpec       `json:"eni,omitempty"`
+	Azure        azureTypes.AzureSpec   `json:"azure,omitempty"`
+	IPAM         ipamTypes.IPAMSpec     `json:"ipam,omitempty"`
+	AlibabaCloud alibabaCloudTypes.Spec `json:"alibaba-cloud,omitempty"`
+	EnableDebug  bool                   `json:"enable-debug"`
+	LogFormat    string                 `json:"log-format"`
 }
 
 // NetConfList is a CNI chaining configuration
@@ -65,7 +59,7 @@ func parsePrevResult(n *NetConf) (*NetConf, error) {
 // ReadNetConf reads a CNI configuration file and returns the corresponding
 // NetConf structure
 func ReadNetConf(path string) (*NetConf, error) {
-	b, err := ioutil.ReadFile(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to read CNI configuration '%s': %s", path, err)
 	}
@@ -91,7 +85,6 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 	}
 
 	return parsePrevResult(n)
-
 }
 
 // ArgsSpec is the specification of additional arguments of the CNI ADD call

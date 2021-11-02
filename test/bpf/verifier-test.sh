@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2018-2020 Authors of Cilium
+# Copyright 2018-2021 Authors of Cilium
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,15 +19,28 @@ set -eo pipefail
 DEV="cilium-probe"
 DIR=$(dirname $0)/../../bpf
 MAPTOOL=$(dirname $0)/../../tools/maptool/maptool
-ALL_TC_PROGS="bpf_hostdev_ingress bpf_ipsec bpf_lxc bpf_netdev bpf_network bpf_overlay"
-TC_PROGS=${TC_PROGS:-$ALL_TC_PROGS}
+# all known bpf programs (object files).
+# ALL_PROGS will be tested again source files to find non-tested bpf code
+ALL_TC_PROGS="bpf_lxc bpf_host bpf_network bpf_overlay"
 ALL_CG_PROGS="bpf_sock sockops/bpf_sockops sockops/bpf_redir"
-CG_PROGS=${CG_PROGS:-$ALL_CG_PROGS}
-ALL_XDP_PROGS="bpf_prefilter"
-XDP_PROGS=${XDP_PROGS:-$ALL_XDP_PROGS}
-IGNORED_PROGS="bpf_alignchecker"
+ALL_XDP_PROGS="bpf_xdp"
+IGNORED_PROGS="bpf_alignchecker tests/bpf_ct_tests custom/bpf_custom"
 ALL_PROGS="${IGNORED_PROGS} ${ALL_CG_PROGS} ${ALL_TC_PROGS} ${ALL_XDP_PROGS}"
+
+# if {TC,CG,XDP}_PROGS is set (even if empty) use the existing value.
+# Otherwise, use ALL_{TC,CG,XDP}
+if [[ ! -v TC_PROGS ]]; then
+    TC_PROGS=$ALL_TC_PROGS
+fi
+if [[ ! -v CG_PROGS ]]; then
+    CG_PROGS=$ALL_CG_PROGS
+fi
+if [[ ! -v XDP_PROGS ]]; then
+    XDP_PROGS=$ALL_XDP_PROGS
+fi
+
 VERBOSE=false
+FORCE=false
 RUN_ALL_TESTS=false
 
 BPFFS=${BPFFS:-"/sys/fs/bpf"}
@@ -61,7 +74,7 @@ function cleanup {
 }
 
 function get_section {
-	grep "__section(" $DIR/$1 | sed 's/__sec[^\"]*\"\([0-9A-Za-z_-]*\).*/\1/'
+	sed -n 's/.*__section("\([0-9A-Za-z_-]*\).*/\1/p' $DIR/$1
 }
 
 function load_prog {
@@ -72,7 +85,7 @@ function load_prog {
 	echo "=> Loading ${name}..."
 	if $VERBOSE; then
 		# Redirect stderr to stdout to assist caller parsing
-		${loader} $args verbose 2>&1
+		${loader} $args verbose 2>&1 || $FORCE
 	else
 		# Only run verbose mode if loading fails.
 		${loader} $args 2>/dev/null \
@@ -156,23 +169,6 @@ function cg_prog_type_init {
 	fi
 }
 
-function load_sock_prog {
-	prog=$1
-	pinpath=$2
-	prog_type=$3
-	attach_type=$4
-	section=$5
-
-	local args="pin $pinpath obj ${prog}.o type $prog_type \
-		    attach_type $attach_type sec $section"
-	if $VERBOSE; then
-		$TC exec bpf $args verbose 2>&1
-	else
-		$TC exec bpf $args 2>/dev/null \
-		|| $TC exec bpf $args verbose
-	fi
-}
-
 function load_sockops_prog {
 	prog="$1"
 	pinpath="$2"
@@ -192,7 +188,7 @@ function load_sockops_prog {
 
 	echo "=> Loading ${p}.c:${section}..."
 	if $VERBOSE; then
-		$BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args 2>&1
+		$BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args 2>&1 || $FORCE
 	else
 		$BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args 2>/dev/null \
 		|| $BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args
@@ -232,12 +228,20 @@ function load_cg {
 }
 
 function load_xdp {
+	# The verifier compares the type of the BPF program that created each
+	# pinned map to the type of the new program that is trying to use those
+	# maps. It errors if the two types (original map creator vs. map user)
+	# don't match.
+	# Since previous loaded programs are of TC type, we need to remove all maps
+	# before creating them again from XDP programs.
+	clean_maps
+
 	if $IPROUTE2 link set dev ${DEV} xdpgeneric off 2>/dev/null; then
 		for p in ${XDP_PROGS}; do
 			load_prog_dev "$IPROUTE2 link set" "xdpgeneric" ${p}
 		done
 	else
-		echo "=> Skipping ${DIR}/bpf_prefilter.c."
+		echo "=> Skipping ${DIR}/bpf_xdp.c."
 		echo "Ensure you have linux >= 4.12 and recent iproute2 to test XDP." 1>&2
 	fi
 }
@@ -259,6 +263,9 @@ function handle_args {
 			shift;;
 		-v|--verbose)
 			VERBOSE=true
+			shift;;
+		-f|--force)
+			FORCE=true
 			shift;;
 		*)
 			echo "Unrecognized argument '$1'" 1>&2
@@ -292,9 +299,15 @@ function main {
 		$TC qdisc replace dev ${DEV} clsact
 	fi
 
-	load_tc
-	load_cg
-	load_xdp
+	if [ -n "$TC_PROGS" ]; then
+		load_tc
+	fi
+	if [ -n "$CG_PROGS" ]; then
+		load_cg
+	fi
+	if [ -n "$XDP_PROGS" ]; then
+		load_xdp
+	fi
 }
 
 main "$@"

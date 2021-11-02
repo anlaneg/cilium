@@ -1,17 +1,7 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package linux
@@ -21,9 +11,24 @@ import (
 
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/cidr"
+	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/fake"
+	"github.com/cilium/cilium/pkg/mtu"
 
 	"gopkg.in/check.v1"
+)
+
+var (
+	nh = linuxNodeHandler{
+		nodeConfig: datapath.LocalNodeConfiguration{
+			MtuConfig: mtu.NewConfiguration(0, false, false, false, 100, net.IP("1.1.1.1")),
+		},
+		nodeAddressing: fake.NewNodeAddressing(),
+		datapathConfig: DatapathConfiguration{
+			HostDevice: "host_device",
+		},
+	}
+	cr1 = cidr.MustParseCIDR("10.1.0.0/16")
 )
 
 func (s *linuxTestSuite) TestTunnelCIDRUpdateRequired(c *check.C) {
@@ -63,10 +68,10 @@ func (s *linuxTestSuite) TestCreateNodeRoute(c *check.C) {
 
 	fakeNodeAddressing := fake.NewNodeAddressing()
 
-	nodeHandler := NewNodeHandler(dpConfig, fakeNodeAddressing)
+	nodeHandler := NewNodeHandler(dpConfig, fakeNodeAddressing, nil)
 
 	c1 := cidr.MustParseCIDR("10.10.0.0/16")
-	generatedRoute, err := nodeHandler.(*linuxNodeHandler).createNodeRoute(c1)
+	generatedRoute, err := nodeHandler.(*linuxNodeHandler).createNodeRouteSpec(c1, false)
 	c.Assert(err, check.IsNil)
 	c.Assert(generatedRoute.Prefix, checker.DeepEquals, *c1.IPNet)
 	c.Assert(generatedRoute.Device, check.Equals, dpConfig.HostDevice)
@@ -74,10 +79,33 @@ func (s *linuxTestSuite) TestCreateNodeRoute(c *check.C) {
 	c.Assert(generatedRoute.Local, checker.DeepEquals, fakeNodeAddressing.IPv4().Router())
 
 	c1 = cidr.MustParseCIDR("beef:beef::/48")
-	generatedRoute, err = nodeHandler.(*linuxNodeHandler).createNodeRoute(c1)
+	generatedRoute, err = nodeHandler.(*linuxNodeHandler).createNodeRouteSpec(c1, false)
 	c.Assert(err, check.IsNil)
 	c.Assert(generatedRoute.Prefix, checker.DeepEquals, *c1.IPNet)
 	c.Assert(generatedRoute.Device, check.Equals, dpConfig.HostDevice)
 	c.Assert(*generatedRoute.Nexthop, checker.DeepEquals, fakeNodeAddressing.IPv6().Router())
 	c.Assert(generatedRoute.Local, checker.DeepEquals, fakeNodeAddressing.IPv6().PrimaryExternal())
+}
+
+func (s *linuxTestSuite) TestCreateNodeRouteSpecMtu(c *check.C) {
+	generatedRoute, err := nh.createNodeRouteSpec(cr1, false)
+
+	c.Assert(err, check.IsNil)
+	c.Assert(generatedRoute.MTU, check.Not(check.Equals), 0)
+
+	generatedRoute, err = nh.createNodeRouteSpec(cr1, true)
+
+	c.Assert(err, check.IsNil)
+	c.Assert(generatedRoute.MTU, check.Equals, 0)
+}
+
+func (s *linuxTestSuite) TestStoreLoadNeighLinks(c *check.C) {
+	tmpDir := c.MkDir()
+	devExpected := "dev1"
+	err := storeNeighLink(tmpDir, devExpected)
+	c.Assert(err, check.IsNil)
+
+	devsActual, err := loadNeighLink(tmpDir)
+	c.Assert(err, check.IsNil)
+	c.Assert(devExpected, checker.DeepEquals, devsActual)
 }

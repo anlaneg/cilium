@@ -11,8 +11,7 @@
 #define TCP_CSUM_OFF (offsetof(struct tcphdr, check))
 #define UDP_CSUM_OFF (offsetof(struct udphdr, check))
 
-struct csum_offset
-{
+struct csum_offset {
 	__u16 offset;/*协议存放checksum的位置*/
 	__u16 flags;
 };
@@ -59,8 +58,8 @@ static __always_inline void csum_l4_offset_and_flags(__u8 nexthdr,
  * @arg to	To value or a csum diff
  * @arg flags	Additional flags to be passed to l4_csum_replace()
  */
-static __always_inline int csum_l4_replace(struct __ctx_buff *ctx, int l4_off/*到l4的偏移量*/,
-					   struct csum_offset *csum/*checksum对应在l4层的offset及控制用flags*/,
+static __always_inline int csum_l4_replace(struct __ctx_buff *ctx, __u64 l4_off/*到l4的偏移量*/,
+					   const struct csum_offset *csum/*checksum对应在l4层的offset及控制用flags*/,
 					   __be32 from, __be32 to, int flags)
 {
 	return l4_csum_replace(ctx, l4_off + csum->offset/*l4层checksum offset*/, from, to, flags | csum->flags/*合并flags*/);

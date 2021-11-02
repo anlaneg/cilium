@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package maps
@@ -93,7 +83,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedPaths:    []string{},
 			removedMappings: []int{},
@@ -110,7 +99,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedPaths: []string{
 				"cilium_policy_00001",
@@ -118,7 +106,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedMappings: []int{
 				1,
@@ -136,7 +123,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedPaths: []string{
 				"cilium_policy_00042",
@@ -155,7 +141,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedPaths: []string{
 				"cilium_policy_00001",
@@ -164,7 +149,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedMappings: []int{
 				1,
@@ -184,14 +168,12 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_1",
 				"cilium_ct_any6_1",
 				"cilium_ct_any4_1",
-				"cilium_ep_config_1",
 				"cilium_policy_00001",
 				"cilium_policy_00042",
 				"cilium_ct6_00001",
 				"cilium_ct4_00001",
 				"cilium_ct_any6_00001",
 				"cilium_ct_any4_00001",
-				"cilium_ep_config_00001",
 			},
 			removedPaths: []string{
 				"cilium_policy_1",
@@ -200,7 +182,6 @@ func (s *MapTestSuite) TestCollectStaleMapGarbage(c *C) {
 				"cilium_ct4_1",
 				"cilium_ct_any6_1",
 				"cilium_ct_any4_1",
-				"cilium_ep_config_1",
 			},
 			removedMappings: []int{},
 		},

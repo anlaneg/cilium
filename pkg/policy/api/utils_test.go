@@ -1,23 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package api
 
 import (
 	"testing"
+
+	"github.com/cilium/cilium/pkg/policy/api/kafka"
 
 	. "gopkg.in/check.v1"
 )
@@ -50,21 +42,21 @@ func (s *PolicyAPITestSuite) TestHTTPEqual(c *C) {
 }
 
 func (s *PolicyAPITestSuite) TestKafkaEqual(c *C) {
-	rule1 := PortRuleKafka{APIVersion: "1", APIKey: "foo", Topic: "topic1"}
-	rule2 := PortRuleKafka{APIVersion: "1", APIKey: "bar", Topic: "topic1"}
-	rule3 := PortRuleKafka{APIVersion: "1", APIKey: "foo", Topic: "topic2"}
+	rule1 := kafka.PortRule{APIVersion: "1", APIKey: "foo", Topic: "topic1"}
+	rule2 := kafka.PortRule{APIVersion: "1", APIKey: "bar", Topic: "topic1"}
+	rule3 := kafka.PortRule{APIVersion: "1", APIKey: "foo", Topic: "topic2"}
 
-	c.Assert(rule1.Equal(rule1), Equals, true)
-	c.Assert(rule1.Equal(rule2), Equals, false)
-	c.Assert(rule1.Equal(rule3), Equals, false)
+	c.Assert(rule1, Equals, rule1)
+	c.Assert(rule1, Not(Equals), rule2)
+	c.Assert(rule1, Not(Equals), rule3)
 
 	rules := L7Rules{
-		Kafka: []PortRuleKafka{rule1, rule2},
+		Kafka: []kafka.PortRule{rule1, rule2},
 	}
 
-	c.Assert(rule1.Exists(rules), Equals, true)
-	c.Assert(rule2.Exists(rules), Equals, true)
-	c.Assert(rule3.Exists(rules), Equals, false)
+	c.Assert(rule1.Exists(rules.Kafka), Equals, true)
+	c.Assert(rule2.Exists(rules.Kafka), Equals, true)
+	c.Assert(rule3.Exists(rules.Kafka), Equals, false)
 }
 
 func (s *PolicyAPITestSuite) TestL7Equal(c *C) {

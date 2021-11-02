@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+
+//go:build linux
 // +build linux
 
 package mtu
@@ -20,6 +10,9 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/cilium/cilium/pkg/logging/logfields"
+
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -36,7 +29,7 @@ func getRoute(externalProbe string) ([]netlink.Route, error) {
 
 	routes, err := netlink.RouteGet(ip)
 	if err != nil {
-		return nil, fmt.Errorf("unable to lookup route to %s: %s", externalProbe, err)
+		return nil, fmt.Errorf("unable to lookup route to %s: %w", externalProbe, err)
 	}
 
 	if len(routes) == 0 {
@@ -59,9 +52,13 @@ func autoDetect() (int, error) {
 		}
 	}
 
+	if routes[0].Gw == nil {
+		return 0, fmt.Errorf("unable to find default gateway from the routes: %s", routes)
+	}
+
 	link, err := netlink.LinkByIndex(routes[0].LinkIndex)
 	if err != nil {
-		return 0, fmt.Errorf("unable to find interface of default route: %s", err)
+		return 0, fmt.Errorf("unable to find interface of default route: %w", err)
 	}
 
 	if mtu := link.Attrs().MTU; mtu != 0 {
@@ -70,4 +67,35 @@ func autoDetect() (int, error) {
 	}
 
 	return EthernetMTU, nil
+}
+
+// getMTUFromIf finds the interface that holds the ip and returns its mtu
+func getMTUFromIf(ip net.IP) (int, error) {
+	ifaces, err := netlink.LinkList()
+	if err != nil {
+		return 0, fmt.Errorf("unable to list interfaces: %w", err)
+	}
+
+	for _, iface := range ifaces {
+		addrs, err := netlink.AddrList(iface, netlink.FAMILY_ALL)
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				logfields.Device: iface.Attrs().Name,
+			}).Warning("Unable to list all addresses")
+			continue
+		}
+
+		for _, addr := range addrs {
+			if addr.IPNet.IP.Equal(ip) == true {
+				myMTU := iface.Attrs().MTU
+				log.WithFields(logrus.Fields{
+					logfields.Device: iface.Attrs().Name,
+					logfields.IPAddr: ip,
+					logfields.MTU:    myMTU,
+				}).Info("Inheriting MTU from external network interface")
+				return myMTU, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("No interface contains the provided ip: %v", ip)
 }

@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package identitymanager
@@ -84,6 +74,25 @@ func (s *IdentityManagerTestSuite) TestIdentityManagerLifecycle(c *C) {
 
 	idm.RemoveOldAddNew(nil, barIdentity)
 	c.Assert(idm.identities[barIdentity.ID].refCount, Equals, uint(2))
+}
+
+func (s *IdentityManagerTestSuite) TestHostIdentityLifecycle(c *C) {
+	idm := NewIdentityManager()
+	c.Assert(idm.identities, Not(IsNil))
+
+	hostIdentity := identity.NewIdentity(identity.ReservedIdentityHost, labels.LabelHost)
+	_, exists := idm.identities[hostIdentity.ID]
+	c.Assert(exists, Equals, false)
+
+	idm.Add(hostIdentity)
+	c.Assert(idm.identities[hostIdentity.ID].refCount, Equals, uint(1))
+
+	newHostLabels := labels.NewLabelsFromModel([]string{"id=foo"})
+	newHostLabels.MergeLabels(labels.LabelHost)
+	newHostIdentity := identity.NewIdentity(identity.ReservedIdentityHost, newHostLabels)
+	idm.RemoveOldAddNew(hostIdentity, newHostIdentity)
+	c.Assert(idm.identities[hostIdentity.ID].refCount, Equals, uint(1))
+	c.Assert(idm.identities[hostIdentity.ID].identity, checker.DeepEquals, newHostIdentity)
 }
 
 type identityManagerObserver struct {

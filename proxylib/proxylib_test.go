@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package main
@@ -23,11 +13,12 @@ import (
 
 	_ "gopkg.in/check.v1"
 
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/proxylib/proxylib"
 	"github.com/cilium/cilium/proxylib/test"
 	_ "github.com/cilium/cilium/proxylib/testparsers"
 
-	"github.com/cilium/proxy/go/cilium/api"
+	cilium "github.com/cilium/proxy/go/cilium/api"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -125,18 +116,20 @@ func checkAccessLogs(t *testing.T, logServer *test.AccessLogServer, expPasses, e
 	passes, drops := 0, 0
 	nWaits := 0
 	done := false
+	timer, timerDone := inctimer.New()
+	defer timerDone()
 	// Loop until done or when the timeout has ticked 100 times without any logs being received
 	for !done && nWaits < 100 {
 		select {
-		case pblog := <-logServer.Logs:
-			if pblog.EntryType == cilium.EntryType_Denied {
+		case entryType := <-logServer.Logs:
+			if entryType == cilium.EntryType_Denied {
 				drops++
 			} else {
 				passes++
 			}
 			// Start the timeout again (for upto 5 seconds)
 			nWaits = 0
-		case <-time.After(50 * time.Millisecond):
+		case <-timer.After(50 * time.Millisecond):
 			// Count the number of times we have waited since the last log was received
 			nWaits++
 			// Finish when expected number of passes and drops have been collected
@@ -197,7 +190,7 @@ type PanicParser struct {
 	connection *proxylib.Connection
 }
 
-func (p *PanicParserFactory) Create(connection *proxylib.Connection) proxylib.Parser {
+func (p *PanicParserFactory) Create(connection *proxylib.Connection) interface{} {
 	log.Debugf("PanicParserFactory: Create: %v", connection)
 	return &PanicParser{connection: connection}
 }
@@ -324,10 +317,63 @@ func TestUnsupportedL7DropsGeneric(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "this-parser-does-not-exist"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
+		        >
+		      >
+		    >
+		  >
+		>
+		`})
+
+	// Using headertester parser
+	buf := CheckOnNewConnection(t, mod, "test.headerparser", 1, true, 1, 2, "1.1.1.1:34567", "2.2.2.2:80", "FooBar",
+		256, proxylib.OK, 1)
+
+	// Original direction data, drops with remaining data
+	line1, line2, line3, line4 := "Beginning----\n", "foo\n", "----End\n", "\n"
+	data := line1 + line2 + line3 + line4
+	CheckOnData(t, 1, false, false, &[][]byte{[]byte(data)}, []ExpFilterOp{
+		{proxylib.DROP, len(line1)},
+		{proxylib.DROP, len(line2)},
+		{proxylib.DROP, len(line3)},
+		{proxylib.DROP, len(line4)},
+	}, proxylib.OK, "Line dropped: "+line1+"Line dropped: "+line2+"Line dropped: "+line3+"Line dropped: "+line4)
+
+	expPasses, expDrops := 0, 4
+	checkAccessLogs(t, logServer, expPasses, expDrops)
+
+	CheckClose(t, 1, buf, 1)
+}
+
+func TestEnvoyL7DropsGeneric(t *testing.T) {
+	logServer := test.StartAccessLogServer("access_log.sock", 10)
+	defer logServer.Close()
+
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
+	if mod == 0 {
+		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
+	} else {
+		defer CloseModule(mod)
+	}
+
+	insertPolicyText(t, mod, "1", []string{`
+		name: "FooBar"
+		policy: 2
+		ingress_per_port_policies: <
+		  port: 80
+		  rules: <
+		    remote_policies: 1
+		    remote_policies: 3
+		    remote_policies: 4
+		    l7_proto: "envoy.filter.network.test"
+		    l7_rules: <
+		      l7_allow_rules: <
+		        rule: <
+		          key: "action"
+		          value: "drop"
 		        >
 		      >
 		    >
@@ -414,13 +460,13 @@ func TestTwoRulesOnSamePortFirstNoL7Generic(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
 		        >
 		      >
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "suffix"
 		          value: "End"
@@ -470,13 +516,13 @@ func TestTwoRulesOnSamePortMismatchingL7(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
 		        >
 		      >
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "suffix"
 		          value: "End"
@@ -515,13 +561,13 @@ func TestSimplePolicy(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
 		        >
 		      >
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "suffix"
 		          value: "End"
@@ -571,7 +617,7 @@ func TestAllowAllPolicy(t *testing.T) {
 		  rules: <
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <>
+		      l7_allow_rules: <>
 		    >
 		  >
 		>
@@ -669,7 +715,7 @@ func TestAllowAllPolicyL3Egress(t *testing.T) {
 		    remote_policies: 2
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <>
+		      l7_allow_rules: <>
 		    >
 		  >
 		>

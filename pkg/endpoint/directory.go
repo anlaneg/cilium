@@ -1,16 +1,5 @@
-// Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2020 Authors of Cilium
 
 package endpoint
 
@@ -19,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 
@@ -58,13 +46,39 @@ func (e *Endpoint) backupDirectoryPath() string {
 	return e.DirectoryPath() + backupDirectorySuffix
 }
 
+// moveNewFilesTo copies all files, that do not exist in newDir, from oldDir.
+func moveNewFilesTo(oldDir, newDir string) error {
+	oldFiles, err := os.ReadDir(oldDir)
+	if err != nil {
+		return err
+	}
+	newFiles, err := os.ReadDir(newDir)
+	if err != nil {
+		return err
+	}
+
+	for _, oldFile := range oldFiles {
+		exists := false
+		for _, newFile := range newFiles {
+			if oldFile.Name() == newFile.Name() {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			os.Rename(filepath.Join(oldDir, oldFile.Name()), filepath.Join(newDir, oldFile.Name()))
+		}
+	}
+	return nil
+}
+
 // synchronizeDirectories moves the files related to endpoint BPF program
 // compilation to their according directories if compilation of BPF was
 // necessary for the endpoint.
 // Returns the original regenerationError if regenerationError was non-nil,
 // or if any updates to directories for the endpoint's directories fails.
-// Must be called with endpoint.Mutex held.
-func (e *Endpoint) synchronizeDirectories(origDir string, compilationExecuted bool) error {
+// Must be called with endpoint.mutex Lock()ed.
+func (e *Endpoint) synchronizeDirectories(origDir string, stateDirComplete bool) error {
 	scopedLog := e.getLogger()
 	scopedLog.Debug("synchronizing directories")
 
@@ -115,9 +129,9 @@ func (e *Endpoint) synchronizeDirectories(origDir string, compilationExecuted bo
 
 		// If the compilation was skipped then we need to copy the old
 		// bpf objects into the new directory
-		if !compilationExecuted {
-			scopedLog.Debug("compilation was skipped; moving old BPF objects into new directory")
-			err := common.MoveNewFilesTo(backupDir, origDir)
+		if !stateDirComplete {
+			scopedLog.Debug("some BPF state files were not recreated; moving old BPF objects into new directory")
+			err := moveNewFilesTo(backupDir, origDir)
 			if err != nil {
 				log.WithError(err).Debugf("unable to copy old bpf object "+
 					"files from %s into the new directory %s.", backupDir, origDir)

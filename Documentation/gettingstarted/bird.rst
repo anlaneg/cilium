@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 
 ****************************
@@ -11,14 +11,22 @@ Using BIRD to run BGP
 
 `BIRD is an open-source implementation for routing Internet Protocol
 packets on Unix-like operating systems <https://en.wikipedia.org/wiki/Bird_Internet_routing_daemon>`_.
-If you are not familiar with it, you had best have a glance at the `User's Guide
-<https://bird.network.cz/?get_doc&f=bird.html&v=20>`_ first.
+If you are not familiar with it, you had best have a glance at the `User's Guide`_ first.
+
+.. _`User's Guide`: https://bird.network.cz/?get_doc&f=bird.html&v=20
+
+BIRD provides a way to advertise routes using traditional networking protocols
+to allow Cilium-managed endpoints to be accessible outside the cluster. This
+guide assumes that Cilium is already deployed in the cluster, and that the
+remaining piece is how to ensure that the pod CIDR ranges are externally
+routable.
 
 `BIRD <https://bird.network.cz>`_ maintains two release families at present:
 ``1.x`` and ``2.x``, and the configuration format varies a lot between them.
 Unless you have already deployed the ``1.x``, we suggest using ``2.x``
-directly, as the ``2.x`` will live longer. In the following, we will denote
-``bird`` as the ``bird2`` software.
+directly, as the ``2.x`` will live longer. The following examples will denote
+``bird`` as the ``bird2`` software and use configuration in the format that
+``bird2`` understands.
 
 This guide shows how to install and configure bird on CentOS 7.x to make it
 collaborate with Cilium. Installation and configuration on other platforms
@@ -27,7 +35,7 @@ should be very similar.
 Install bird
 ##################
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ yum install -y bird2
 
@@ -37,7 +45,7 @@ Install bird
 
 Test the installation:
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ birdc show route
     BIRD 2.0.6 ready.
@@ -95,7 +103,7 @@ gateway (the core routers), and lets the latter do the routing.
 
 Below is the a reference configuration for fulfilling the above purposes:
 
-.. code:: bash
+::
 
     $ cat /etc/bird.conf
     log syslog all;
@@ -154,7 +162,7 @@ Below is the a reference configuration for fulfilling the above purposes:
 Save the above file as ``/etc/bird.conf``, and replace the placeholders with
 your own:
 
-.. code:: bash
+.. code-block:: shell-session
 
     sed -i 's/{{ NODE_IP }}/<your node ip>/g'                /etc/bird.conf
     sed -i 's/{{ POD_CIDR }}/<your pod cidr>/g'              /etc/bird.conf
@@ -167,7 +175,7 @@ your own:
 
 Restart ``bird`` and check the logs:
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ systemctl restart bird
 
@@ -180,7 +188,7 @@ Restart ``bird`` and check the logs:
 
 Verify the changes, you should get something like this:
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ birdc show route
     BIRD 2.0.6 ready.
@@ -189,7 +197,23 @@ Verify the changes, you should get something like this:
             dev cilium_host
 
 This indicates that the PodCIDR ``10.5.48.0/24`` on this node has been
-successfully announced to the BGP peers.
+successfully imported into BIRD.
+
+.. code-block:: shell-session
+
+   $ birdc show protocols all uplink0 | grep -A 3 -e "Description" -e "stats"
+     Description:    BGP uplink 0
+     BGP state:          Established
+       Neighbor address: 10.4.1.7
+       Neighbor AS:      65418
+   --
+       Route change stats:     received   rejected   filtered    ignored   accepted
+         Import updates:              0          0          0          0          0
+         Import withdraws:           10          0        ---         10          0
+         Export updates:              1          0          0        ---          1
+
+Here we see that the uplink0 BGP session is established and our PodCIDR from
+above has been exported and accepted by the BGP peer.
 
 Monitoring
 ##############
@@ -207,7 +231,7 @@ Advanced Configurations
 
 You may need some advanced configurations to make your BGP scheme production-ready.
 This section lists some of these parameters, but we will not dive into details,
-that's BIRD `User's Guide <https://bird.network.cz/?get_doc&f=bird.html&v=20>`_'s responsibility.
+that's BIRD `User's Guide`_'s responsibility.
 
 BFD
 ----
@@ -218,7 +242,7 @@ is a detection protocol designed to accelerate path failure detection.
 
 **This feature also relies on peer side's configuration.**
 
-.. code:: bash
+::
 
     protocol bfd {
           interface "{{ grains['node_mgnt_device'] }}" {
@@ -241,7 +265,7 @@ is a detection protocol designed to accelerate path failure detection.
 
 Verify, you should see something like this:
 
-.. code:: bash
+.. code-block:: shell-session
 
     $ birdc show bfd sessions
     BIRD 2.0.6 ready.
@@ -259,7 +283,7 @@ nodes. In this case, you need to configure `Equal-Cost Multi-Path (ECMP) routing
 
 **This feature also relies on peer side's configuration.**
 
-.. code:: bash
+::
 
     protocol kernel {
             ipv4 {                    # Connect protocol to IPv4 table by channel
@@ -276,7 +300,7 @@ See the user manual for more detailed information.
 You need to check the ECMP correctness on physical network (Core router in the
 above scenario):
 
-.. code:: bash
+.. code-block:: shell-session
 
     CORE01# show ip route 10.5.2.0
     IP Route Table for VRF "default"
@@ -296,7 +320,7 @@ Graceful restart
 
 Add ``graceful restart`` to each ``bgp`` section:
 
-.. code:: bash
+::
 
     protocol bgp uplink0 {
     		...

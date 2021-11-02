@@ -1,20 +1,10 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2021 Authors of Cilium
 
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -25,6 +15,7 @@ import (
 	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/command"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	"github.com/cilium/cilium/pkg/iana"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/k8s"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
@@ -38,15 +29,13 @@ const (
 	defaultSecurityID = -1
 )
 
-type supportedKinds string
-
 var src, dst, dports []string
 var srcIdentity, dstIdentity int64
 var srcEndpoint, dstEndpoint, srcK8sPod, dstK8sPod, srcK8sYaml, dstK8sYaml string
 
 // policyTraceCmd represents the policy_trace command
 var policyTraceCmd = &cobra.Command{
-	Use:   "trace ( -s <label context> | --src-identity <security identity> | --src-endpoint <endpoint ID> | --src-k8s-pod <namespace:pod-name> | --src-k8s-yaml <path to YAML file> ) ( -d <label context> | --dst-identity <security identity> | --dst-endpoint <endpoint ID> | --dst-k8s-pod <namespace:pod-name> | --dst-k8s-yaml <path to YAML file>) [--dport <port>[/<protocol>]",
+	Use:   "trace ( -s <label context> | --src-identity <security identity> | --src-endpoint <endpoint ID> | --src-k8s-pod <namespace:pod-name> | --src-k8s-yaml <path to YAML file> ) ( -d <label context> | --dst-identity <security identity> | --dst-endpoint <endpoint ID> | --dst-k8s-pod <namespace:pod-name> | --dst-k8s-yaml <path to YAML file>) --dport <port>[/<protocol>]",
 	Short: "Trace a policy decision",
 	Long: `Verifies if the source is allowed to consume
 destination. Source / destination can be provided as endpoint ID, security ID, Kubernetes Pod, YAML file, set of LABELs. LABEL is represented as
@@ -70,26 +59,17 @@ If multiple sources and / or destinations are provided, each source is tested wh
 			Usagef(cmd, "Missing destination argument")
 		}
 
-		// Parse provided labels
 		if len(src) > 0 {
-			srcSlice, err = parseLabels(src)
-			if err != nil {
-				Fatalf("Invalid source: %s", err)
-			}
-
-			srcSlices = append(srcSlices, srcSlice)
+			srcSlices = append(srcSlices, src)
 		}
 
 		if len(dst) > 0 {
-			dstSlice, err = parseLabels(dst)
-			if err != nil {
-				Fatalf("Invalid destination: %s", err)
-			}
-
-			dstSlices = append(dstSlices, dstSlice)
+			dstSlices = append(dstSlices, dst)
 		}
 
-		if len(dports) > 0 {
+		if len(dports) == 0 {
+			Usagef(cmd, "Missing destination port/proto")
+		} else {
 			dPorts, err = parseL4PortsSlice(dports)
 			if err != nil {
 				Fatalf("Invalid destination port: %s", err)
@@ -223,13 +203,6 @@ func appendEpLabelsToSlice(labelSlice []string, epID string) []string {
 	return append(labelSlice, lbls...)
 }
 
-func parseLabels(slice []string) ([]string, error) {
-	if len(slice) == 0 {
-		return nil, fmt.Errorf("No labels provided")
-	}
-	return slice, nil
-}
-
 func getSecIDFromK8s(podName string) (string, error) {
 	fmtdPodName := endpointid.NewID(endpointid.PodNamePrefix, podName)
 	_, _, err := endpointid.Parse(fmtdPodName)
@@ -258,7 +231,7 @@ func getSecIDFromK8s(podName string) (string, error) {
 		return "", fmt.Errorf("unable to create k8s client: %s", err)
 	}
 
-	ep, err := ciliumK8sClient.CiliumV2().CiliumEndpoints(namespace).Get(pod, meta_v1.GetOptions{})
+	ep, err := ciliumK8sClient.CiliumV2().CiliumEndpoints(namespace).Get(context.TODO(), pod, meta_v1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("unable to get pod %s in namespace %s", pod, namespace)
 	}
@@ -272,7 +245,7 @@ func getSecIDFromK8s(podName string) (string, error) {
 }
 
 // parseL4PortsSlice parses a given `slice` of strings. Each string should be in
-// the form of `<port>[/<protocol>]`, where the `<port>` is an integer and
+// the form of `<port>[/<protocol>]`, where the `<port>` is an integer or a port name and
 // `<protocol>` is an optional layer 4 protocol `tcp` or `udp`. In case
 // `protocol` is not present, or is set to `any`, the parsed port will be set to
 // `models.PortProtocolAny`.
@@ -287,20 +260,26 @@ func parseL4PortsSlice(slice []string) ([]*models.Port, error) {
 		case 2:
 			protoStr = strings.ToUpper(vSplit[1])
 			switch protoStr {
-			case models.PortProtocolTCP, models.PortProtocolUDP, models.PortProtocolANY:
+			case models.PortProtocolTCP, models.PortProtocolUDP, models.PortProtocolICMP, models.PortProtocolICMPV6, models.PortProtocolANY:
 			default:
 				return nil, fmt.Errorf("invalid protocol %q", protoStr)
 			}
 		default:
 			return nil, fmt.Errorf("invalid format %q. Should be <port>[/<protocol>]", v)
 		}
+		var port uint16
 		portStr := vSplit[0]
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid port %q: %s", portStr, err)
+		if !iana.IsSvcName(portStr) {
+			portUint64, err := strconv.ParseUint(portStr, 10, 16)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port %q: %s", portStr, err)
+			}
+			port = uint16(portUint64)
+			portStr = ""
 		}
 		l4 := &models.Port{
-			Port:     uint16(port),
+			Port:     port,
+			Name:     portStr,
 			Protocol: protoStr,
 		}
 		rules = append(rules, l4)

@@ -1,22 +1,11 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package ctmap
 
 import (
-	"bytes"
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
@@ -107,6 +96,37 @@ func (m mapType) isTCP() bool {
 	return false
 }
 
+type CTMapIPVersion int
+
+const (
+	CTMapIPv4 CTMapIPVersion = iota
+	CTMapIPv6
+)
+
+// FilterMapsByProto filters the given CT maps by the given IP version, and
+// returns two maps - one for TCP and one for any protocol.
+func FilterMapsByProto(maps []*Map, ipVsn CTMapIPVersion) (ctMapTCP *Map, ctMapAny *Map) {
+	for _, m := range maps {
+		switch ipVsn {
+		case CTMapIPv4:
+			switch m.mapType {
+			case mapTypeIPv4TCPLocal, mapTypeIPv4TCPGlobal:
+				ctMapTCP = m
+			case mapTypeIPv4AnyLocal, mapTypeIPv4AnyGlobal:
+				ctMapAny = m
+			}
+		case CTMapIPv6:
+			switch m.mapType {
+			case mapTypeIPv6TCPLocal, mapTypeIPv6TCPGlobal:
+				ctMapTCP = m
+			case mapTypeIPv6AnyLocal, mapTypeIPv6AnyGlobal:
+				ctMapAny = m
+			}
+		}
+	}
+	return
+}
+
 type CtKey interface {
 	bpf.MapKey
 
@@ -116,8 +136,8 @@ type CtKey interface {
 	// ToHost converts fields to host byte order.
 	ToHost() CtKey
 
-	// Dump contents of key to buffer. Returns true if successful.
-	Dump(buffer *bytes.Buffer, reverse bool) bool
+	// Dump contents of key to sb. Returns true if successful.
+	Dump(sb *strings.Builder, reverse bool) bool
 
 	// GetFlags flags containing the direction of the CtKey.
 	GetFlags() uint8
@@ -138,16 +158,16 @@ func (k *CtKey4) NewValue() bpf.MapValue { return &CtEntry{} }
 // ToNetwork converts CtKey4 ports to network byte order.
 func (k *CtKey4) ToNetwork() CtKey {
 	n := *k
-	n.SourcePort = byteorder.HostToNetwork(n.SourcePort).(uint16)
-	n.DestPort = byteorder.HostToNetwork(n.DestPort).(uint16)
+	n.SourcePort = byteorder.HostToNetwork16(n.SourcePort)
+	n.DestPort = byteorder.HostToNetwork16(n.DestPort)
 	return &n
 }
 
 // ToHost converts CtKey ports to host byte order.
 func (k *CtKey4) ToHost() CtKey {
 	n := *k
-	n.SourcePort = byteorder.NetworkToHost(n.SourcePort).(uint16)
-	n.DestPort = byteorder.NetworkToHost(n.DestPort).(uint16)
+	n.SourcePort = byteorder.NetworkToHost16(n.SourcePort)
+	n.DestPort = byteorder.NetworkToHost16(n.DestPort)
 	return &n
 }
 
@@ -163,9 +183,9 @@ func (k *CtKey4) String() string {
 // GetKeyPtr returns the unsafe.Pointer for k.
 func (k *CtKey4) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 
-// Dump writes the contents of key to buffer and returns true if the value for
-// next header in the key is nonzero.
-func (k *CtKey4) Dump(buffer *bytes.Buffer, reverse bool) bool {
+// Dump writes the contents of key to sb and returns true if the value for next
+// header in the key is nonzero.
+func (k *CtKey4) Dump(sb *strings.Builder, reverse bool) bool {
 	var addrDest string
 
 	if k.NextHeader == 0 {
@@ -180,23 +200,23 @@ func (k *CtKey4) Dump(buffer *bytes.Buffer, reverse bool) bool {
 	}
 
 	if k.Flags&TUPLE_F_IN != 0 {
-		buffer.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
+		sb.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.SourcePort,
 			k.DestPort),
 		)
 	} else {
-		buffer.WriteString(fmt.Sprintf("%s OUT %s %d:%d ",
+		sb.WriteString(fmt.Sprintf("%s OUT %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.DestPort,
 			k.SourcePort),
 		)
 	}
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
-		buffer.WriteString("related ")
+		sb.WriteString("related ")
 	}
 
 	if k.Flags&TUPLE_F_SERVICE != 0 {
-		buffer.WriteString("service ")
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -250,9 +270,9 @@ func (k *CtKey4Global) String() string {
 // GetKeyPtr returns the unsafe.Pointer for k.
 func (k *CtKey4Global) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 
-// Dump writes the contents of key to buffer and returns true if the
-// value for next header in the key is nonzero.
-func (k *CtKey4Global) Dump(buffer *bytes.Buffer, reverse bool) bool {
+// Dump writes the contents of key to sb and returns true if the value for next
+// header in the key is nonzero.
+func (k *CtKey4Global) Dump(sb *strings.Builder, reverse bool) bool {
 	var addrSource, addrDest string
 
 	if k.NextHeader == 0 {
@@ -269,23 +289,23 @@ func (k *CtKey4Global) Dump(buffer *bytes.Buffer, reverse bool) bool {
 	}
 
 	if k.Flags&TUPLE_F_IN != 0 {
-		buffer.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
+		sb.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
 		)
 	} else {
-		buffer.WriteString(fmt.Sprintf("%s OUT %s:%d -> %s:%d ",
+		sb.WriteString(fmt.Sprintf("%s OUT %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
 		)
 	}
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
-		buffer.WriteString("related ")
+		sb.WriteString("related ")
 	}
 
 	if k.Flags&TUPLE_F_SERVICE != 0 {
-		buffer.WriteString("service ")
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -331,9 +351,9 @@ func (k *CtKey6) String() string {
 // GetKeyPtr returns the unsafe.Pointer for k.
 func (k *CtKey6) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 
-// Dump writes the contents of key to buffer and returns true if the value for
-// next header in the key is nonzero.
-func (k *CtKey6) Dump(buffer *bytes.Buffer, reverse bool) bool {
+// Dump writes the contents of key to sb and returns true if the value for next
+// header in the key is nonzero.
+func (k *CtKey6) Dump(sb *strings.Builder, reverse bool) bool {
 	var addrDest string
 
 	if k.NextHeader == 0 {
@@ -348,23 +368,23 @@ func (k *CtKey6) Dump(buffer *bytes.Buffer, reverse bool) bool {
 	}
 
 	if k.Flags&TUPLE_F_IN != 0 {
-		buffer.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
+		sb.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.SourcePort,
 			k.DestPort),
 		)
 	} else {
-		buffer.WriteString(fmt.Sprintf("%s OUT %s %d:%d ",
+		sb.WriteString(fmt.Sprintf("%s OUT %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.DestPort,
 			k.SourcePort),
 		)
 	}
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
-		buffer.WriteString("related ")
+		sb.WriteString("related ")
 	}
 
 	if k.Flags&TUPLE_F_SERVICE != 0 {
-		buffer.WriteString("service ")
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -380,6 +400,8 @@ func (k *CtKey6) GetTupleKey() tuple.TupleKey {
 type CtKey6Global struct {
 	tuple.TupleKey6Global
 }
+
+const SizeofCtKey6Global = int(unsafe.Sizeof(CtKey6Global{}))
 
 // NewValue creates a new bpf.MapValue.
 func (k *CtKey6Global) NewValue() bpf.MapValue { return &CtEntry{} }
@@ -418,9 +440,9 @@ func (k *CtKey6Global) String() string {
 // GetKeyPtr returns the unsafe.Pointer for k.
 func (k *CtKey6Global) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 
-// Dump writes the contents of key to buffer and returns true if the
-// value for next header in the key is nonzero.
-func (k *CtKey6Global) Dump(buffer *bytes.Buffer, reverse bool) bool {
+// Dump writes the contents of key to sb and returns true if the value for next
+// header in the key is nonzero.
+func (k *CtKey6Global) Dump(sb *strings.Builder, reverse bool) bool {
 	var addrSource, addrDest string
 
 	if k.NextHeader == 0 {
@@ -437,23 +459,23 @@ func (k *CtKey6Global) Dump(buffer *bytes.Buffer, reverse bool) bool {
 	}
 
 	if k.Flags&TUPLE_F_IN != 0 {
-		buffer.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
+		sb.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
 		)
 	} else {
-		buffer.WriteString(fmt.Sprintf("%s OUT %s:%d -> %s:%d ",
+		sb.WriteString(fmt.Sprintf("%s OUT %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
 		)
 	}
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
-		buffer.WriteString("related ")
+		sb.WriteString("related ")
 	}
 
 	if k.Flags&TUPLE_F_SERVICE != 0 {
-		buffer.WriteString("service ")
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -468,14 +490,14 @@ func (k *CtKey6Global) GetTupleKey() tuple.TupleKey {
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
 type CtEntry struct {
 	RxPackets uint64 `align:"rx_packets"`
-	RxBytes   uint64 `align:"rx_bytes"`
+	RxBytes   uint64 `align:"$union0"`
 	TxPackets uint64 `align:"tx_packets"`
 	TxBytes   uint64 `align:"tx_bytes"`
 	Lifetime  uint32 `align:"lifetime"`
 	Flags     uint16 `align:"rx_closing"`
 	// RevNAT is in network byte order
 	RevNAT           uint16 `align:"rev_nat_index"`
-	_                uint16 `align:"backend_id"`
+	IfIndex          uint16 `align:"ifindex"`
 	TxFlagsSeen      uint8  `align:"tx_flags_seen"`
 	RxFlagsSeen      uint8  `align:"rx_flags_seen"`
 	SourceSecurityID uint32 `align:"src_sec_id"`
@@ -483,48 +505,73 @@ type CtEntry struct {
 	LastRxReport     uint32 `align:"last_rx_report"`
 }
 
+const SizeofCtEntry = int(unsafe.Sizeof(CtEntry{}))
+
 // GetValuePtr returns the unsafe.Pointer for s.
 func (c *CtEntry) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(c) }
 
 const (
-	RxClosing  = 1 << 0
-	TxClosing  = 1 << 1
-	Nat64      = 1 << 2
-	LBLoopback = 1 << 3
-	SeenNonSyn = 1 << 4
-	NodePort   = 1 << 5
+	RxClosing = 1 << iota
+	TxClosing
+	Nat64
+	LBLoopback
+	SeenNonSyn
+	NodePort
+	ProxyRedirect
+	DSR
+	MaxFlags
 )
 
 func (c *CtEntry) flagsString() string {
-	var buffer bytes.Buffer
+	var sb strings.Builder
 
-	buffer.WriteString(fmt.Sprintf("Flags=%#04x [ ", c.Flags))
+	sb.WriteString(fmt.Sprintf("Flags=%#04x [ ", c.Flags))
 	if (c.Flags & RxClosing) != 0 {
-		buffer.WriteString("RxClosing ")
+		sb.WriteString("RxClosing ")
 	}
 	if (c.Flags & TxClosing) != 0 {
-		buffer.WriteString("TxClosing ")
+		sb.WriteString("TxClosing ")
 	}
 	if (c.Flags & Nat64) != 0 {
-		buffer.WriteString("Nat64 ")
+		sb.WriteString("Nat64 ")
 	}
 	if (c.Flags & LBLoopback) != 0 {
-		buffer.WriteString("LBLoopback ")
+		sb.WriteString("LBLoopback ")
 	}
 	if (c.Flags & SeenNonSyn) != 0 {
-		buffer.WriteString("SeenNonSyn ")
+		sb.WriteString("SeenNonSyn ")
 	}
 	if (c.Flags & NodePort) != 0 {
-		buffer.WriteString("NodePort ")
+		sb.WriteString("NodePort ")
 	}
-	buffer.WriteString("]")
-	return buffer.String()
+	if (c.Flags & ProxyRedirect) != 0 {
+		sb.WriteString("ProxyRedirect ")
+	}
+	if (c.Flags & DSR) != 0 {
+		sb.WriteString("DSR ")
+	}
+
+	unknownFlags := c.Flags
+	unknownFlags &^= MaxFlags - 1
+	if unknownFlags != 0 {
+		sb.WriteString(fmt.Sprintf("Unknown=%#04x ", unknownFlags))
+	}
+	sb.WriteString("]")
+	return sb.String()
 }
 
-// String returns the readable format
-func (c *CtEntry) String() string {
-	return fmt.Sprintf("expires=%d RxPackets=%d RxBytes=%d RxFlagsSeen=%#02x LastRxReport=%d TxPackets=%d TxBytes=%d TxFlagsSeen=%#02x LastTxReport=%d %s RevNAT=%d SourceSecurityID=%d \n",
+func (c *CtEntry) StringWithTimeDiff(toRemSecs func(uint32) string) string {
+
+	var timeDiff string
+	if toRemSecs != nil {
+		timeDiff = fmt.Sprintf(" (%s)", toRemSecs(c.Lifetime))
+	} else {
+		timeDiff = ""
+	}
+
+	return fmt.Sprintf("expires=%d%s RxPackets=%d RxBytes=%d RxFlagsSeen=%#02x LastRxReport=%d TxPackets=%d TxBytes=%d TxFlagsSeen=%#02x LastTxReport=%d %s RevNAT=%d SourceSecurityID=%d IfIndex=%d \n",
 		c.Lifetime,
+		timeDiff,
 		c.RxPackets,
 		c.RxBytes,
 		c.RxFlagsSeen,
@@ -534,6 +581,12 @@ func (c *CtEntry) String() string {
 		c.TxFlagsSeen,
 		c.LastTxReport,
 		c.flagsString(),
-		byteorder.NetworkToHost(c.RevNAT),
-		c.SourceSecurityID)
+		byteorder.NetworkToHost16(c.RevNAT),
+		c.SourceSecurityID,
+		c.IfIndex)
+}
+
+// String returns the readable format
+func (c *CtEntry) String() string {
+	return c.StringWithTimeDiff(nil)
 }

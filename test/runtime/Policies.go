@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
@@ -62,41 +51,50 @@ var _ = Describe("RuntimePolicies", func() {
 		vm            *helpers.SSHMeta
 		monitorStop   = func() error { return nil }
 		initContainer string
-		cleanup       = func() { return }
+		testStartTime time.Time
 	)
 
 	BeforeAll(func() {
 		vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
+
+		// We need to stop and start Cilium separately (vs. doing a restart) to
+		// allow us to validate only the logs of the startup. The stop may
+		// contain "bad" log messages but they are expected (abrupt stop during
+		// endpoint regeneration).
+		vm.ExecWithSudo("systemctl stop cilium").ExpectSuccess("Failed trying to stop cilium via systemctl")
+		ExpectCiliumNotRunning(vm)
+		testStartTime = time.Now()
+
 		// Make sure that Cilium is started with appropriate CLI options
 		// (specifically to exclude the local addresses that are populated for
 		// CIDR policy tests).
-		Expect(vm.SetUpCilium()).To(BeNil())
+		Expect(vm.SetUpCiliumWithHubble()).To(BeNil())
 		ExpectCiliumReady(vm)
 		vm.SampleContainersActions(helpers.Create, helpers.CiliumDockerNetwork)
 		vm.PolicyDelAll()
 
 		initContainer = "initContainer"
 
-		areEndpointsReady := vm.WaitEndpointsReady()
-		Expect(areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
+
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 	})
 
 	BeforeEach(func() {
 		ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementDefault)
-		cleanup = func() { return }
 	})
 
 	AfterEach(func() {
 		vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
-		cleanup()
 	})
 
 	JustBeforeEach(func() {
-		monitorStop = vm.MonitorStart()
+		_, monitorStop = vm.MonitorStart()
+		testStartTime = time.Now()
 	})
 
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 		Expect(monitorStop()).To(BeNil(), "cannot stop monitor command")
 	})
 
@@ -243,8 +241,7 @@ var _ = Describe("RuntimePolicies", func() {
 
 		status := vm.PolicyDelAll()
 		status.ExpectSuccess()
-
-		vm.WaitEndpointsReady()
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		connectivityTest(allRequests, helpers.App1, helpers.Httpd1, true)
 		connectivityTest(allRequests, helpers.App2, helpers.Httpd1, true)
@@ -266,8 +263,7 @@ var _ = Describe("RuntimePolicies", func() {
 		By("Disabling all the policies. All should work")
 
 		vm.PolicyDelAll().ExpectSuccess("cannot delete the policy")
-
-		vm.WaitEndpointsReady()
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		for _, app := range []string{helpers.App1, helpers.App2} {
 			connectivityTest(allRequests, app, helpers.Httpd1, true)
@@ -313,7 +309,7 @@ var _ = Describe("RuntimePolicies", func() {
 
 		By("Uninstalling policy")
 		vm.PolicyDelAll().ExpectSuccess("Cannot delete all policies")
-		vm.WaitEndpointsReady()
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		By("Canceling background connections from app2 to httpd1")
 		cancel()
@@ -366,8 +362,7 @@ var _ = Describe("RuntimePolicies", func() {
 
 		status := vm.PolicyDelAll()
 		status.ExpectSuccess()
-
-		vm.WaitEndpointsReady()
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		connectivityTest(allRequests, helpers.App1, helpers.Httpd1, true)
 		connectivityTest(allRequests, helpers.App2, helpers.Httpd1, true)
@@ -416,7 +411,7 @@ var _ = Describe("RuntimePolicies", func() {
 
 		status = vm.PolicyDelAll()
 		status.ExpectSuccess()
-		vm.WaitEndpointsReady()
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		connectivityTest(allRequests, helpers.App1, helpers.Httpd1, true)
 		connectivityTest(allRequests, helpers.App2, helpers.Httpd1, true)
@@ -501,6 +496,8 @@ var _ = Describe("RuntimePolicies", func() {
 		_, err := vm.PolicyImportAndWait(vm.GetFullPath(policiesL3DependentL7EgressJSON), helpers.HelperTimeout)
 		Expect(err).Should(BeNil(), "unable to import %s", policiesL3DependentL7EgressJSON)
 
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
+
 		endpointIDS, err := vm.GetEndpointsIds()
 		Expect(err).To(BeNil(), "Unable to get IDs of endpoints")
 
@@ -545,70 +542,108 @@ var _ = Describe("RuntimePolicies", func() {
 		checkProxyStatistics(app3EndpointID, 2, 4, 2, 2, 2)
 	})
 
-	It("Checks CIDR L3 Policy", func() {
+	Context("CIDR L3 Policy", func() {
+		var (
+			httpd1DockerNetworking        map[string]string
+			ipv4Prefix, ipv6Prefix        string
+			ipv4Address, ipv4PrefixExcept string
+			worldIP                       string
+		)
 
-		ipv4OtherHost := "192.168.254.111"
-		ipv4OtherNet := "99.11.0.0/16"
-		httpd2Label := "id.httpd2"
-		httpd1Label := "id.httpd1"
-		app3Label := "id.app3"
-
-		logger.WithFields(logrus.Fields{
-			"IPv4_host":       helpers.FakeIPv4WorldAddress,
-			"IPv4_other_host": ipv4OtherHost,
-			"IPv4_other_net":  ipv4OtherNet,
-			"IPv6_host":       helpers.FakeIPv6WorldAddress}).
-			Info("VM IP address configuration")
-
-		// If the pseudo host IPs have not been removed since the last run but
-		// Cilium was restarted, the IPs may have been picked up as valid host
-		// IPs. Remove them from the list so they are not regarded as localhost
-		// entries.
-		// Don't care about success or failure as the BPF endpoint may not even be
-		// present; this is best-effort.
-		_ = vm.ExecCilium(fmt.Sprintf("bpf endpoint delete %s", helpers.FakeIPv4WorldAddress))
-		_ = vm.ExecCilium(fmt.Sprintf("bpf endpoint delete %s", helpers.FakeIPv6WorldAddress))
-
-		httpd1DockerNetworking, err := vm.ContainerInspectNet(helpers.Httpd1)
-		Expect(err).Should(BeNil(), fmt.Sprintf(
-			"could not get container %s Docker networking", helpers.Httpd1))
-
-		ipv6Prefix := fmt.Sprintf("%s/112", httpd1DockerNetworking["IPv6Gateway"])
-		ipv4Address := httpd1DockerNetworking[helpers.IPv4]
-
-		// Get prefix of node-local endpoints.
-		By("Getting IPv4 and IPv6 prefixes of node-local endpoints")
-		getIpv4Prefix := vm.Exec(fmt.Sprintf(`expr %s : '\([0-9]*\.[0-9]*\.\)'`, ipv4Address)).SingleOut()
-		ipv4Prefix := fmt.Sprintf("%s0.0/16", getIpv4Prefix)
-		getIpv4PrefixExcept := vm.Exec(fmt.Sprintf(`expr %s : '\([0-9]*\.[0-9]*\.\)'`, ipv4Address)).SingleOut()
-		ipv4PrefixExcept := fmt.Sprintf(`%s0.0/18`, getIpv4PrefixExcept)
-
-		By("IPV6 Prefix: %q", ipv6Prefix)
-		By("IPV4 Address Endpoint: %q", ipv4Address)
-		By("IPV4 Prefix: %q", ipv4Prefix)
-		By("IPV4 Prefix Except: %q", ipv4PrefixExcept)
-
-		By("Setting PolicyEnforcement to always enforce (default-deny)")
-		ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementAlways)
+		const (
+			ipv4OtherHost = "192.168.254.111"
+			ipv4OtherNet  = "99.11.0.0/16"
+			httpd2Label   = "id.httpd2"
+			httpd1Label   = "id.httpd1"
+			app3Label     = "id.app3"
+			worldPrefix   = "192.168.2.0/24"
+		)
 
 		// Delete the pseudo-host IPs that we added to localhost after test
 		// finishes. Don't care about success; this is best-effort.
-		cleanup = func() {
+		cleanup := func() {
+			_ = vm.ContainerRm(helpers.WorldHttpd1)
+			_ = vm.NetworkDelete(helpers.WorldDockerNetwork)
 			_ = vm.RemoveIPFromLoopbackDevice(fmt.Sprintf("%s/32", helpers.FakeIPv4WorldAddress))
 			_ = vm.RemoveIPFromLoopbackDevice(fmt.Sprintf("%s/128", helpers.FakeIPv6WorldAddress))
 		}
 
-		By("Adding Pseudo-Host IPs to localhost")
-		vm.AddIPToLoopbackDevice(fmt.Sprintf("%s/32", helpers.FakeIPv4WorldAddress)).ExpectSuccess("Unable to add %s to pseudo-host IP to localhost", helpers.FakeIPv4WorldAddress)
-		vm.AddIPToLoopbackDevice(fmt.Sprintf("%s/128", helpers.FakeIPv6WorldAddress)).ExpectSuccess("Unable to add %s to pseudo-host IP to localhost", helpers.FakeIPv6WorldAddress)
+		BeforeAll(func() {
+			var err error
 
-		By("Pinging host IPv4 from httpd2 (should NOT work due to default-deny PolicyEnforcement mode)")
+			httpd1DockerNetworking, err = vm.ContainerInspectNet(helpers.Httpd1)
+			Expect(err).Should(BeNil(), fmt.Sprintf(
+				"could not get container %s Docker networking", helpers.Httpd1))
 
-		res := vm.ContainerExec(helpers.Httpd2, helpers.Ping(helpers.FakeIPv4WorldAddress))
-		res.ExpectFail("Unexpected success pinging host (%s) from %s", helpers.FakeIPv4WorldAddress, helpers.Httpd2)
+			ipv6Prefix = fmt.Sprintf("%s/112", httpd1DockerNetworking["IPv6Gateway"])
+			ipv4Address = httpd1DockerNetworking[helpers.IPv4]
 
-		By("Importing L3 CIDR Policy for IPv4 Egress Allowing Egress to %q, %q from %q", ipv4OtherHost, ipv4OtherHost, httpd2Label)
-		script := fmt.Sprintf(`
+			// Get prefix of node-local endpoints.
+			By("Getting IPv4 and IPv6 prefixes of node-local endpoints")
+			getIpv4Prefix := vm.Exec(fmt.Sprintf(`expr %s : '\([0-9]*\.[0-9]*\.\)'`, ipv4Address)).SingleOut()
+			ipv4Prefix = fmt.Sprintf("%s0.0/16", getIpv4Prefix)
+			getIpv4PrefixExcept := vm.Exec(fmt.Sprintf(`expr %s : '\([0-9]*\.[0-9]*\.\)'`, ipv4Address)).SingleOut()
+			ipv4PrefixExcept = fmt.Sprintf(`%s0.0/18`, getIpv4PrefixExcept)
+
+			By("Adding Pseudo-Host IPs to localhost")
+			cleanup()
+			vm.AddIPToLoopbackDevice(fmt.Sprintf("%s/32", helpers.FakeIPv4WorldAddress)).ExpectSuccess("Unable to add %s to pseudo-host IP to localhost", helpers.FakeIPv4WorldAddress)
+			vm.AddIPToLoopbackDevice(fmt.Sprintf("%s/128", helpers.FakeIPv6WorldAddress)).ExpectSuccess("Unable to add %s to pseudo-host IP to localhost", helpers.FakeIPv6WorldAddress)
+
+			netOptions := "-o com.docker.network.bridge.enable_ip_masquerade=false"
+			res := vm.NetworkCreateWithOptions(helpers.WorldDockerNetwork, worldPrefix, false, netOptions)
+			res.ExpectSuccess("Docker network for world containers could not be created")
+			res = vm.NetworkGet(helpers.WorldDockerNetwork)
+			res.ExpectSuccess("Docker network for world containers is unavailable")
+
+			vm.ContainerCreate(helpers.WorldHttpd1, constants.HttpdImage, helpers.WorldDockerNetwork, fmt.Sprintf("-l id.%s", helpers.WorldHttpd1))
+			res = vm.ContainerInspect(helpers.WorldHttpd1)
+			res.ExpectSuccess("World container is not ready")
+
+			worldNet, err := vm.ContainerInspectOtherNet(helpers.WorldHttpd1, helpers.WorldDockerNetwork)
+			Expect(err).Should(BeNil(), fmt.Sprintf(
+				"could not get container %s Docker networking", helpers.WorldHttpd1))
+			worldIP = worldNet[helpers.IPv4]
+		})
+
+		AfterAll(func() {
+			cleanup()
+		})
+
+		BeforeEach(func() {
+			logger.WithFields(logrus.Fields{
+				"IPv4_host":       helpers.FakeIPv4WorldAddress,
+				"IPv4_other_host": ipv4OtherHost,
+				"IPv4_other_net":  ipv4OtherNet,
+				"IPv6_host":       helpers.FakeIPv6WorldAddress}).
+				Info("VM IP address configuration")
+
+			// If the pseudo host IPs have not been removed since the last run but
+			// Cilium was restarted, the IPs may have been picked up as valid host
+			// IPs. Remove them from the list so they are not regarded as localhost
+			// entries.
+			// Don't care about success or failure as the BPF endpoint may not even be
+			// present; this is best-effort.
+			_ = vm.ExecCilium(fmt.Sprintf("bpf endpoint delete %s", helpers.FakeIPv4WorldAddress))
+			_ = vm.ExecCilium(fmt.Sprintf("bpf endpoint delete %s", helpers.FakeIPv6WorldAddress))
+
+			By("IPV6 Prefix: %q", ipv6Prefix)
+			By("IPV4 Address Endpoint: %q", ipv4Address)
+			By("IPV4 Prefix: %q", ipv4Prefix)
+			By("IPV4 Prefix Except: %q", ipv4PrefixExcept)
+
+			By("Setting PolicyEnforcement to always enforce (default-deny)")
+			ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementAlways)
+		})
+
+		It("validates toCIDR", func() {
+			By("Pinging host IPv4 from httpd2 (should NOT work due to default-deny PolicyEnforcement mode)")
+
+			res := vm.ContainerExec(helpers.Httpd2, helpers.Ping(helpers.FakeIPv4WorldAddress))
+			res.ExpectFail("Unexpected success pinging host (%s) from %s", helpers.FakeIPv4WorldAddress, helpers.Httpd2)
+
+			By("Importing L3 CIDR Policy for IPv4 Egress Allowing Egress to %q, %q from %q", ipv4OtherHost, ipv4OtherHost, httpd2Label)
+			script := fmt.Sprintf(`
 		[{
 			"endpointSelector": {"matchLabels":{"%s":""}},
 			"egress":
@@ -619,19 +654,19 @@ var _ = Describe("RuntimePolicies", func() {
 				]
 			}]
 		}]`, httpd2Label, ipv4OtherHost, ipv4OtherHost)
-		_, err = vm.PolicyRenderAndImport(script)
-		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+			_, err := vm.PolicyRenderAndImport(script)
+			Expect(err).To(BeNil(), "Unable to import policy: %s", err)
 
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping(helpers.FakeIPv4WorldAddress))
-		res.ExpectSuccess("Unexpected failure pinging host (%s) from %s", helpers.FakeIPv4WorldAddress, helpers.Httpd2)
-		vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+			res = vm.ContainerExec(helpers.Httpd2, helpers.Ping(helpers.FakeIPv4WorldAddress))
+			res.ExpectSuccess("Unexpected failure pinging host (%s) from %s", helpers.FakeIPv4WorldAddress, helpers.Httpd2)
+			vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
 
-		By("Pinging host IPv6 from httpd2 (should NOT work because we did not specify IPv6 CIDR of host as part of previously imported policy)")
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(helpers.FakeIPv6WorldAddress))
-		res.ExpectFail("Unexpected success pinging host (%s) from %s", helpers.FakeIPv6WorldAddress, helpers.Httpd2)
+			By("Pinging host IPv6 from httpd2 (should NOT work because we did not specify IPv6 CIDR of host as part of previously imported policy)")
+			res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(helpers.FakeIPv6WorldAddress))
+			res.ExpectFail("Unexpected success pinging host (%s) from %s", helpers.FakeIPv6WorldAddress, helpers.Httpd2)
 
-		By("Importing L3 CIDR Policy for IPv6 Egress")
-		script = fmt.Sprintf(`
+			By("Importing L3 CIDR Policy for IPv6 Egress")
+			script = fmt.Sprintf(`
 		[{
 			"endpointSelector": {"matchLabels":{"%s":""}},
 			"egress": [{
@@ -640,18 +675,18 @@ var _ = Describe("RuntimePolicies", func() {
 				]
 			}]
 		}]`, httpd2Label, helpers.FakeIPv6WorldAddress)
-		_, err = vm.PolicyRenderAndImport(script)
-		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+			_, err = vm.PolicyRenderAndImport(script)
+			Expect(err).To(BeNil(), "Unable to import policy: %s", err)
 
-		By("Pinging host IPv6 from httpd2 (should work because policy allows IPv6 CIDR %q)", helpers.FakeIPv6WorldAddress)
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(helpers.FakeIPv6WorldAddress))
-		res.ExpectSuccess("Unexpected failure pinging host (%s) from %s", helpers.FakeIPv6WorldAddress, helpers.Httpd2)
-		vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+			By("Pinging host IPv6 from httpd2 (should work because policy allows IPv6 CIDR %q)", helpers.FakeIPv6WorldAddress)
+			res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(helpers.FakeIPv6WorldAddress))
+			res.ExpectSuccess("Unexpected failure pinging host (%s) from %s", helpers.FakeIPv6WorldAddress, helpers.Httpd2)
+			vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
 
-		// This test case checks that ping works even without explicit CIDR policies
-		// imported.
-		By("Importing L3 Label-Based Policy Allowing traffic from httpd2 to httpd1")
-		script = fmt.Sprintf(`
+			// This test case checks that ping works even without explicit CIDR policies
+			// imported.
+			By("Importing L3 Label-Based Policy Allowing traffic from httpd2 to httpd1")
+			script = fmt.Sprintf(`
 		[{
 			"endpointSelector": {"matchLabels":{"%[1]s":""}},
 			"ingress": [{
@@ -668,26 +703,28 @@ var _ = Describe("RuntimePolicies", func() {
 				]
 			}]
 		}]`, httpd1Label, httpd2Label)
-		_, err = vm.PolicyRenderAndImport(script)
-		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+			_, err = vm.PolicyRenderAndImport(script)
+			Expect(err).To(BeNil(), "Unable to import policy: %s", err)
 
-		By("Pinging httpd1 IPV4 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping(httpd1DockerNetworking[helpers.IPv4]))
-		res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv4], helpers.Httpd2)
-		By("Pinging httpd1 IPv6 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(httpd1DockerNetworking[helpers.IPv6]))
-		res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv6], helpers.Httpd2)
-		By("Pinging httpd1 IPv4 from app3 (should NOT work because app3 hasn't been whitelisted to communicate with httpd1)")
-		res = vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
-		res.ExpectFail("Unexpected success pinging %s IPv4 from %s", helpers.Httpd1, helpers.App3)
-		By("Pinging httpd1 IPv6 from app3 (should NOT work because app3 hasn't been whitelisted to communicate with httpd1)")
-		res = vm.ContainerExec(helpers.App3, helpers.Ping6(helpers.Httpd1))
-		res.ExpectFail("Unexpected success pinging %s IPv6 from %s", helpers.Httpd1, helpers.App3)
-		vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+			By("Pinging httpd1 IPV4 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
+			res = vm.ContainerExec(helpers.Httpd2, helpers.Ping(httpd1DockerNetworking[helpers.IPv4]))
+			res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv4], helpers.Httpd2)
+			By("Pinging httpd1 IPv6 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
+			res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(httpd1DockerNetworking[helpers.IPv6]))
+			res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv6], helpers.Httpd2)
+			By("Pinging httpd1 IPv4 from app3 (should NOT work because app3 hasn't been whitelisted to communicate with httpd1)")
+			res = vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
+			res.ExpectFail("Unexpected success pinging %s IPv4 from %s", helpers.Httpd1, helpers.App3)
+			By("Pinging httpd1 IPv6 from app3 (should NOT work because app3 hasn't been whitelisted to communicate with httpd1)")
+			res = vm.ContainerExec(helpers.App3, helpers.Ping6(helpers.Httpd1))
+			res.ExpectFail("Unexpected success pinging %s IPv6 from %s", helpers.Httpd1, helpers.App3)
+			vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+		})
 
-		// Checking combined policy allowing traffic from IPv4 and IPv6 CIDR ranges.
-		By("Importing Policy Allowing Ingress From %q --> %q And From CIDRs %q, %q", helpers.Httpd2, helpers.Httpd1, ipv4Prefix, ipv6Prefix)
-		script = fmt.Sprintf(`
+		It("validates fromCIDR", func() {
+			// Checking combined policy allowing traffic from IPv4 and IPv6 CIDR ranges.
+			By("Importing Policy Allowing Ingress From %q --> %q And From CIDRs %q, %q, %q", helpers.Httpd2, helpers.Httpd1, ipv4Prefix, ipv6Prefix, worldPrefix)
+			policy := fmt.Sprintf(`
 		[{
 			"endpointSelector": {"matchLabels":{"%[1]s":""}},
 			"ingress": [{
@@ -696,6 +733,7 @@ var _ = Describe("RuntimePolicies", func() {
 				]
 			}, {
 				"fromCIDR": [
+					"%s",
 					"%s",
 					"%s"
 				]
@@ -708,32 +746,38 @@ var _ = Describe("RuntimePolicies", func() {
 					{"matchLabels":{"%[1]s":""}}
 				]
 			}]
-		}]`, httpd1Label, httpd2Label, ipv4Prefix, ipv6Prefix)
+		}]`, httpd1Label, httpd2Label, ipv4Prefix, ipv6Prefix, worldPrefix)
 
-		_, err = vm.PolicyRenderAndImport(script)
-		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+			_, err := vm.PolicyRenderAndImport(policy)
+			Expect(err).To(BeNil(), "Unable to import policy: %s", err)
 
-		By("Pinging httpd1 IPV4 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping(httpd1DockerNetworking[helpers.IPv4]))
-		res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv4], helpers.Httpd2)
+			// Checks from a Cilium endpoint
+			By("Pinging httpd1 IPV4 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
+			res := vm.ContainerExec(helpers.Httpd2, helpers.Ping(httpd1DockerNetworking[helpers.IPv4]))
+			res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv4], helpers.Httpd2)
 
-		By("Pinging httpd1 IPv6 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
-		res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(httpd1DockerNetworking[helpers.IPv6]))
-		res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv6], helpers.Httpd2)
+			By("Pinging httpd1 IPv6 from httpd2 (should work because we allowed traffic to httpd1 labels from httpd2 labels)")
+			res = vm.ContainerExec(helpers.Httpd2, helpers.Ping6(httpd1DockerNetworking[helpers.IPv6]))
+			res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv6], helpers.Httpd2)
 
-		By("Pinging httpd1 IPv4 %q from app3 (shouldn't work because CIDR policies don't apply to endpoint-endpoint communication)", ipv4Prefix)
-		res = vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
-		res.ExpectFail("Unexpected success pinging %s IPv4 from %s", helpers.Httpd1, helpers.App3)
+			By("Pinging httpd1 IPv4 %q from app3 (shouldn't work because CIDR policies don't apply to endpoint-endpoint communication)", ipv4Prefix)
+			res = vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
+			res.ExpectFail("Unexpected success pinging %s IPv4 from %s", helpers.Httpd1, helpers.App3)
 
-		By("Pinging httpd1 IPv6 %q from app3 (shouldn't work because CIDR policies don't apply to endpoint-endpoint communication)", ipv6Prefix)
-		res = vm.ContainerExec(helpers.App3, helpers.Ping6(helpers.Httpd1))
-		res.ExpectFail("Unexpected success pinging %s IPv6 from %s", helpers.Httpd1, helpers.App3)
+			By("Pinging httpd1 IPv6 %q from app3 (shouldn't work because CIDR policies don't apply to endpoint-endpoint communication)", ipv6Prefix)
+			res = vm.ContainerExec(helpers.App3, helpers.Ping6(helpers.Httpd1))
+			res.ExpectFail("Unexpected success pinging %s IPv6 from %s", helpers.Httpd1, helpers.App3)
 
-		vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+			// Ping from a source outside Cilium control
+			By(fmt.Sprintf("Pinging httpd1 IPV4 from world container (should work because we allowed traffic to httpd1 labels from prefix %s)", worldPrefix))
+			res = vm.ContainerExec(helpers.WorldHttpd1, helpers.Ping(httpd1DockerNetworking[helpers.IPv4]))
+			res.ExpectSuccess("Unexpected failure pinging %s (%s) from %s", helpers.Httpd1, httpd1DockerNetworking[helpers.IPv4], helpers.WorldHttpd1)
 
-		// Make sure that combined label-based and CIDR-based policy works.
-		By("Importing Policy Allowing Ingress From %s --> %s And From CIDRs %s", helpers.Httpd2, helpers.Httpd1, ipv4OtherNet)
-		script = fmt.Sprintf(`
+			vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+
+			// Make sure that combined label-based and CIDR-based policy works.
+			By("Importing Policy Allowing Ingress From %s --> %s And From CIDRs %s", helpers.Httpd2, helpers.Httpd1, ipv4OtherNet)
+			policy = fmt.Sprintf(`
 		[{
 			"endpointSelector": {"matchLabels":{"%[1]s":""}},
 			"ingress": [{
@@ -754,22 +798,22 @@ var _ = Describe("RuntimePolicies", func() {
 				]
 			}]
 		}]`, httpd1Label, httpd2Label, ipv4OtherNet, app3Label)
-		_, err = vm.PolicyRenderAndImport(script)
-		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+			_, err = vm.PolicyRenderAndImport(policy)
+			Expect(err).To(BeNil(), "Unable to import policy: %s", err)
 
-		By("Pinging httpd1 IPv4 from app3 (should NOT work because we only allow traffic from %q to %q)", httpd2Label, httpd1Label)
-		res = vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
-		res.ExpectFail("Unexpected success pinging %s IPv4 from %s", helpers.Httpd1, helpers.App3)
+			By("Pinging httpd1 IPv4 from app3 (should NOT work because we only allow traffic from %q to %q)", httpd2Label, httpd1Label)
+			res = vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
+			res.ExpectFail("Unexpected success pinging %s IPv4 from %s", helpers.Httpd1, helpers.App3)
 
-		By("Pinging httpd1 IPv6 from app3 (should NOT work because we only allow traffic from %q to %q)", httpd2Label, httpd1Label)
-		res = vm.ContainerExec(helpers.App3, helpers.Ping6(helpers.Httpd1))
-		res.ExpectFail("Unexpected success pinging %s IPv6 from %s", helpers.Httpd1, helpers.App3)
+			By("Pinging httpd1 IPv6 from app3 (should NOT work because we only allow traffic from %q to %q)", httpd2Label, httpd1Label)
+			res = vm.ContainerExec(helpers.App3, helpers.Ping6(helpers.Httpd1))
+			res.ExpectFail("Unexpected success pinging %s IPv6 from %s", helpers.Httpd1, helpers.App3)
 
-		vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
+			vm.PolicyDelAll().ExpectSuccess("Unable to delete all policies")
 
-		By("Testing CIDR Exceptions in Cilium Policy")
-		By("Importing Policy Allowing Ingress From %q --> %q And From CIDRs %q Except %q", helpers.Httpd2, helpers.Httpd1, ipv4Prefix, ipv4PrefixExcept)
-		script = fmt.Sprintf(`
+			By("Testing CIDR Exceptions in Cilium Policy")
+			By("Importing Policy Allowing Ingress From %q --> %q And From CIDRs %q Except %q", helpers.Httpd2, helpers.Httpd1, worldPrefix, worldIP)
+			policy = fmt.Sprintf(`
 		[{
 			"endpointSelector": {"matchLabels":{"%s":""}},
 			"ingress": [{
@@ -785,10 +829,14 @@ var _ = Describe("RuntimePolicies", func() {
 				}
 				]
 			}]
-		}]`, httpd1Label, httpd2Label, ipv4Prefix, ipv4PrefixExcept)
-		_, err = vm.PolicyRenderAndImport(script)
-		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+		}]`, httpd1Label, httpd2Label, worldPrefix, fmt.Sprintf("%s/32", worldIP))
+			_, err = vm.PolicyRenderAndImport(policy)
+			Expect(err).To(BeNil(), "Unable to import policy: %s", err)
 
+			By(fmt.Sprintf("Pinging httpd1 IPV4 from world container (should not work because the IP %s falls within the CIDR exception range)", worldIP))
+			res = vm.ContainerExec(helpers.WorldHttpd1, helpers.Ping(httpd1DockerNetworking[helpers.IPv4]))
+			res.ExpectFail("Unexpected success pinging %s IPv4 from %s", httpd1DockerNetworking[helpers.IPv4], helpers.WorldHttpd1)
+		})
 	})
 
 	It("Extended HTTP Methods tests", func() {
@@ -906,8 +954,7 @@ var _ = Describe("RuntimePolicies", func() {
 			_, err := vm.PolicyRenderAndImport(policy)
 			ExpectWithOffset(1, err).To(BeNil(), "Unable to import policy: %s\n%s", err, policy)
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			ExpectWithOffset(1, areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+			ExpectWithOffset(1, vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			checkEgressToWorld()
 		}
@@ -1057,8 +1104,7 @@ var _ = Describe("RuntimePolicies", func() {
 			_, err := vm.PolicyRenderAndImport(policy)
 			ExpectWithOffset(1, err).To(BeNil(), "Unable to import policy: %s\n%s", err, policy)
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			ExpectWithOffset(1, areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+			ExpectWithOffset(1, vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 		}
 
 		// curlWithRetry retries the curl, to make sure that allowed curls don't
@@ -1177,7 +1223,7 @@ var _ = Describe("RuntimePolicies", func() {
 			// docker network inspect bridge | jq -r '.[0]."IPAM"."Config"[0]."Gateway"'
 			res = vm.NetworkGet("bridge")
 			res.ExpectSuccess("No docker bridge available for testing egress CIDR within host")
-			filter := fmt.Sprintf(`{ [0].IPAM.Config[0].Gateway }`)
+			filter := `{ [0].IPAM.Config[0].Gateway }`
 			obj, err := res.FindResults(filter)
 			Expect(err).NotTo(HaveOccurred(), "Error occurred while finding docker bridge IP")
 			Expect(obj).To(HaveLen(1), "Unexpectedly found more than one IPAM config element for docker bridge")
@@ -1427,9 +1473,9 @@ var _ = Describe("RuntimePolicies", func() {
 		}
 
 		It("tests ingress", func() {
+			By("Starting hubble observe in background")
 			ctx, cancel := context.WithCancel(context.Background())
-			By("Starting cilium monitor in background")
-			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
+			hubbleRes := vm.HubbleObserveFollow(ctx, "--type", "drop", "--type", "trace:to-endpoint", "--protocol", "ICMPv4")
 			defer cancel()
 
 			By("Creating an endpoint")
@@ -1443,26 +1489,37 @@ var _ = Describe("RuntimePolicies", func() {
 			res := vm.Exec(helpers.Ping(endpointIP.IPV4))
 			res.ExpectFail("Unexpectedly able to ping endpoint with no ingress policy")
 
-			By("Testing cilium monitor output")
-			err := monitorRes.WaitUntilMatch("xx drop (Policy denied")
+			By("Testing hubble observe output")
+			err := hubbleRes.WaitUntilMatchFilterLine(
+				`{.source.labels} -> {.destination.ID} {.destination.labels} {.IP.destination} : {.verdict} {.event_type.type}`,
+				fmt.Sprintf(`["reserved:host"] -> %s ["container:somelabel"] %s : DROPPED 1`, endpointID, endpointIP.IPV4))
 			Expect(err).To(BeNil(), "Default drop on ingress failed")
-			monitorRes.ExpectDoesNotContain(fmt.Sprintf("-> endpoint %s ", endpointID),
+			hubbleRes.ExpectDoesNotContainFilterLine(
+				`{.source.labels} -> {.destination.ID} {.destination.labels} {.IP.destination} : {.verdict} {.event_type.type}`,
+				fmt.Sprintf(`["reserved:host"] -> %s ["container:somelabel"] %s : FORWARDED 4`, endpointID, endpointIP.IPV4),
 				"Unexpected ingress traffic to endpoint")
 		})
 
 		It("tests egress", func() {
-			By("Starting cilium monitor in background")
+			hostIP := "10.0.2.15"
+
+			By("Starting hubble observe in background")
 			ctx, cancel := context.WithCancel(context.Background())
-			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
+			hubbleRes := vm.HubbleObserveFollow(ctx, "--type", "drop", "--type", "trace:to-endpoint", "--protocol", "ICMPv4")
 			defer cancel()
 
 			By("Creating an endpoint")
-			endpointID, _ := createEndpoint("ping", "10.0.2.15")
+			endpointID, _ := createEndpoint("ping", hostIP)
 
-			By("Testing cilium monitor output")
-			err := monitorRes.WaitUntilMatch("xx drop (Policy denied")
+			By("Testing hubble observe output")
+			err := hubbleRes.WaitUntilMatchFilterLine(
+				`{.source.ID} {.source.labels} -> {.destination.labels} {.IP.destination} : {.verdict} {.event_type.type}`,
+				fmt.Sprintf(`%s ["container:somelabel"] -> ["reserved:host"] %s : DROPPED 1`, endpointID, hostIP))
 			Expect(err).To(BeNil(), "Default drop on egress failed")
-			monitorRes.ExpectDoesNotContain(fmt.Sprintf("-> endpoint %s ", endpointID),
+
+			hubbleRes.ExpectDoesNotContainFilterLine(
+				`{.source.labels} {.IP.source} -> {.destination.ID} : {.verdict} {.reply} {.event_type.type}`,
+				fmt.Sprintf(`["reserved:host"] %s -> %s : FORWARDED true 4`, hostIP, endpointID),
 				"Unexpected reply traffic to endpoint")
 		})
 
@@ -1476,10 +1533,13 @@ var _ = Describe("RuntimePolicies", func() {
 			})
 
 			It("tests ingress", func() {
+				By("Starting hubble observe in background")
 				ctx, cancel := context.WithCancel(context.Background())
-				By("Starting cilium monitor in background")
-				monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace --type policy-verdict")
+				hubbleRes := vm.HubbleObserveFollow(ctx, "--type", "policy-verdict", "--type", "trace:to-endpoint", "--protocol", "ICMPv4")
 				defer cancel()
+
+				By("Starting cilium monitor in background")
+				monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type policy-verdict")
 
 				By("Creating an endpoint")
 				endpointID, endpointIP := createEndpoint()
@@ -1488,33 +1548,70 @@ var _ = Describe("RuntimePolicies", func() {
 				res := vm.Exec(helpers.Ping(endpointIP.IPV4))
 				res.ExpectSuccess("Not able to ping endpoint with no ingress policy")
 
-				By("Testing cilium monitor output")
-				err := monitorRes.WaitUntilMatch("Policy verdict log")
+				// We might start pinging fast enough that the endpoint still has identity "init" / 5.
+				// In PolicyAuditMode, this means that the ping will succeed. Therefore we don't
+				// check for the source labels in the output (they can by either [reserved:init]
+				// or [container:somelabel]), only the endpoint ID.
+				By("Testing hubble observe output")
+				// Checks for a ingress policy verdict event (type 5)
+				err := hubbleRes.WaitUntilMatchFilterLine(
+					`{.source.labels} -> {.IP.destination} : {.verdict} {.event_type.type}`,
+					fmt.Sprintf(`["reserved:host"] -> %s : AUDIT 5`, endpointIP.IPV4))
 				Expect(err).To(BeNil(), "Default policy verdict on ingress failed")
-				monitorRes.ExpectContains(
-					fmt.Sprintf("local EP ID %s, remote ID 1, dst port 0, proto 1, ingress true, action allow", endpointID),
-					"No ingress policy log record",
-				)
-				monitorRes.ExpectContains(fmt.Sprintf("-> endpoint %s ", endpointID), "No ingress traffic to endpoint")
+				// Checks for the subsequent trace:to-endpoint event (type 4)
+				hubbleRes.ExpectContainsFilterLine(
+					`{.source.labels} -> {.destination.ID} {.destination.labels} {.IP.destination} : {.verdict} {.event_type.type}`,
+					fmt.Sprintf(`["reserved:host"] -> %s ["container:somelabel"] %s : FORWARDED 4`, endpointID, endpointIP.IPV4),
+					"No ingress traffic to endpoint")
+
+				By("Testing cilium monitor output")
+				auditVerdict := fmt.Sprintf("local EP ID %s, remote ID host, proto 1, ingress, action audit", endpointID)
+				monitorRes.WaitUntilMatch(auditVerdict)
+				monitorRes.ExpectContains(auditVerdict, "No ingress policy log record")
+
+				By("Testing cilium endpoint list output")
+				res = vm.Exec("cilium endpoint list")
+				res.ExpectMatchesRegexp(endpointID+"\\s*Disabled \\(Audit\\)\\s*Disabled \\(Audit\\)", "Endpoint is not in audit mode")
 			})
 
 			It("tests egress", func() {
-				By("Starting cilium monitor in background")
+				hostIP := "10.0.2.15"
+
+				By("Starting hubble observe in background")
 				ctx, cancel := context.WithCancel(context.Background())
-				monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace --type policy-verdict")
+				hubbleRes := vm.HubbleObserveFollow(ctx, "--type", "policy-verdict", "--type", "trace:to-endpoint", "--protocol", "ICMPv4")
 				defer cancel()
 
+				By("Starting cilium monitor in background")
+				monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type policy-verdict")
+
 				By("Creating an endpoint")
-				endpointID, _ := createEndpoint("ping", "10.0.2.15")
+				endpointID, _ := createEndpoint("ping", hostIP)
+
+				// We start pinging fast enough that the endpoint still has identity "init" / 5.
+				// In PolicyAuditMode, this means that the ping will succeed. Therefore we don't
+				// check for the source labels in the output (they can by either [reserved:init]
+				// or [container:somelabel]), only the endpoint ID.
+				By("Testing hubble observe output")
+				// Checks for the subsequent trace:to-endpoint event (type 4)
+				err := hubbleRes.WaitUntilMatchFilterLine(
+					`{.source.labels} {.IP.source} -> {.destination.ID} : {.verdict} {.reply} {.event_type.type}`,
+					fmt.Sprintf(`["reserved:host"] %s -> %s : FORWARDED true 4`, hostIP, endpointID))
+				Expect(err).To(BeNil(), "No ingress traffic to endpoint")
+				// Checks for a ingress policy verdict event (type 5)
+				hubbleRes.ExpectContainsFilterLine(
+					`{.source.ID} -> {.destination.labels} {.IP.destination} : {.verdict} {.event_type.type}`,
+					fmt.Sprintf(`%s -> ["reserved:host"] %s : AUDIT 5`, endpointID, hostIP),
+					"Default policy verdict on egress failed")
 
 				By("Testing cilium monitor output")
-				err := monitorRes.WaitUntilMatch("Policy verdict log")
-				Expect(err).To(BeNil(), "Default policy verdict on egress failed")
-				monitorRes.ExpectContains(
-					fmt.Sprintf("ID %s, remote ID 1, dst port 0, proto 1, ingress false, action allow", endpointID),
-					"No egress policy log record",
-				)
-				monitorRes.ExpectContains(fmt.Sprintf("-> endpoint %s ", endpointID), "No reply traffic to endpoint")
+				auditVerdict := fmt.Sprintf("ID %s, remote ID host, proto 1, egress, action audit", endpointID)
+				monitorRes.WaitUntilMatch(auditVerdict)
+				monitorRes.ExpectContains(auditVerdict, "No egress policy log record")
+
+				By("Testing cilium endpoint list output")
+				res := vm.Exec("cilium endpoint list")
+				res.ExpectMatchesRegexp(endpointID+"\\s*Disabled \\(Audit\\)\\s*Disabled \\(Audit\\)", "Endpoint is not in audit mode")
 			})
 		})
 	})
@@ -1532,9 +1629,9 @@ var _ = Describe("RuntimePolicies", func() {
 		})
 
 		It("Init Ingress Policy Test", func() {
-			By("Starting cilium monitor in background")
+			By("Starting hubble observe in background")
 			ctx, cancel := context.WithCancel(context.Background())
-			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
+			hubbleRes := vm.HubbleObserveFollow(ctx, "--type", "drop", "--type", "trace", "--protocol", "ICMPv4")
 			defer cancel()
 
 			By("Creating an endpoint")
@@ -1558,18 +1655,25 @@ var _ = Describe("RuntimePolicies", func() {
 			res = vm.Exec(helpers.Ping(endpointIP.IPV4))
 			res.ExpectSuccess("Cannot ping endpoint with init policy")
 
-			By("Testing cilium monitor output")
-			err = monitorRes.WaitUntilMatchRegexp(fmt.Sprintf(`-> endpoint %s flow [^ ]+ identity 1->`, endpointID))
+			By("Testing hubble observe output")
+			err = hubbleRes.WaitUntilMatchFilterLineTimeout(
+				`{.source.labels} -> {.destination.ID} {.IP.destination} : {.verdict}`,
+				fmt.Sprintf(`["reserved:host"] -> %s %s : FORWARDED`, endpointID, endpointIP.IPV4), 10*time.Second)
 			Expect(err).To(BeNil(), "Allow on ingress failed")
-			monitorRes.ExpectDoesNotMatchRegexp(fmt.Sprintf(`xx drop \(Policy denied\) flow [^ ]+ to endpoint %s, identity 1->[^0]`, endpointID), "Unexpected drop")
+
+			// Drop Reason 133 is "Policy denied"
+			hubbleRes.ExpectDoesNotContainFilterLine(
+				`{.source.labels} -> {.destination.ID} {.IP.destination} : {.verdict} {.drop_reason}`,
+				fmt.Sprintf(`["reserved:host"] -> %s %s : DROPPED 133`, endpointID, endpointIP.IPV4),
+				"Unexpected drop")
 		})
 
 		It("Init Egress Policy Test", func() {
 			hostIP := "10.0.2.15"
 
-			By("Starting cilium monitor in background")
+			By("Starting hubble observe in background")
 			ctx, cancel := context.WithCancel(context.Background())
-			monitorRes := vm.ExecInBackground(ctx, "cilium monitor --type drop --type trace")
+			hubbleRes := vm.HubbleObserveFollow(ctx, "--type", "drop", "--type", "trace", "--protocol", "ICMPv4")
 			defer cancel()
 
 			By("Creating an endpoint")
@@ -1583,10 +1687,18 @@ var _ = Describe("RuntimePolicies", func() {
 			egressEpModel := vm.EndpointGet(endpointID)
 			Expect(egressEpModel).NotTo(BeNil(), "nil model returned for endpoint %s", endpointID)
 
-			By("Testing cilium monitor output")
-			err = monitorRes.WaitUntilMatchRegexp(fmt.Sprintf(`-> endpoint %s flow [^ ]+ identity 1->`, endpointID))
-			Expect(err).To(BeNil(), "Allow on egress failed")
-			monitorRes.ExpectDoesNotMatchRegexp(fmt.Sprintf(`xx drop \(Policy denied\) flow [^ ]+ to endpoint %s, identity 1->[^0]`, endpointID), "Unexpected drop")
+			By("Testing hubble observe output")
+			err = hubbleRes.WaitUntilMatchFilterLineTimeout(
+				`{.source.ID} {.source.labels} -> {.destination.labels} {.IP.destination} : {.verdict}`,
+				fmt.Sprintf(`%s ["container:somelabel"] -> ["reserved:host"] %s : FORWARDED`, endpointID, hostIP),
+				10*time.Second)
+			Expect(err).To(BeNil(), "Allow on ingress failed")
+
+			// Drop Reason 133 is "Policy denied"
+			hubbleRes.ExpectDoesNotContainFilterLine(
+				`{.source.ID} {.source.labels} -> {.destination.labels} {.IP.destination} : {.verdict} {.drop_reason}`,
+				fmt.Sprintf(`%s ["container:somelabel"] -> ["reserved:host"] %s : DROPPED 133`, endpointID, hostIP),
+				"Unexpected drop")
 		})
 	})
 
@@ -1615,8 +1727,7 @@ var _ = Describe("RuntimePolicies", func() {
 			vm.ContainerCreate(newContainerName, constants.HttpdImage, helpers.CiliumDockerNetwork, fmt.Sprintf("-l id.%s", helpers.Httpd1))
 
 			By("Waiting for newly added endpoint to be ready")
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			// All endpoints should be able to connect to this container on port
 			// 80, but should not be able to ping because ICMP does not use
@@ -1634,7 +1745,8 @@ var _ = Describe("RuntimePolicies", func() {
 
 var _ = Describe("RuntimePolicyImportTests", func() {
 	var (
-		vm *helpers.SSHMeta
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
 	)
 
 	BeforeAll(func() {
@@ -1643,8 +1755,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 
 		vm.SampleContainersActions(helpers.Create, helpers.CiliumDockerNetwork)
 
-		areEndpointsReady := vm.WaitEndpointsReady()
-		Expect(areEndpointsReady).Should(BeTrue())
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 	})
 
 	BeforeEach(func() {
@@ -1655,8 +1766,12 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		_ = vm.PolicyDelAll()
 	})
 
+	JustBeforeEach(func() {
+		testStartTime = time.Now()
+	})
+
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 	})
 
 	AfterFailed(func() {
@@ -1671,7 +1786,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 	It("Invalid Policies", func() {
 
 		testInvalidPolicy := func(data string) {
-			err := helpers.RenderTemplateToFile(invalidJSON, data, 0777)
+			err := vm.RenderTemplateToFile(invalidJSON, data, 0777)
 			Expect(err).Should(BeNil())
 
 			path := vm.GetFilePath(invalidJSON)
@@ -1681,11 +1796,11 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		}
 		By("Invalid Json")
 
-		invalidJSON := fmt.Sprintf(`
+		invalidJSON := `
 		[{
 			"endpointSelector": {
 				"matchLabels":{"id.httpd1":""}
-			},`)
+			},`
 		testInvalidPolicy(invalidJSON)
 	})
 
@@ -1704,7 +1819,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		)
 
 		BeforeEach(func() {
-			err := helpers.RenderTemplateToFile(policyJSON, policy, 0777)
+			err := vm.RenderTemplateToFile(policyJSON, policy, 0777)
 			Expect(err).Should(BeNil())
 
 			path := vm.GetFilePath(policyJSON)
@@ -1758,7 +1873,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 
 		By("Importing policy that allows ingress to %q from the host and %q", httpd1Label, httpd2Label)
 
-		allowHttpd1IngressHostHttpd2 := fmt.Sprintf(`
+		allowHttpd1IngressHostHttpd2 := `
 			[{
     			"endpointSelector": {"matchLabels":{"id.httpd1":""}},
     			"ingress": [{
@@ -1767,15 +1882,17 @@ var _ = Describe("RuntimePolicyImportTests", func() {
             			{"matchLabels":{"id.httpd2":""}}
 					]
     			}]
-			}]`)
+			}]`
 
 		_, err := vm.PolicyRenderAndImport(allowHttpd1IngressHostHttpd2)
 		Expect(err).Should(BeNil(), "Error importing policy: %s", err)
 
 		By("Verifying that trace says that %q can reach %q", httpd2Label, httpd1Label)
 
-		res := vm.Exec(fmt.Sprintf(`cilium policy trace -s %s -d %s/TCP`, httpd2Label, httpd1Label))
-		Expect(res.Output().String()).Should(ContainSubstring(allowedVerdict), "Policy trace did not contain %s", allowedVerdict)
+		res := vm.Exec(fmt.Sprintf(`cilium policy trace -s %s -d %s/TCP --dport 0/ANY`, httpd2Label, httpd1Label))
+		Expect(res.Stdout()).Should(ContainSubstring(allowedVerdict), "Policy trace did not contain %s", allowedVerdict)
+
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		endpointIDS, err := vm.GetEndpointsIds()
 		Expect(err).To(BeNil(), "Unable to get IDs of endpoints")
@@ -1822,7 +1939,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		res = vm.PolicyDelAll()
 		res.ExpectSuccess("Unable to delete all policies")
 
-		allowHttpd1IngressHttpd2 := fmt.Sprintf(`
+		allowHttpd1IngressHttpd2 := `
 			[{
     			"endpointSelector": {"matchLabels":{"id.httpd1":""}},
     			"ingress": [{
@@ -1830,20 +1947,20 @@ var _ = Describe("RuntimePolicyImportTests", func() {
             			{"matchLabels":{"id.httpd2":""}}
 					]
     			}]
-			}]`)
+			}]`
 
 		_, err = vm.PolicyRenderAndImport(allowHttpd1IngressHttpd2)
 		Expect(err).Should(BeNil(), "Error importing policy: %s", err)
 
 		By("Verifying verbose trace for expected output using security identities")
 		res = vm.Exec(fmt.Sprintf(
-			`cilium policy trace --src-identity %d --dst-identity %d`,
+			`cilium policy trace --src-identity %d --dst-identity %d --dport 0/ANY`,
 			httpd2SecurityIdentity, httpd1SecurityIdentity))
 		res.ExpectContains(allowedVerdict, "Policy trace did not contain %s", allowedVerdict)
 
 		By("Verifying verbose trace for expected output using endpoint IDs")
 		res = vm.Exec(fmt.Sprintf(
-			`cilium policy trace --src-endpoint %s --dst-endpoint %s`,
+			`cilium policy trace --src-endpoint %s --dst-endpoint %s --dport 0/ANY`,
 			httpd2EndpointID, httpd1EndpointID))
 		res.ExpectContains(allowedVerdict, "Policy trace did not contain %s", allowedVerdict)
 
@@ -1878,7 +1995,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementDefault)
 
 		By("Checking that policy trace returns allowed verdict without any policies imported")
-		res = vm.Exec(fmt.Sprintf(`cilium policy trace --src-endpoint %s --dst-endpoint %s`, httpd2EndpointID, httpd1EndpointID))
+		res = vm.Exec(fmt.Sprintf(`cilium policy trace --src-endpoint %s --dst-endpoint %s --dport 0/ANY`, httpd2EndpointID, httpd1EndpointID))
 		res.ExpectContains(allowedVerdict, "Policy trace did not contain %s", allowedVerdict)
 	})
 })

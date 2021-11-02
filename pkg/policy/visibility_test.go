@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -34,7 +24,7 @@ func (ds *PolicyTestSuite) TestGenerateL7RulesByParser(c *C) {
 	c.Assert(m, Not(IsNil))
 	c.Assert(len(m), Equals, 1)
 
-	var l7Rules []*PerSelectorPolicy
+	l7Rules := make([]*PerSelectorPolicy, 0, len(m))
 	for _, v := range m {
 		l7Rules = append(l7Rules, v)
 	}
@@ -136,7 +126,7 @@ func (ds *PolicyTestSuite) TestVisibilityPolicyCreation(c *C) {
 	anno = "<Egress/53/ANY/DNS>"
 	vp, err = NewVisibilityPolicy(anno)
 	c.Assert(err, IsNil)
-	c.Assert(len(vp.Egress), checker.Equals, 2)
+	c.Assert(vp.Egress, HasLen, 2)
 	udp, ok := vp.Egress["53/UDP"]
 	c.Assert(ok, Equals, true)
 	c.Assert(udp.Proto, Equals, u8proto.UDP)

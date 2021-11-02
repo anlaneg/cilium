@@ -2,7 +2,7 @@
 name: Bug Report
 about: Report a bug encountered while operating Cilium
 title: ''
-labels: ''
+labels: 'kind/bug'
 assignees: ''
 
 ---
@@ -31,11 +31,16 @@ security@cilium.io - first, before disclosing them in any public forums.
 
 - Cilium version (run `cilium version`)
 - Kernel version (run `uname -a`)
-- Orchestration system version in use (e.g. `kubectl version`, Mesos, ...)
+- Orchestration system version in use (e.g. `kubectl version`, ...)
 - Link to relevant artifacts (policies, deployments scripts, ...)
-- Upload a system dump (run `curl -sLO
-https://github.com/cilium/cilium-sysdump/releases/latest/download/cilium-sysdump.zip &&
-python cilium-sysdump.zip` and then attach the generated zip file)
+- Generate and upload a sysdump:
+
+  - [Install Cilium CLI](https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/#install-the-cilium-cli).
+  - Run `cilium sysdump` command:
+
+    ```
+    cilium sysdump
+    ```
 
 **How to reproduce the issue**
 

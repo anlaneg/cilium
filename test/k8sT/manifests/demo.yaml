@@ -43,7 +43,7 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: web
-        image: docker.io/cilium/demo-httpd:latest
+        image: docker.io/cilium/demo-httpd:1.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
@@ -82,11 +82,13 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: app-frontend
-        image: docker.io/cilium/demo-client:latest
+        image: docker.io/cilium/demo-client:1.0
         imagePullPolicy: IfNotPresent
         command: [ "sleep" ]
         args:
           - "1000h"
+      # k8sT/Services.go:"Checks service on same node" requires the pod to be
+      # scheduled on the same node as app1
       nodeSelector:
         "cilium.io/ci-node": k8s1
 ---
@@ -109,7 +111,7 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: app-frontend
-        image: docker.io/cilium/demo-client:latest
+        image: docker.io/cilium/demo-client:1.0
         imagePullPolicy: IfNotPresent
         command: [ "sleep" ]
         args:

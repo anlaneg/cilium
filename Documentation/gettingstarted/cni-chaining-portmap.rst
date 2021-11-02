@@ -2,16 +2,26 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
+
+
+.. _k8s_install_portmap:
 
 ******************
 Portmap (HostPort)
 ******************
 
-If you want to use the Kubernetes HostPort feature, you must enable CNI
-chaining with the portmap plugin which implements HostPort. This guide
-documents how to do so.  For more information about the Kubernetes HostPort
-feature , check out the upstream documentation:
+Starting from Cilium 1.8, the Kubernetes HostPort feature is supported natively
+through Cilium's eBPF-based kube-proxy replacement. CNI chaining is therefore
+not needed anymore. For more information, see section :ref:`kubeproxyfree_hostport`.
+
+However, for the case where Cilium is deployed as ``kubeProxyReplacement=disabled``,
+the HostPort feature can then be enabled via CNI chaining with the portmap plugin which
+implements HostPort. This guide documents how to enable the latter for the chaining
+case.
+
+For more general information about the Kubernetes HostPort feature, check out the
+upstream documentation:
 `Kubernetes hostPort-CNI plugin documentation
 <https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/#support-hostport>`_.
 
@@ -32,11 +42,11 @@ Deploy Cilium release via Helm:
 
     helm install cilium |CHART_RELEASE| \\
       --namespace=kube-system \\
-      --set global.cni.chainingMode=portmap
+      --set cni.chainingMode=portmap
 
 .. note::
 
-   You can combine the ``global.cni.chainingMode=portmap`` option with any of
+   You can combine the ``cni.chainingMode=portmap`` option with any of
    the other installation guides.
 
 As Cilium is deployed as a DaemonSet, it will write a new CNI configuration

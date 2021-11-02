@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package mountinfo
 
@@ -24,10 +13,6 @@ import (
 )
 
 const (
-	// FilesystemType names for filesystem which are used in /proc/pid/mountinfo
-	FilesystemTypeBPFFS   = "bpf"
-	FilesystemTypeCgroup2 = "cgroup2"
-
 	mountInfoFilepath = "/proc/self/mountinfo"
 )
 
@@ -67,8 +52,8 @@ func parseMountInfoFile(r io.Reader) ([]*MountInfo, error) {
 		}
 
 		// Extract fields from both sides of mountinfo
-		mountInfoLeft := strings.Split(strings.TrimSpace(mountInfoSeparated[0]), " ")
-		mountInfoRight := strings.Split(strings.TrimSpace(mountInfoSeparated[1]), " ")
+		mountInfoLeft := strings.Split(mountInfoSeparated[0], " ")
+		mountInfoRight := strings.Split(mountInfoSeparated[1], " ")
 
 		// Before '-' separator there should be 6 fields and unknown
 		// number of optional fields
@@ -110,6 +95,10 @@ func parseMountInfoFile(r io.Reader) ([]*MountInfo, error) {
 		})
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
 	return result, nil
 }
 
@@ -123,37 +112,4 @@ func GetMountInfo() ([]*MountInfo, error) {
 	defer fMounts.Close()
 
 	return parseMountInfoFile(fMounts)
-}
-
-func isMountFS(mountInfos []*MountInfo, mntType string, mapRoot string) (bool, bool) {
-	var mapRootMountInfo *MountInfo
-
-	for _, mountInfo := range mountInfos {
-		if mountInfo.MountPoint == mapRoot {
-			mapRootMountInfo = mountInfo
-			break
-		}
-	}
-
-	if mapRootMountInfo == nil {
-		return false, false
-	}
-
-	if mapRootMountInfo.FilesystemType == mntType {
-		return true, true
-	}
-	return true, false
-}
-
-// IsMountFS returns two boolean values:checks whether the current mapRoot:
-// - whether the current mapRoot has any mount
-// - whether that mount's filesystem is of type mntType
-func IsMountFS(mntType string, mapRoot string) (bool, bool, error) {
-	mountInfos, err := GetMountInfo()
-	if err != nil {
-		return false, false, err
-	}
-
-	mounted, mntTypeInstance := isMountFS(mountInfos, mntType, mapRoot)
-	return mounted, mntTypeInstance, nil
 }

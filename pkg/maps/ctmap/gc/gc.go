@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package gc
 
@@ -22,9 +11,11 @@ import (
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/signal"
 	"github.com/sirupsen/logrus"
 )
@@ -49,6 +40,9 @@ func Enable(ipv4, ipv6 bool, restoredEndpoints []*endpoint.Endpoint, mgr Endpoin
 		var wakeup = make(chan signal.SignalData)
 		ipv4Orig := ipv4
 		ipv6Orig := ipv6
+		triggeredBySignal := false
+		ctTimer, ctTimerDone := inctimer.New()
+		defer ctTimerDone()
 		for {
 			var (
 				maxDeleteRatio float64
@@ -69,13 +63,18 @@ func Enable(ipv4, ipv6 bool, restoredEndpoints []*endpoint.Endpoint, mgr Endpoin
 				// mean the next iteration has completed and it is not in-use.
 				gcStart = time.Now()
 
+				// aliveTime is offset to the future by ToFQDNsIdleConnectionGracePeriod
+				// (default 0), allowing previously active connections to be considerred
+				// alive during idle periods of upto ToFQDNsIdleConnectionGracePeriod.
+				aliveTime = gcStart.Add(option.Config.ToFQDNsIdleConnectionGracePeriod)
+
 				emitEntryCB = func(srcIP, dstIP net.IP, srcPort, dstPort uint16, nextHdr, flags uint8, entry *ctmap.CtEntry) {
 					// FQDN related connections can only be outbound
 					if flags != ctmap.TUPLE_F_OUT {
 						return
 					}
 					if ep, exists := epsMap[srcIP.String()]; exists {
-						ep.MarkDNSCTEntry(dstIP, gcStart)
+						ep.MarkDNSCTEntry(dstIP, aliveTime)
 					}
 				}
 			)
@@ -87,14 +86,14 @@ func Enable(ipv4, ipv6 bool, restoredEndpoints []*endpoint.Endpoint, mgr Endpoin
 			}
 
 			if len(eps) > 0 || initialScan {
-				mapType, maxDeleteRatio = runGC(nil, ipv4, ipv6, createGCFilter(initialScan, restoredEndpoints, emitEntryCB))
+				mapType, maxDeleteRatio = runGC(nil, ipv4, ipv6, triggeredBySignal, createGCFilter(initialScan, restoredEndpoints, emitEntryCB))
 			}
 			for _, e := range eps {
 				if !e.ConntrackLocal() {
 					// Skip because GC was handled above.
 					continue
 				}
-				runGC(e, ipv4, ipv6, &ctmap.GCFilter{RemoveExpired: true, EmitCTEntryCB: emitEntryCB})
+				runGC(e, ipv4, ipv6, triggeredBySignal, &ctmap.GCFilter{RemoveExpired: true, EmitCTEntryCB: emitEntryCB})
 			}
 
 			// Mark the CT GC as over in each EP DNSZombies instance
@@ -106,35 +105,37 @@ func Enable(ipv4, ipv6 bool, restoredEndpoints []*endpoint.Endpoint, mgr Endpoin
 				close(initialScanComplete)
 				initialScan = false
 
-				signal.RegisterChannel(signal.SignalNatFillUp, wakeup)
+				signal.RegisterChannel(signal.SignalWakeGC, wakeup)
 				signal.SetupSignalListener()
-				signal.MuteChannel(signal.SignalNatFillUp)
+				signal.MuteChannel(signal.SignalWakeGC)
 			}
 
-			signal.UnmuteChannel(signal.SignalNatFillUp)
+			triggeredBySignal = false
+			signal.UnmuteChannel(signal.SignalWakeGC)
 			select {
 			case x := <-wakeup:
+				triggeredBySignal = true
 				ipv4 = false
 				ipv6 = false
-				if x == signal.SignalNatV4 {
+				if x == signal.SignalProtoV4 {
 					ipv4 = true
-				} else if x == signal.SignalNatV6 {
+				} else if x == signal.SignalProtoV6 {
 					ipv6 = true
 				}
 				// Drain current queue since we just woke up anyway.
 				for len(wakeup) > 0 {
 					x := <-wakeup
-					if x == signal.SignalNatV4 {
+					if x == signal.SignalProtoV4 {
 						ipv4 = true
-					} else if x == signal.SignalNatV6 {
+					} else if x == signal.SignalProtoV6 {
 						ipv6 = true
 					}
 				}
-			case <-time.After(ctmap.GetInterval(mapType, maxDeleteRatio)):
+			case <-ctTimer.After(ctmap.GetInterval(mapType, maxDeleteRatio)):
 				ipv4 = ipv4Orig
 				ipv6 = ipv6Orig
 			}
-			signal.MuteChannel(signal.SignalNatFillUp)
+			signal.MuteChannel(signal.SignalWakeGC)
 		}
 	}()
 
@@ -154,7 +155,7 @@ func Enable(ipv4, ipv6 bool, restoredEndpoints []*endpoint.Endpoint, mgr Endpoin
 // The provided endpoint is optional; if it is provided, then its map will be
 // garbage collected and any failures will be logged to the endpoint log.
 // Otherwise it will garbage-collect the global map and use the global log.
-func runGC(e *endpoint.Endpoint, ipv4, ipv6 bool, filter *ctmap.GCFilter) (mapType bpf.MapType, maxDeleteRatio float64) {
+func runGC(e *endpoint.Endpoint, ipv4, ipv6, triggeredBySignal bool, filter *ctmap.GCFilter) (mapType bpf.MapType, maxDeleteRatio float64) {
 	var maps []*ctmap.Map
 
 	if e == nil {
@@ -195,6 +196,29 @@ func runGC(e *endpoint.Endpoint, ipv4, ipv6 bool, filter *ctmap.GCFilter) (mapTy
 				logfields.Path: path,
 				"count":        deleted,
 			}).Debug("Deleted filtered entries from map")
+		}
+	}
+
+	if e == nil && triggeredBySignal {
+		vsns := []ctmap.CTMapIPVersion{}
+		if ipv4 {
+			vsns = append(vsns, ctmap.CTMapIPv4)
+		}
+		if ipv6 {
+			vsns = append(vsns, ctmap.CTMapIPv6)
+		}
+
+		for _, vsn := range vsns {
+			ctMapTCP, ctMapAny := ctmap.FilterMapsByProto(maps, vsn)
+			stats := ctmap.PurgeOrphanNATEntries(ctMapTCP, ctMapAny)
+			if stats != nil && (stats.EgressDeleted != 0 || stats.IngressDeleted != 0) {
+				log.WithFields(logrus.Fields{
+					"ingressDeleted": stats.IngressDeleted,
+					"egressDeleted":  stats.EgressDeleted,
+					"ingressAlive":   stats.IngressAlive,
+					"ctMapIPVersion": vsn,
+				}).Info("Deleted orphan SNAT entries from map")
+			}
 		}
 	}
 

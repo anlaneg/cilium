@@ -9,19 +9,24 @@ $SERVER_BOX = (ENV['SERVER_BOX'] || $SERVER_BOX)
 $SERVER_VERSION= (ENV['SERVER_VERSION'] || $SERVER_VERSION)
 $NETNEXT_SERVER_BOX = (ENV['NETNEXT_SERVER_BOX'] || $NETNEXT_SERVER_BOX)
 $NETNEXT_SERVER_VERSION= (ENV['NETNEXT_SERVER_VERSION'] || $NETNEXT_SERVER_VERSION)
+$NO_BUILD = (ENV['NO_BUILD'] || "0")
 
-if ENV['NETNEXT'] == "true"
+if ENV['NETNEXT'] == "true" || ENV['NETNEXT'] == "1" then
     $SERVER_BOX = $NETNEXT_SERVER_BOX
     $SERVER_VERSION = $NETNEXT_SERVER_VERSION
+    $vm_kernel = '+'
 end
 
 Vagrant.require_version ">= 2.0.0"
 
 if ARGV.first == "up" && ENV['CILIUM_SCRIPT'] != 'true'
     raise Vagrant::Errors::VagrantError.new, <<END
-Calling 'vagrant up' directly is not supported.  Instead, please run the following:
-  export NWORKERS=n
-  ./contrib/vagrant/start.sh
+Calling 'vagrant up' directly is not supported.  Instead, please run the
+following to deploy a single-node cluster:
+$ ./contrib/vagrant/start.sh
+
+See the development guide for available configuration options:
+https://docs.cilium.io/en/latest/contributing/development/dev_setup
 END
 end
 
@@ -31,38 +36,55 @@ Disabling IPv4 is currently not allowed until k8s 1.9 is released
 END
 end
 
+# Workaround issue as described here:
+# https://github.com/cilium/cilium/pull/12520
+class VagrantPlugins::ProviderVirtualBox::Action::Network
+  def dhcp_server_matches_config?(dhcp_server, config)
+    true
+  end
+end
+
 $bootstrap = <<SCRIPT
 set -o errexit
 set -o nounset
 set -o pipefail
 
+if [ -x /home/vagrant/go/src/github.com/cilium/cilium/.devvmrc ] ; then
+   echo "----------------------------------------------------------------"
+   echo "Executing .devvmrc"
+   /home/vagrant/go/src/github.com/cilium/cilium/.devvmrc || true
+fi
+
 echo "----------------------------------------------------------------"
 export PATH=/home/vagrant/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games
 
 echo "editing journald configuration"
-sudo bash -c "echo RateLimitIntervalSec=1s >> /etc/systemd/journald.conf"
-sudo bash -c "echo RateLimitBurst=10000 >> /etc/systemd/journald.conf"
+bash -c "echo RateLimitIntervalSec=1s >> /etc/systemd/journald.conf"
+bash -c "echo RateLimitBurst=10000 >> /etc/systemd/journald.conf"
 echo "restarting systemd-journald"
-sudo systemctl restart systemd-journald
+systemctl restart systemd-journald
 echo "getting status of systemd-journald"
-sudo service systemd-journald status
+service systemd-journald status
 echo "done configuring journald"
 
-sudo service docker restart
+service docker restart
 echo 'cd ~/go/src/github.com/cilium/cilium' >> /home/vagrant/.bashrc
-sudo chown -R vagrant:vagrant /home/vagrant 2>/dev/null
+echo 'export GOPATH=$(go env GOPATH)' >> /home/vagrant/.bashrc
+chown -R vagrant:vagrant /home/vagrant 2>/dev/null || true
 curl -SsL https://github.com/cilium/bpf-map/releases/download/v1.0/bpf-map -o bpf-map
 chmod +x bpf-map
 mv bpf-map /usr/bin
 SCRIPT
 
+$makeclean = ENV['MAKECLEAN'] ? "export MAKECLEAN=1" : ""
 $build = <<SCRIPT
 set -o errexit
 set -o nounset
 set -o pipefail
 
 export PATH=/home/vagrant/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games
-~/go/src/github.com/cilium/cilium/common/build.sh
+#{$makeclean}
+~/go/src/github.com/cilium/cilium/contrib/vagrant/build.sh
 rm -fr ~/go/bin/cilium*
 SCRIPT
 
@@ -121,9 +143,21 @@ end
 ENV["LC_ALL"] = "en_US.UTF-8"
 ENV["LC_CTYPE"] = "en_US.UTF-8"
 
+if ENV['CILIUM_SCRIPT'] != 'true' then
+    Vagrant.configure(2) do |config|
+        config.vm.define "runtime1"
+        config.vm.define "k8s1"
+        config.vm.define "k8s2"
+        config.vm.define "k8s1+"
+        config.vm.define "k8s2+"
+    end
+end
+
 Vagrant.configure(2) do |config|
     config.vm.provision "bootstrap", type: "shell", inline: $bootstrap
-    config.vm.provision "build", type: "shell", run: "always", privileged: false, inline: $build
+    if $NO_BUILD == "0" then
+        config.vm.provision "build", type: "shell", run: "always", privileged: false, inline: $build
+    end
     config.vm.provision "install", type: "shell", run: "always", privileged: false, inline: $install
     config.vm.box_check_update = false
 
@@ -141,28 +175,26 @@ Vagrant.configure(2) do |config|
         vb.cpus = ENV['VM_CPUS'].to_i
     end
 
-    master_vm_name = "#{$vm_base_name}1#{$build_id_name}"
+    master_vm_name = "#{$vm_base_name}1#{$build_id_name}#{$vm_kernel}"
     config.vm.define master_vm_name, primary: true do |cm|
         node_ip = "#{$master_ip}"
-		cm.vm.network "forwarded_port", guest: 6443, host: 7443, auto_correct: true
+        cm.vm.network "forwarded_port", guest: 6443, host: 7443, auto_correct: true
+        cm.vm.network "forwarded_port", guest: 9081, host: 9081, auto_correct: true
+        # 2345 is the default delv server port
+        cm.vm.network "forwarded_port", guest: 2345, host: 2345, auto_correct: true
         cm.vm.network "private_network", ip: "#{$master_ip}",
-            virtualbox__intnet: "cilium-test-#{$build_id}",
-            :libvirt__guest_ipv6 => "yes",
-            :libvirt__dhcp_enabled => false
-        if ENV["NFS"] || ENV["IPV6_EXT"] then
-            if ENV['FIRST_IP_SUFFIX_NFS'] then
-                $nfs_ipv4_master_addr = $node_nfs_base_ip + "#{ENV['FIRST_IP_SUFFIX_NFS']}"
-            end
-            cm.vm.network "private_network", ip: "#{$nfs_ipv4_master_addr}", bridge: "enp0s9"
-            # Add IPv6 address this way or we get hit by a virtualbox bug
-            cm.vm.provision "ipv6-config",
-                type: "shell",
-                run: "always",
-                inline: "ip -6 a a #{$master_ipv6}/16 dev enp0s9"
-            node_ip = "#{$nfs_ipv4_master_addr}"
-            if ENV["IPV6_EXT"] then
-                node_ip = "#{$master_ipv6}"
-            end
+            virtualbox__intnet: "cilium-test-#{$build_id}"
+        if ENV['FIRST_IP_SUFFIX_NFS'] then
+            $nfs_ipv4_master_addr = $node_nfs_base_ip + "#{ENV['FIRST_IP_SUFFIX_NFS']}"
+        end
+        cm.vm.network "private_network", ip: "#{$nfs_ipv4_master_addr}", bridge: "enp0s9"
+        # Add IPv6 address this way or we get hit by a virtualbox bug
+        cm.vm.provision "ipv6-config",
+            type: "shell",
+            run: "always",
+            inline: "ip -6 a a #{$master_ipv6}/16 dev enp0s9"
+        if ENV["IPV6_EXT"] then
+            node_ip = "#{$master_ipv6}"
         end
         cm.vm.hostname = "#{$vm_base_name}1"
         if ENV['CILIUM_TEMP'] then
@@ -197,29 +229,24 @@ Vagrant.configure(2) do |config|
 
     $num_workers.times do |n|
         # n starts with 0
-        node_vm_name = "#{$vm_base_name}#{n+2}#{$build_id_name}"
+        node_vm_name = "#{$vm_base_name}#{n+2}#{$build_id_name}#{$vm_kernel}"
         node_hostname = "#{$vm_base_name}#{n+2}"
         config.vm.define node_vm_name do |node|
             node_ip = $workers_ipv4_addrs[n]
             node.vm.network "private_network", ip: "#{node_ip}",
-                virtualbox__intnet: "cilium-test-#{$build_id}",
-                :libvirt__guest_ipv6 => 'yes',
-                :libvirt__dhcp_enabled => false
-            if ENV["NFS"] || ENV["IPV6_EXT"] then
-                nfs_ipv4_addr = $workers_ipv4_addrs_nfs[n]
-                node_ip = "#{nfs_ipv4_addr}"
-                ipv6_addr = $workers_ipv6_addrs[n]
-                node.vm.network "private_network", ip: "#{nfs_ipv4_addr}", bridge: "enp0s9"
-                # Add IPv6 address this way or we get hit by a virtualbox bug
-                node.vm.provision "ipv6-config",
-                    type: "shell",
-                    run: "always",
-                    inline: "ip -6 a a #{ipv6_addr}/16 dev enp0s9"
-                if ENV["IPV6_EXT"] then
-                    node_ip = "#{ipv6_addr}"
-                end
+                virtualbox__intnet: "cilium-test-#{$build_id}"
+            nfs_ipv4_addr = $workers_ipv4_addrs_nfs[n]
+            ipv6_addr = $workers_ipv6_addrs[n]
+            node.vm.network "private_network", ip: "#{nfs_ipv4_addr}", bridge: "enp0s9"
+            # Add IPv6 address this way or we get hit by a virtualbox bug
+            node.vm.provision "ipv6-config",
+                type: "shell",
+                run: "always",
+                inline: "ip -6 a a #{ipv6_addr}/16 dev enp0s9"
+            if ENV["IPV6_EXT"] then
+                node_ip = "#{ipv6_addr}"
             end
-            node.vm.hostname = "#{$vm_base_name}#{n+2}"
+            node.vm.hostname = "#{node_hostname}"
             if ENV['CILIUM_TEMP'] then
                 if ENV["K8S"] then
                     k8sinstall = "#{ENV['CILIUM_TEMP']}/cilium-k8s-install-1st-part.sh"
@@ -244,17 +271,23 @@ Vagrant.configure(2) do |config|
             end
         end
     end
-    if ENV["NFS"] then
-        config.vm.synced_folder '.', '/home/vagrant/go/src/github.com/cilium/cilium', type: "nfs", nfs_udp: false
-        # Don't forget to enable this ports on your host before starting the VM
-        # in order to have nfs working
-        # iptables -I INPUT -p tcp -s 192.168.34.0/24 --dport 111 -j ACCEPT
-        # iptables -I INPUT -p tcp -s 192.168.34.0/24 --dport 2049 -j ACCEPT
-        # iptables -I INPUT -p tcp -s 192.168.34.0/24 --dport 20048 -j ACCEPT
-    else
-        mount_type = ""
-        config.vm.synced_folder '.', '/home/vagrant/go/src/github.com/cilium/cilium', type: mount_type
+    cilium_dir = '.'
+    cilium_path = '/home/vagrant/go/src/github.com/cilium/cilium'
+    if ENV["SHARE_PARENT"] == "2" then
+      cilium_dir = '../..'
+      cilium_path = '/home/vagrant/go/src/github.com'
+    elsif ENV["SHARE_PARENT"] then
+      cilium_dir = '..'
+      cilium_path = '/home/vagrant/go/src/github.com/cilium'
     end
+    config.vm.synced_folder cilium_dir, cilium_path, type: "nfs", nfs_udp: false
+    # Don't forget to enable this ports on your host before starting the VM
+    # in order to have nfs working
+    # iptables -I INPUT -p tcp -s 192.168.34.0/24 --dport 111 -j ACCEPT
+    # iptables -I INPUT -p tcp -s 192.168.34.0/24 --dport 2049 -j ACCEPT
+    # iptables -I INPUT -p tcp -s 192.168.34.0/24 --dport 20048 -j ACCEPT
+    # if using nftables, in Fedora (with firewalld), use:
+    # nft -f ./contrib/vagrant/nftables.rules
 
     if ENV['USER_MOUNTS'] then
         # Allow multiple mounts divided by commas
@@ -282,11 +315,7 @@ Vagrant.configure(2) do |config|
                     user_mount_from = "~/" + user_mount_from
                 end
             end
-            if ENV["NFS"] then
-                config.vm.synced_folder "#{user_mount_from}", "#{user_mount_to}", type: "nfs", nfs_udp: false
-            else
-                config.vm.synced_folder "#{user_mount_from}", "#{user_mount_to}", type: mount_type
-            end
+            config.vm.synced_folder "#{user_mount_from}", "#{user_mount_to}", type: "nfs", nfs_udp: false
         end
     end
 end

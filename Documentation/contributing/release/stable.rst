@@ -1,8 +1,8 @@
 .. only:: not (epub or latex or html)
-  
+
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _generic_release_process:
 
@@ -20,6 +20,17 @@ If you intent to release a new feature release, see the
           used in the Cilium development process. See :ref:`dev_env` for
           detailed instructions about setting up said VM.
 
+GitHub template process
+~~~~~~~~~~~~~~~~~~~~~~~
+
+#. File a `new release issue <https://github.com/cilium/cilium/issues/new?assignees=&labels=kind%2Frelease&template=release_template.md&title=vX.Y.Z+release>`_
+   on GitHub, updating the title to reflect the version that will be released.
+
+#. Follow the steps in the issue template to prepare the release.
+
+Reference steps for the template
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 #. Ensure that the necessary backports have been completed and merged. See
    :ref:`backport_process`.
 
@@ -27,42 +38,20 @@ If you intent to release a new feature release, see the
    #. Update PRs / issues that were added to the ``vX.Y.Z`` project, but didn't
       make it into this release into the ``vX.Y.Z+1`` project.
 
+#. Create a new project named "X.Y.Z+1" to automatically track the backports
+   for that particular release. `Direct Link: <https://github.com/cilium/cilium/projects/new>`_
+
 #. Checkout the desired stable branch and pull it:
 
-   ::
+   .. code-block:: shell-session
 
        git checkout v1.0; git pull
 
-#. Create a branch for the release pull request:
+#. Run the release preparation script:
 
-   ::
+   .. code-block:: shell-session
 
-       git checkout -b pr/prepare-v1.0.3
-
-#. Update the ``VERSION`` file to represent ``X.Y.Z+1``
-#. If this is the first release after creating a new release branch. Adjust the
-   image pull policy for all ``.sed`` files in ``install/kubernetes/cilium/values.yaml`` from
-   ``Always`` to ``IfNotPresent``.
-#. Update Helm chart documentation
-
-   #. Update ``version`` and ``appVersion`` in ``install/kubernetes/cilium/Chart.yaml``
-   #. Update version tag in ``install/kubernetes/cilium/values.yaml``
-
-#. Update the image tag versions in the examples:
-
-   ::
-
-       make -C install/kubernetes clean all
-
-#. Update the ``cilium_version`` and ``cilium_tag`` variables in
-   ``examples/getting-started/Vagrantfile``
-
-#. Update the ``AUTHORS file``
-
-   ::
-
-       make update-authors
-
+       contrib/release/start-release.sh
 
    .. note::
 
@@ -70,26 +59,19 @@ If you intent to release a new feature release, see the
        instance, indentation mismatches) as well as duplicate contributor
        names, and correct them accordingly.
 
+#. Set the right version for the ``CustomResourceDefinitionSchemaVersion`` in
+   the ``pkg/k8s/client`` by following these instructions:
 
-#. Generate the release notes by running the instructions provided in github.com/cilium/release
+   Run ``./Documentation/check-crd-compat-table.sh vX.Y``
 
-#. Add the generated release notes in the ``CHANGELOG.md`` file
+#. Add all modified files using ``git add`` and create a commit with the
+   title ``Prepare for release v1.0.3``.
 
-#. Create a new project named "X.Y.Z+1" to automatically track the backports
-   for that particular release. `Direct Link: <https://github.com/cilium/cilium/projects/new>`_
+#. Prepare a pull request for the changes:
 
-#. Update the project URL for the respective release in file ``.github/cilium-actions.yml``
+   .. code-block:: shell-session
 
-#. Add all modified files using ``git add`` and create a pull request with the
-   title ``Prepare for release v1.0.3``. Add the backport label to the PR which
-   corresponds to the branch for which the release is being performed, e.g.
-   ``backport/1.0``.
-
-   .. note::
-
-       Make sure to create the PR against the desired stable branch. In this
-       case ``v1.0``
-
+      contrib/release/submit-release.sh
 
 #. Follow standard procedures to get the aforementioned PR merged into the
    desired stable branch. See :ref:`submit_pr` for more information about this
@@ -97,30 +79,15 @@ If you intent to release a new feature release, see the
 
 #. Checkout out the stable branch and pull your merged changes:
 
-   ::
+   .. code-block:: shell-session
 
        git checkout v1.0; git pull
 
-#. Build the container images and push them
+#. Create and push release tags to GitHub:
 
-   ::
+   .. code-block:: shell-session
 
-      DOCKER_IMAGE_TAG=v1.0.3 make docker-image
-      docker push cilium/cilium:v1.0.3
-
-   .. note:
-
-      This step requires you to login with ``docker login`` first and it will
-      require your Docker hub ID to have access to the ``Cilium`` organization.
-      You can alternatively trigger a build on DockerHub directly if you have
-      credentials to do so.
-
-#. Create release tags:
-
-   ::
-
-       git tag -a v1.0.3 -m 'Release v1.0.3'
-       git tag -a 1.0.3 -m 'Release 1.0.3'
+      contrib/release/tag-release.sh
 
    .. note::
 
@@ -130,58 +97,102 @@ If you intent to release a new feature release, see the
        ``x.y.z`` For more information about how ReadTheDocs does versioning, you can
        read their `Versions Documentation <https://docs.readthedocs.io/en/latest/versions.html>`_.
 
-#. Push the git release tag
+#. Approve the release from the `Release Image build UI <https://github.com/cilium/cilium/actions?query=workflow:%22Image+Release+Build%22>`_.
+
+#. Once the release images are pushed, pull the image digests and prepare a PR with the official release image digests:
+
+   .. code-block:: shell-session
+
+      contrib/release/post-release.sh <URL of workflow run from the release link above>
+
+   This will leave a file with the format ``digest-vX.Y.Z.txt`` in the local
+   directory which can be used to prepare the release in the next step.
+
+#. Prepare Helm changes for the release using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`__
+   and push the changes into that repository (not the main cilium repository):
+
+   .. code-block:: shell-session
+
+      ./prepare_artifacts.sh /path/to/cilium/repository/checked/out/to/release/commit
+      git push
+
+#. Prepare Helm changes for the dev version of the branch using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`__
+   for the vX.Y helm charts, and push the changes into that repository (not the main cilium repository):
+
+   In the ``cilium/cilium`` repository:
+
+   #. ``git checkout vx.y -b vx.z-dev``
+   #. Change the ``VERSION`` file to ``x.y-dev``
+   #. Run ``make -C install/kubernetes``
+
+   In the ``cilium/charts`` repository:
+
+   .. code-block:: shell-session
+
+      ./prepare_artifacts.sh /path/to/cilium/repository/checked/out/to/release/commit
+      git push
+
+   After pushing you can revert all the changes made in the local branch
+   ``x.y-dev`` from ``cilium/cilium``.
+
+#. Wait for the `Cilium Helm Charts Workflow <https://github.com/cilium/charts/actions>`__
+   to successfully deploy a cluster using the new Helm charts.
+
+#. `Publish a GitHub release <https://github.com/cilium/cilium/releases/>`_:
+
+   Following the steps above, the release draft will already be prepared.
+   Preview the description and then publish the release.
+
+   #. Copy the official docker manifests for the release from the previous step
+      into the end of the Github release announcement.
+
+#. Announce the release in the ``#general`` channel on Slack. Sample text:
 
    ::
 
-       git push --tags
+      :cilium-new: **Announcement:** Cilium vX.Y.Z has been released :tada:
 
-#. Build the binaries and push it to the release bucket:
+      <If security release or major bugfix, short summary of fix here>
 
-   ::
+      For more details, see the release notes:
+      https://github.com/cilium/cilium/releases/tag/vX.Y.Z
 
-       DOMAIN=releases.cilium.io ./contrib/release/uploadrev v1.0.3
+#. Create a new git branch based on the master branch to update ``README.rst``:
 
+   .. code-block:: shell-session
 
-   This step will print a markdown snippet which you will need when crafting
-   the GitHub release so make sure to keep it handy.
-
-   .. note:
-
-       This step requires valid AWS credentials to be available via the
-       environment variables ``AWS_ACCESS_KEY_ID`` and
-       ``AWS_SECRET_ACCESS_KEY``. Ping in the ``#development`` channel on Slack
-       if you have no access. It also requires the aws-cli tools to be installed.
-
-#. `Create a GitHub release <https://github.com/cilium/cilium/releases/new>`_:
-
-   #. Choose the correct target branch, e.g. ``v1.0``
-   #. Choose the correct target tag, e.g. ``v1.0.3``
-   #. Title: ``1.0.3``
-   #. Check the ``This is a pre-release`` box if you are releasing a release
-      candidate.
-   #. Fill in the release description with the output generated by github.com/cilium/release
-
-   #. Preview the description and then publish the release
-
-#. Announce the release in the ``#general`` channel on Slack
-
-#. Update the ``README.rst#stable-releases`` section from the Cilium master branch
-
-#. Update the ``.github/cilium-actions.yml`` with the project created for the
-   upcoming release.
+      $ git checkout -b pr/bump-readme-vX.Y.Z origin/master
+      $ contrib/release/bump-readme.sh
+      $ # (Commit changes & submit PR)
 
 #. Bump the version of Cilium used in the Cilium upgrade tests to use the new release
 
    Please reach out on the ``#development`` channel on Slack for assistance with
    this task.
 
-#. Update the ``stable`` tags for ``cilium``, ``cilium-operator``, and
-   ``cilium-docker-plugin`` on DockerHub.
+#. Update the ``stable`` tags for ``cilium``, ``cilium-operator``,
+   ``cilium-operator-aws``, ``cilium-operator-azure``,
+   ``cilium-operator-generic``, ``cilium-docker-plugin``, ``hubble-relay`` and
+   ``clustermesh-apiserver`` on DockerHub, for the latest version of Cilium.
+   For example, if the latest version is ``1.8``, then for all patch releases
+   on the ``1.8`` line, this step should be performed. Once ``1.9`` is out for
+   example, then this is no longer required for ``1.8`` or earlier releases.
 
-#. Update the external tools and guides to point to the released Cilium version:
+   .. code-block:: shell-session
 
-    * `kubeadm <https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/>`_
+       contrib/release/bump-docker-stable.sh X.Y.Z
+
+#. Check if all docker images are available before announcing the release:
+
+   .. code-block:: shell-session
+
+      make -C install/kubernetes/ check-docker-images
+
+#. Update the following external tools and guides to point to the released
+   Cilium version. This step is only required on a new minor release like going
+   from ``1.8`` to ``1.9``.
+
+    * `kubeadm <https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/>`_
     * `kops <https://github.com/kubernetes/kops/>`_
     * `kubespray <https://github.com/kubernetes-sigs/kubespray/>`_
 

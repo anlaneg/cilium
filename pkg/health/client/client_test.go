@@ -1,23 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package client
 
 import (
-	"io/ioutil"
+	"io"
 	"testing"
 
 	"github.com/cilium/cilium/api/v1/health/models"
@@ -34,6 +24,130 @@ type ClientTestSuite struct{}
 
 var _ = Suite(&ClientTestSuite{})
 
+func (s *ClientTestSuite) TestConnectivityStatusType(c *C) {
+	tests := []struct {
+		cst         ConnectivityStatusType
+		expectedStr string
+	}{
+		{
+			cst:         ConnStatusReachable,
+			expectedStr: "reachable",
+		},
+		{
+			cst:         ConnStatusUnreachable,
+			expectedStr: "unreachable",
+		},
+		{
+			cst:         ConnStatusUnknown,
+			expectedStr: "unknown",
+		},
+		{
+			cst:         10,
+			expectedStr: "unknown",
+		},
+	}
+	for _, tc := range tests {
+		c.Assert(tc.cst.String(), Equals, tc.expectedStr)
+	}
+}
+
+func (s *ClientTestSuite) TestGetConnectivityStatusType(c *C) {
+	tests := []struct {
+		cs                 *models.ConnectivityStatus
+		expectedStatusType ConnectivityStatusType
+	}{
+		{
+			cs:                 &models.ConnectivityStatus{Status: ""},
+			expectedStatusType: ConnStatusReachable,
+		},
+		{
+			cs:                 &models.ConnectivityStatus{Status: "failed"},
+			expectedStatusType: ConnStatusUnreachable,
+		},
+		{
+			cs:                 nil,
+			expectedStatusType: ConnStatusUnknown,
+		},
+	}
+	for _, tc := range tests {
+		c.Assert(GetConnectivityStatusType(tc.cs), Equals, tc.expectedStatusType)
+	}
+}
+
+func (s *ClientTestSuite) TestGetPathConnectivityStatusType(c *C) {
+	tests := []struct {
+		cp                 *models.PathStatus
+		expectedStatusType ConnectivityStatusType
+	}{
+		{
+			cp: &models.PathStatus{
+				Icmp: &models.ConnectivityStatus{Status: ""},
+				HTTP: &models.ConnectivityStatus{Status: ""},
+			},
+			expectedStatusType: ConnStatusReachable,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: &models.ConnectivityStatus{Status: "failed"},
+				HTTP: &models.ConnectivityStatus{Status: "failed"},
+			},
+			expectedStatusType: ConnStatusUnreachable,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: &models.ConnectivityStatus{Status: ""},
+				HTTP: &models.ConnectivityStatus{Status: "failed"},
+			},
+			expectedStatusType: ConnStatusUnreachable,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: &models.ConnectivityStatus{Status: "failed"},
+				HTTP: &models.ConnectivityStatus{Status: ""},
+			},
+			expectedStatusType: ConnStatusUnreachable,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: &models.ConnectivityStatus{Status: "failed"},
+				HTTP: nil,
+			},
+			expectedStatusType: ConnStatusUnreachable,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: nil,
+				HTTP: &models.ConnectivityStatus{Status: "failed"},
+			},
+			expectedStatusType: ConnStatusUnreachable,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: nil,
+				HTTP: nil,
+			},
+			expectedStatusType: ConnStatusUnknown,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: &models.ConnectivityStatus{Status: ""},
+				HTTP: nil,
+			},
+			expectedStatusType: ConnStatusUnknown,
+		},
+		{
+			cp: &models.PathStatus{
+				Icmp: nil,
+				HTTP: &models.ConnectivityStatus{Status: ""},
+			},
+			expectedStatusType: ConnStatusUnknown,
+		},
+	}
+	for _, tc := range tests {
+		c.Assert(GetPathConnectivityStatusType(tc.cp), Equals, tc.expectedStatusType)
+	}
+}
+
 func (s *ClientTestSuite) TestFormatNodeStatus(c *C) {
 	// This test generates permutations of models.NodeStatus and sees whether
 	// the calls to formatNodeStatus panic; the result of this test being
@@ -41,7 +155,7 @@ func (s *ClientTestSuite) TestFormatNodeStatus(c *C) {
 
 	// not testing output, just that permutations of NodeStatus don't cause
 	// panics.
-	w := ioutil.Discard
+	w := io.Discard
 
 	connectivityStatusGood := &models.ConnectivityStatus{
 		Latency: 1,

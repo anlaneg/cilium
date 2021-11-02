@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package accesslog
 
@@ -62,7 +51,7 @@ func (cl *Client) connect() *net.UnixConn {
 	log.Debugf("Accesslog: Connecting to Cilium access log socket: %s", cl.path)
 	conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: cl.path, Net: "unixpacket"})
 	if err != nil {
-		log.Errorf("Accesslog: DialUnix() failed: %v", err)
+		log.WithError(err).Error("Accesslog: DialUnix() failed")
 		return nil
 	}
 
@@ -78,14 +67,14 @@ func (cl *Client) Log(pblog *cilium.LogEntry) {
 		// Encode
 		logmsg, err := proto.Marshal(pblog)
 		if err != nil {
-			log.Errorf("Accesslog: Protobuf marshaling error: %v", err)
+			log.WithError(err).Error("Accesslog: Protobuf marshaling error")
 			return
 		}
 
 		// Write
 		_, err = conn.Write(logmsg)
 		if err != nil {
-			log.Errorf("Accesslog: Write() failed: %v", err)
+			log.WithError(err).Error("Accesslog: Write() failed")
 			atomic.StoreUint32(&cl.connected, 0) // Mark connection as broken
 		}
 	} else {

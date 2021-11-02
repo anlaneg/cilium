@@ -1,18 +1,8 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package cache
 
@@ -24,9 +14,11 @@ import (
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/idpool"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
+	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 
 	. "gopkg.in/check.v1"
 )
@@ -98,6 +90,10 @@ func (e *IdentityAllocatorEtcdSuite) SetUpTest(c *C) {
 	kvstore.SetupDummy("etcd")
 }
 
+func (e *IdentityAllocatorEtcdSuite) TearDownTest(c *C) {
+	kvstore.Client().Close()
+}
+
 type IdentityAllocatorConsulSuite struct {
 	IdentityAllocatorSuite
 }
@@ -106,6 +102,10 @@ var _ = Suite(&IdentityAllocatorConsulSuite{})
 
 func (e *IdentityAllocatorConsulSuite) SetUpTest(c *C) {
 	kvstore.SetupDummy("consul")
+}
+
+func (e *IdentityAllocatorConsulSuite) TearDownTest(c *C) {
+	kvstore.Client().Close()
 }
 
 type dummyOwner struct {
@@ -151,6 +151,8 @@ func (d *dummyOwner) GetNodeSuffix() string {
 // nothing is received from that channel in 60 seconds.
 func (d *dummyOwner) WaitUntilID(target identity.NumericIdentity) int {
 	rounds := 0
+	timer, timerDone := inctimer.New()
+	defer timerDone()
 	for {
 		select {
 		case nid, ok := <-d.updated:
@@ -162,7 +164,7 @@ func (d *dummyOwner) WaitUntilID(target identity.NumericIdentity) int {
 			if nid == target {
 				return rounds
 			}
-		case <-time.After(60 * time.Second):
+		case <-timer.After(60 * time.Second):
 			// Timed out waiting for KV-store events
 			return 0
 		}
@@ -173,7 +175,7 @@ func (ias *IdentityAllocatorSuite) TestEventWatcherBatching(c *C) {
 	owner := newDummyOwner()
 	events := make(allocator.AllocatorEventChan, 1024)
 	watcher := identityWatcher{
-		stopChan: make(chan bool),
+		stopChan: make(chan struct{}),
 		owner:    owner,
 	}
 
@@ -225,7 +227,7 @@ func (ias *IdentityAllocatorSuite) TestEventWatcherBatching(c *C) {
 }
 
 func (ias *IdentityAllocatorSuite) TestGetIdentityCache(c *C) {
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	mgr := NewCachingIdentityAllocator(newDummyOwner())
 	<-mgr.InitIdentityAllocator(nil, nil)
@@ -243,7 +245,7 @@ func (ias *IdentityAllocatorSuite) TestAllocator(c *C) {
 	lbls3 := labels.NewLabelsFromSortedList("id=bar;user=susan")
 
 	owner := newDummyOwner()
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	mgr := NewCachingIdentityAllocator(owner)
 	<-mgr.InitIdentityAllocator(nil, nil)
@@ -328,7 +330,7 @@ func (ias *IdentityAllocatorSuite) TestLocalAllocation(c *C) {
 	lbls1 := labels.NewLabelsFromSortedList("cidr:192.0.2.3/32")
 
 	owner := newDummyOwner()
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	mgr := NewCachingIdentityAllocator(owner)
 	<-mgr.InitIdentityAllocator(nil, nil)

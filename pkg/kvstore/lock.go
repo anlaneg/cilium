@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package kvstore
 
@@ -21,11 +10,11 @@ import (
 
 	"github.com/cilium/cilium/pkg/debug"
 	"github.com/cilium/cilium/pkg/defaults"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
-	uuidfactor "github.com/cilium/cilium/pkg/uuid"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/pborman/uuid"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
@@ -90,10 +79,12 @@ func (pl *pathLocks) runGC() {
 }
 
 func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err error) {
+	lockTimer, lockTimerDone := inctimer.New()
+	defer lockTimerDone()
 	for {
 		pl.mutex.Lock()
 		if _, ok := pl.lockPaths[path]; !ok {
-			id = uuidfactor.NewUUID()
+			id = uuid.New()
 			pl.lockPaths[path] = lockOwner{
 				created: time.Now(),
 				id:      id,
@@ -104,7 +95,7 @@ func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err e
 		pl.mutex.Unlock()
 
 		select {
-		case <-time.After(time.Duration(10) * time.Millisecond):
+		case <-lockTimer.After(time.Duration(10) * time.Millisecond):
 		case <-ctx.Done():
 			err = fmt.Errorf("lock was cancelled: %s", ctx.Err())
 			return
@@ -114,7 +105,7 @@ func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err e
 
 func (pl *pathLocks) unlock(path string, id uuid.UUID) {
 	pl.mutex.Lock()
-	if owner, ok := pl.lockPaths[path]; ok && uuid.Equal(owner.id, id) {
+	if owner, ok := pl.lockPaths[path]; ok && owner.id == id {
 		delete(pl.lockPaths, path)
 	}
 	pl.mutex.Unlock()

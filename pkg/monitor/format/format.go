@@ -1,16 +1,5 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2020 Authors of Cilium
 
 package format
 
@@ -51,10 +40,10 @@ type MonitorFormatter struct {
 	FromSource Uint16Flags
 	ToDst      Uint16Flags
 	Related    Uint16Flags
-	Verbose    bool
 	Hex        bool
 	JSONOutput bool
 	Verbosity  Verbosity
+	Numeric    bool
 }
 
 // NewMonitorFormatter returns a new formatter with default configuration.
@@ -65,9 +54,9 @@ func NewMonitorFormatter(verbosity Verbosity) *MonitorFormatter {
 		FromSource: Uint16Flags{},
 		ToDst:      Uint16Flags{},
 		Related:    Uint16Flags{},
-		Verbose:    false,
 		JSONOutput: false,
 		Verbosity:  verbosity,
+		Numeric:    bool(monitor.DisplayLabel),
 	}
 }
 
@@ -98,13 +87,13 @@ func (m *MonitorFormatter) dropEvents(prefix string, data []byte) {
 	}
 	if m.match(monitorAPI.MessageTypeDrop, dn.Source, uint16(dn.DstID)) {
 		switch m.Verbosity {
-		case INFO:
-			dn.DumpInfo(data)
+		case INFO, DEBUG:
+			dn.DumpInfo(data, monitor.DisplayFormat(m.Numeric))
 		case JSON:
 			dn.DumpJSON(data, prefix)
 		default:
 			fmt.Println(msgSeparator)
-			dn.DumpVerbose(!m.Hex, data, prefix)
+			dn.DumpVerbose(!m.Hex, data, prefix, monitor.DisplayFormat(m.Numeric))
 		}
 	}
 }
@@ -118,13 +107,13 @@ func (m *MonitorFormatter) traceEvents(prefix string, data []byte) {
 	}
 	if m.match(monitorAPI.MessageTypeTrace, tn.Source, tn.DstID) {
 		switch m.Verbosity {
-		case INFO:
-			tn.DumpInfo(data)
+		case INFO, DEBUG:
+			tn.DumpInfo(data, monitor.DisplayFormat(m.Numeric))
 		case JSON:
 			tn.DumpJSON(data, prefix)
 		default:
 			fmt.Println(msgSeparator)
-			tn.DumpVerbose(!m.Hex, data, prefix)
+			tn.DumpVerbose(!m.Hex, data, prefix, monitor.DisplayFormat(m.Numeric))
 		}
 	}
 }
@@ -137,7 +126,19 @@ func (m *MonitorFormatter) policyVerdictEvents(prefix string, data []byte) {
 	}
 
 	if m.match(monitorAPI.MessageTypePolicyVerdict, pn.Source, uint16(pn.RemoteLabel)) {
-		pn.DumpInfo(data)
+		pn.DumpInfo(data, monitor.DisplayFormat(m.Numeric))
+	}
+}
+
+func (m *MonitorFormatter) recorderCaptureEvents(prefix string, data []byte) {
+	rc := monitor.RecorderCapture{}
+
+	if err := binary.Read(bytes.NewReader(data), byteorder.Native, &rc); err != nil {
+		fmt.Printf("Error while parsing capture record: %s\n", err)
+	}
+
+	if m.match(monitorAPI.MessageTypeRecCapture, 0, 0) {
+		rc.DumpInfo(data)
 	}
 }
 
@@ -169,7 +170,7 @@ func (m *MonitorFormatter) captureEvents(prefix string, data []byte) {
 	}
 	if m.match(monitorAPI.MessageTypeCapture, dc.Source, 0) {
 		switch m.Verbosity {
-		case INFO:
+		case INFO, DEBUG:
 			dc.DumpInfo(data)
 		case JSON:
 			dc.DumpJSON(data, prefix)
@@ -242,6 +243,8 @@ func (m *MonitorFormatter) FormatSample(data []byte, cpu int) {
 		m.agentEvents(prefix, data)
 	case monitorAPI.MessageTypePolicyVerdict:
 		m.policyVerdictEvents(prefix, data)
+	case monitorAPI.MessageTypeRecCapture:
+		m.recorderCaptureEvents(prefix, data)
 	default:
 		fmt.Printf("%s Unknown event: %+v\n", prefix, data)
 	}

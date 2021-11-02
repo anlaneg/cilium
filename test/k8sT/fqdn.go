@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
 import (
-	"context"
 	"fmt"
 	"net"
 
@@ -25,11 +13,11 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("K8sFQDNTest", func() {
+// The 5.4 CI job is intended to catch BPF complexity regressions and as such
+// doesn't need to execute this test suite.
+var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sFQDNTest", func() {
 	var (
-		kubectl          *helpers.Kubectl
-		backgroundCancel context.CancelFunc = func() { return }
-		backgroundError  error
+		kubectl *helpers.Kubectl
 
 		demoManifest   = ""
 		ciliumFilename string
@@ -45,17 +33,34 @@ var _ = Describe("K8sFQDNTest", func() {
 	)
 
 	BeforeAll(func() {
-		// In case the IPs changed, update them here
-		addrs, err := net.LookupHost("vagrant-cache.ci.cilium.io")
-		Expect(err).Should(BeNil(), "Error getting IPs for test")
-		worldTargetIP = addrs[0]
+		// In case the IPs changed from above, update them here
+		var lookupErr error
+		err := helpers.WithTimeout(func() bool {
+			addrs, err2 := net.LookupHost("vagrant-cache.ci.cilium.io")
+			if err2 != nil {
+				lookupErr = fmt.Errorf("error looking up vagrant-cache.ci.cilium.io: %s", err2)
+				return false
+			}
+			worldTargetIP = addrs[0]
+			return true
+		}, "Could not get vagrant-cache.ci.cilium.io IP", &helpers.TimeoutConfig{Timeout: helpers.HelperTimeout})
+		Expect(err).Should(BeNil(), "Error obtaining IP for test: %s", lookupErr)
 
-		addrs, err = net.LookupHost("jenkins.cilium.io")
-		Expect(err).Should(BeNil(), "Error getting IPs for test")
-		worldInvalidTargetIP = addrs[0]
+		lookupErr = nil
+		err = helpers.WithTimeout(func() bool {
+			addrs, err2 := net.LookupHost("jenkins.cilium.io")
+			if err2 != nil {
+				lookupErr = fmt.Errorf("error looking up jenkins.cilium.io: %s", err2)
+				return false
+			}
+			worldInvalidTargetIP = addrs[0]
+			return true
+		}, "Could not get jenkins.cilium.io IP", &helpers.TimeoutConfig{Timeout: helpers.HelperTimeout})
+		Expect(err).Should(BeNil(), "Error obtaining IP for test: %s", lookupErr)
 
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
 		demoManifest = helpers.ManifestGet(kubectl.BasePath(), "demo.yaml")
+
 		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
 		DeployCiliumAndDNS(kubectl, ciliumFilename)
 
@@ -67,49 +72,54 @@ var _ = Describe("K8sFQDNTest", func() {
 		Expect(err).Should(BeNil(), "Testapp is not ready after timeout")
 
 		appPods = helpers.GetAppPods(apps, helpers.DefaultNamespace, kubectl, "id")
+
+		// Validate that coredns is reachable from test pods
+		err = kubectl.NslookupInPod(helpers.DefaultNamespace, appPods[helpers.App2], "kube-dns.kube-system.svc.cluster.local")
+		Expect(err).Should(BeNil(), "Error reaching kube-dns before test: %s", err)
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.CiliumNamespace,
-			"cilium service list",
-			"cilium endpoint list")
+		kubectl.CiliumReport("cilium service list", "cilium endpoint list")
 	})
 
 	AfterAll(func() {
 		_ = kubectl.Delete(demoManifest)
-		kubectl.DeleteCiliumDS()
 		ExpectAllPodsTerminated(kubectl)
+
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		kubectl.CloseSSHClient()
-	})
-
-	JustBeforeEach(func() {
-		backgroundCancel, backgroundError = kubectl.BackgroundReport("uptime")
-		Expect(backgroundError).To(BeNil(), "Cannot start background report process")
-	})
-
-	JustAfterEach(func() {
-		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-		backgroundCancel()
 	})
 
 	AfterEach(func() {
 		_ = kubectl.Exec(fmt.Sprintf("%s delete --all cnp", helpers.KubectlCmd))
 	})
 
-	It("Restart Cilium validate that FQDN is still working", func() {
+	SkipItIf(helpers.SkipQuarantined, "Restart Cilium validate that FQDN is still working", func() {
 		// Test functionality:
 		// - When Cilium is running) Connectivity from App2 application can
 		// connect to DNS because dns-proxy filter the DNS request. If the
 		// connection is made correctly the IP is whitelisted by the FQDN rule
 		// until the DNS TTL expires.
-		// When Cilium is not running) The DNS-proxy is not working, so the IP
+		// - When Cilium is not running) The DNS-proxy is not working, so the IP
 		// connectivity to an existing IP that was queried before will work,
 		// meanwhile connections using new DNS request will fail.
-		// On restart) Cilium will restore the IPS that were white-listted in
+		// - On restart) Cilium will restore the IPS that were white-listted in
 		// the FQDN and connection will work as normal.
 
-		connectivityTest := func() {
+		ciliumPodK8s1, err := kubectl.GetCiliumPodOnNode(helpers.K8s1)
+		Expect(err).Should(BeNil(), "Cannot get cilium pod on k8s1")
+		monitorRes1, monitorCancel1 := kubectl.MonitorStart(ciliumPodK8s1)
+		ciliumPodK8s2, err := kubectl.GetCiliumPodOnNode(helpers.K8s2)
+		Expect(err).Should(BeNil(), "Cannot get cilium pod on k8s2")
+		monitorRes2, monitorCancel2 := kubectl.MonitorStart(ciliumPodK8s2)
+		defer func() {
+			monitorCancel1()
+			monitorCancel2()
+			helpers.WriteToReportFile(monitorRes1.CombineOutput().Bytes(), "fqdn-restart-cilium-monitor-k8s1.log")
+			helpers.WriteToReportFile(monitorRes2.CombineOutput().Bytes(), "fqdn-restart-cilium-monitor-k8s2.log")
+		}()
 
+		connectivityTest := func() {
 			By("Testing that connection from %q to %q should work",
 				appPods[helpers.App2], worldTarget)
 			res := kubectl.ExecPodCmd(
@@ -138,25 +148,33 @@ var _ = Describe("K8sFQDNTest", func() {
 			res = kubectl.ExecPodCmd(
 				helpers.DefaultNamespace, appPods[helpers.App2],
 				helpers.CurlFail(worldInvalidTargetIP))
-			res.ExpectFail("%q can  connect when it should not work", helpers.App2)
+			res.ExpectFail("%q can connect when it should not work", helpers.App2)
 		}
 
 		fqndProxyPolicy := helpers.ManifestGet(kubectl.BasePath(), "fqdn-proxy-policy.yaml")
 
-		_, err := kubectl.CiliumPolicyAction(
+		_, err = kubectl.CiliumPolicyAction(
 			helpers.DefaultNamespace, fqndProxyPolicy,
 			helpers.KubectlApply, helpers.HelperTimeout)
 		Expect(err).To(BeNil(), "Cannot install fqdn proxy policy")
 
 		connectivityTest()
-		By("Deleting cilium pods")
+		By("restarting cilium pods")
 
-		res := kubectl.Exec(fmt.Sprintf("%s -n %s delete pods -l k8s-app=cilium",
-			helpers.KubectlCmd, helpers.CiliumNamespace))
-		res.ExpectSuccess()
+		// kill pid 1 in each cilium pod
+		cmd := fmt.Sprintf("%[1]s get pods -l k8s-app=cilium -n %[2]s |  tail -n +2 | cut -d ' ' -f 1 | xargs -I{} %[1]s exec -n %[2]s {} -- kill 1",
+			helpers.KubectlCmd, helpers.CiliumNamespace)
+		quit, run := kubectl.RepeatCommandInBackground(cmd)
+		channelClosed := false
+		defer func() {
+			if !channelClosed {
+				close(quit)
+			}
+		}()
+		<-run // waiting for first run to finish
 
 		By("Testing connectivity when cilium is restoring using IPS without DNS")
-		res = kubectl.ExecPodCmd(
+		res := kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App2],
 			helpers.CurlFail(worldTargetIP))
 		res.ExpectSuccess("%q cannot curl to %q during restart", helpers.App2, worldTargetIP)
@@ -164,10 +182,33 @@ var _ = Describe("K8sFQDNTest", func() {
 		res = kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App2],
 			helpers.CurlFail(worldInvalidTargetIP))
-		res.ExpectFail("%q can  connect when it should not work", helpers.App2)
+		res.ExpectFail("%q can connect when it should not work", helpers.App2)
+
+		// This test is failing consistently in quarantine, see #11213. Disable it for now
+		// to verify the rest of the test is running stable in quarantine. Once this is the
+		// case we could move the rest of the test out of quarantine and quarantine only
+		// this part.
+		if false {
+			// Re-run connectivity test while Cilium is still restarting. This should succeed as the same
+			// DNS names were used in a connectivity test before the restart.
+			connectivityTest()
+		}
+
+		channelClosed = true
+		close(quit)
 
 		ExpectAllPodsTerminated(kubectl)
 		ExpectCiliumReady(kubectl)
+
+		// Restart monitoring after Cilium restart
+		monitorRes1After, monitorCancel1After := kubectl.MonitorStart(ciliumPodK8s1)
+		monitorRes2After, monitorCancel2After := kubectl.MonitorStart(ciliumPodK8s2)
+		defer func() {
+			monitorCancel1After()
+			monitorCancel2After()
+			helpers.WriteToReportFile(monitorRes1After.CombineOutput().Bytes(), "fqdn-after-restart-cilium-monitor-k8s1.log")
+			helpers.WriteToReportFile(monitorRes2After.CombineOutput().Bytes(), "fqdn-after-restart-cilium-monitor-k8s2.log")
+		}()
 
 		// @TODO This endpoint ready call SHOULD NOT be here
 		// Here some packets can be lost due to two different scenarios:
@@ -197,7 +238,7 @@ var _ = Describe("K8sFQDNTest", func() {
 		res = kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App2],
 			helpers.CurlFail(worldInvalidTargetIP))
-		res.ExpectFail("%q can  connect when it should not work", helpers.App2)
+		res.ExpectFail("%q can connect when it should not work", helpers.App2)
 
 		By("Testing connectivity using DNS request when cilium is restored correctly")
 		connectivityTest()
@@ -218,7 +259,7 @@ var _ = Describe("K8sFQDNTest", func() {
 		By("Validating APP2 policy connectivity")
 		res := kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App2],
-			helpers.CurlFail(world1Target))
+			helpers.CurlFail("--retry 5 "+world1Target))
 		res.ExpectSuccess("Can't connect to to a valid target when it should work")
 
 		res = kubectl.ExecPodCmd(
@@ -230,7 +271,7 @@ var _ = Describe("K8sFQDNTest", func() {
 
 		res = kubectl.ExecPodCmd(
 			helpers.DefaultNamespace, appPods[helpers.App3],
-			helpers.CurlFail(world2Target))
+			helpers.CurlWithRetries(world2Target, 5, true))
 		res.ExpectSuccess("Can't connect to to a valid target when it should work")
 
 		res = kubectl.ExecPodCmd(

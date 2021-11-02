@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package helpers
 
@@ -35,7 +24,8 @@ var (
 	SSHMetaLogs = ginkgoext.NewWriter(new(Buffer))
 )
 
-// SSHMeta contains metadata to SSH into a remote location to run tests
+// SSHMeta contains metadata to SSH into a remote location to run tests,
+// implements Executor interface
 type SSHMeta struct {
 	sshClient *SSHClient
 	env       []string
@@ -51,6 +41,11 @@ func CreateSSHMeta(host string, port int, user string) *SSHMeta {
 	return &SSHMeta{
 		sshClient: GetSSHClient(host, port, user),
 	}
+}
+
+// IsLocal returns true if commands are executed on the Ginkgo host
+func (s *SSHMeta) IsLocal() bool {
+	return false
 }
 
 // Logger returns logger for SSHMeta
@@ -125,7 +120,6 @@ func (s *SSHMeta) setBasePath() {
 	}
 
 	s.basePath = filepath.Join(home, "go", CiliumPath)
-	return
 }
 
 // ExecuteContext executes the given `cmd` and writes the cmd's stdout and
@@ -318,4 +312,27 @@ func (s *SSHMeta) ExecInBackground(ctx context.Context, cmd string, options ...E
 	}(res)
 
 	return res
+}
+
+// RenderTemplateToFile renders a text/template string into a target filename
+// with specific persmisions. Returns an error if the template cannot be
+// validated or the file cannot be created.
+func (s *SSHMeta) RenderTemplateToFile(filename string, tmplt string, perm os.FileMode) error {
+	content, err := RenderTemplate(tmplt)
+	if err != nil {
+		return err
+	}
+
+	dst := filepath.Join(s.basePath, filename)
+	cmd := fmt.Sprintf("echo '%s' > %s", content, dst)
+	res := s.Exec(cmd)
+	if !res.WasSuccessful() {
+		return fmt.Errorf("%s", res.CombineOutput())
+	}
+	cmd = fmt.Sprintf("chmod %o %s", perm, dst)
+	res = s.Exec(cmd)
+	if !res.WasSuccessful() {
+		return fmt.Errorf("%s", res.CombineOutput())
+	}
+	return nil
 }

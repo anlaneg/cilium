@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // text memcache protocol parser based on https://github.com/memcached/memcached/blob/master/doc/protocol.txt
 
@@ -112,12 +101,14 @@ func (rule *Rule) matchOpcode(code byte) bool {
 // L7RuleParser parses protobuf L7 rules to and array of Rule
 // May panic
 func L7RuleParser(rule *cilium.PortNetworkPolicyRule) []proxylib.L7NetworkPolicyRule {
-	var rules []proxylib.L7NetworkPolicyRule
 	l7Rules := rule.GetL7Rules()
 	if l7Rules == nil {
-		return rules
+		return nil
 	}
-	for _, l7Rule := range l7Rules.GetL7Rules() {
+
+	allowRules := l7Rules.GetL7AllowRules()
+	rules := make([]proxylib.L7NetworkPolicyRule, 0, len(allowRules))
+	for _, l7Rule := range allowRules {
 		var br Rule
 		var commandFound = false
 		for k, v := range l7Rule.Rule {
@@ -151,7 +142,7 @@ func L7RuleParser(rule *cilium.PortNetworkPolicyRule) []proxylib.L7NetworkPolicy
 type ParserFactory struct{}
 
 // Create creates memcached parser
-func (p *ParserFactory) Create(connection *proxylib.Connection) proxylib.Parser {
+func (p *ParserFactory) Create(connection *proxylib.Connection) interface{} {
 	log.Debugf("ParserFactory: Create: %v", connection)
 	return &Parser{
 		connection: connection,
@@ -177,7 +168,6 @@ func init() {
 type Parser struct {
 	connection *proxylib.Connection
 	parser     proxylib.Parser
-	isBinary   *bool
 }
 
 var _ proxylib.Parser = &Parser{}
@@ -193,9 +183,9 @@ func (p *Parser) OnData(reply, endStream bool, dataBuffers [][]byte) (proxylib.O
 		}
 
 		if magicByte >= 128 {
-			p.parser = binary.ParserFactoryInstance.Create(p.connection)
+			p.parser = binary.ParserFactoryInstance.Create(p.connection).(proxylib.Parser)
 		} else {
-			p.parser = text.ParserFactoryInstance.Create(p.connection)
+			p.parser = text.ParserFactoryInstance.Create(p.connection).(proxylib.Parser)
 		}
 	}
 	return p.parser.OnData(reply, endStream, dataBuffers)

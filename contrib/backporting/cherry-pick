@@ -3,10 +3,22 @@ set -e
 
 source $(dirname $(readlink -ne $BASH_SOURCE))/common.sh
 
+require_linux
+
+ORG=${ORG:-"cilium"}
+REPO=${REPO:-"cilium"}
+
+cleanup () {
+  if [ -n "$TMPF" ]; then
+    rm $TMPF
+  fi
+}
+
+trap cleanup EXIT
+
 cherry_pick () {
   CID=$1
-  BRANCHES=`git branch -q -r --contains $CID $REM/master 2> /dev/null`
-  if ! echo ${BRANCHES} | grep -q ".*$REM/master.*"; then
+  if ! commit_in_upstream "$CID" "master" "${ORG}" "${REPO}"; then
     echo "Commit $CID not in $REM/master!"
     exit 1
   fi
@@ -19,11 +31,10 @@ cherry_pick () {
   git format-patch -1 $FULL_ID --stdout | sed -n '/^$/,$p' >> $TMPF
   echo "Applying: $(git log -1 --oneline $FULL_ID)"
   git am --quiet -3 --signoff $TMPF
-  rm $TMPF
 }
 
 main () {
-  REM="$(get_remote)"
+  REM="$(get_remote "${ORG}" "${REPO}")"
   for CID in "$@"; do
     cherry_pick "$CID"
   done

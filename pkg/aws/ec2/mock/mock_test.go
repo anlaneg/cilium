@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package mock
@@ -22,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/cilium/cilium/pkg/aws/types"
+	"github.com/cilium/cilium/pkg/checker"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 
 	"gopkg.in/check.v1"
@@ -72,6 +63,22 @@ func (e *MockSuite) TestMock(c *check.C) {
 	c.Assert(ok, check.Equals, false)
 	_, ok = api.enis["i-1"][eniID2]
 	c.Assert(ok, check.Equals, false)
+
+	sg1 := &types.SecurityGroup{
+		ID:    "sg1",
+		VpcID: "vpc-1",
+		Tags:  map[string]string{"k1": "v1"},
+	}
+	sg2 := &types.SecurityGroup{
+		ID:    "sg2",
+		VpcID: "vpc-1",
+		Tags:  map[string]string{"k1": "v1"},
+	}
+	api.UpdateSecurityGroups([]*types.SecurityGroup{sg1, sg2})
+
+	sgMap, err := api.GetSecurityGroups(context.TODO())
+	c.Assert(err, check.IsNil)
+	c.Assert(sgMap, checker.DeepEquals, types.SecurityGroupMap{"sg1": sg1, "sg2": sg2})
 }
 
 func (e *MockSuite) TestSetMockError(c *check.C) {

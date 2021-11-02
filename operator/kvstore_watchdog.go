@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package main
 
@@ -22,8 +11,10 @@ import (
 	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/identity/cache"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/kvstore"
 	kvstoreallocator "github.com/cilium/cilium/pkg/kvstore/allocator"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 // keyPathFromLockPath returns the path of the given key that contains a lease
@@ -65,7 +56,7 @@ func getOldestLeases(lockPaths map[string]kvstore.Value) map[string]kvstore.Valu
 }
 
 func startKvstoreWatchdog() {
-	log.Infof("Starting kvstore watchdog with %s interval...", defaults.LockLeaseTTL)
+	log.WithField(logfields.Interval, defaults.LockLeaseTTL).Infof("Starting kvstore watchdog")
 	backend, err := kvstoreallocator.NewKVStoreBackend(cache.IdentitiesPath, "", nil, kvstore.Client())
 	if err != nil {
 		log.WithError(err).Fatal("Unable to initialize kvstore backend for identity garbage collection")
@@ -74,6 +65,8 @@ func startKvstoreWatchdog() {
 
 	keysToDelete := map[string]kvstore.Value{}
 	go func() {
+		lockTimer, lockTimerDone := inctimer.New()
+		defer lockTimerDone()
 		for {
 			keysToDelete = getOldestLeases(keysToDelete)
 			ctx, cancel := context.WithTimeout(context.Background(), defaults.LockLeaseTTL)
@@ -85,7 +78,21 @@ func startKvstoreWatchdog() {
 			}
 			cancel()
 
-			<-time.After(defaults.LockLeaseTTL)
+			<-lockTimer.After(defaults.LockLeaseTTL)
+		}
+	}()
+
+	go func() {
+		hbTimer, hbTimerDone := inctimer.New()
+		defer hbTimerDone()
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), defaults.LockLeaseTTL)
+			err := kvstore.Client().Update(ctx, kvstore.HeartbeatPath, []byte(time.Now().Format(time.RFC3339)), true)
+			if err != nil {
+				log.WithError(err).Warning("Unable to update heartbeat key")
+			}
+			cancel()
+			<-hbTimer.After(kvstore.HeartbeatWriteInterval)
 		}
 	}()
 }

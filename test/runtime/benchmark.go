@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
@@ -20,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cilium/cilium/pkg/logging"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
@@ -68,8 +58,9 @@ func superNetperfStream(s *helpers.SSHMeta, client string, server string, num in
 
 var _ = Describe("BenchmarkNetperfPerformance", func() {
 	var (
-		vm          *helpers.SSHMeta
-		monitorStop = func() error { return nil }
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
+		monitorStop   = func() error { return nil }
 
 		log    = logging.DefaultLogger
 		logger = logrus.NewEntry(log)
@@ -84,11 +75,12 @@ var _ = Describe("BenchmarkNetperfPerformance", func() {
 	})
 
 	JustBeforeEach(func() {
-		monitorStop = vm.MonitorStart()
+		_, monitorStop = vm.MonitorStart()
+		testStartTime = time.Now()
 	})
 
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 		Expect(monitorStop()).To(BeNil(), "cannot stop monitor command")
 	})
 
@@ -132,12 +124,12 @@ var _ = Describe("BenchmarkNetperfPerformance", func() {
 
 	superNetperfRRLog := func(client string, server string, num int) {
 		res := superNetperfRR(vm, client, server, num)
-		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.GetStdOut(), "\n"))
+		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.Stdout(), "\n"))
 	}
 
 	superNetperfStreamLog := func(client string, server string, num int) {
 		res := superNetperfStream(vm, client, server, num)
-		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.GetStdOut(), "\n"))
+		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.Stdout(), "\n"))
 	}
 
 	Context("Benchmark Netperf Tests", func() {

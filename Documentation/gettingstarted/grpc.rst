@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 ******************
 How to secure gRPC
@@ -17,7 +17,8 @@ minutes.
 
 It is important for this demo that ``kube-dns`` is working correctly. To know the
 status of ``kube-dns`` you can run the following command:
-::
+
+.. code-block:: shell-session
 
     $ kubectl get deployment kube-dns -n kube-system
     NAME       DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
@@ -31,7 +32,7 @@ Deploy the Demo Application
 Now that we have Cilium deployed and ``kube-dns`` operating correctly we can
 deploy our demo gRPC application.  Since our first demo of Cilium + HTTP-aware security
 policies was Star Wars-themed, we decided to do the same for gRPC. While the
-`HTTP-aware Cilium  Star Wars demo <https://www.cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you>`_
+`HTTP-aware Cilium  Star Wars demo <https://cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you/>`_
 showed how the Galactic Empire used HTTP-aware security policies to protect the Death Star from the
 Rebel Alliance, this gRPC demo shows how the lack of gRPC-aware security policies allowed Leia, Chewbacca, Lando, C-3PO, and R2-D2 to escape from Cloud City, which had been overtaken by
 empire forces.
@@ -106,7 +107,7 @@ Kubernetes will deploy the pods and service in the background. Running
 Each pod will go through several states until it reaches ``Running`` at which
 point the setup is ready.
 
-::
+.. code-block:: shell-session
 
     $ kubectl get pods,svc
     NAME                                 READY     STATUS    RESTARTS   AGE
@@ -127,7 +128,7 @@ exists in the *terminal-87* container.
 We'll invoke the 'cc_door_client' with the name of the gRPC method to call, and any
 parameters (in this case, the door-id):
 
-::
+.. code-block:: shell-session
 
     $ kubectl exec terminal-87 -- python3 /cloudcity/cc_door_client.py GetName 1
     Door name is: Spaceport Door #1
@@ -146,7 +147,8 @@ the fine-grained nature of gRPC calls that R2-D2 exploited to override the secur
 and help the rebels escape.
 
 To see this, run:
-::
+
+.. code-block:: shell-session
 
     $ kubectl exec terminal-87 -- python3 /cloudcity/cc_door_client.py SetAccessCode 1 999
     Successfully set AccessCode to 999
@@ -171,7 +173,7 @@ Each gRPC method is mapped to an HTTP POST call to a URL of the form
 
 As a result, the following *CiliumNetworkPolicy* rule limits access of pods with label
 ``app=public-terminal`` to only invoke ``GetName``, ``GetLocation``, and ``RequestMaintenance``
-on the door service, identified by label ``app=cc-door-sgr``:
+on the door service, identified by label ``app=cc-door-mgr``:
 
 .. literalinclude:: ../../examples/kubernetes-grpc/cc-door-ingress-security.yaml
    :language: yaml
@@ -196,7 +198,7 @@ Apply this gRPC-aware network security policy using ``kubectl`` in the main wind
 After this security policy is in place, access to the innocuous calls like ``GetLocation``
 still works as intended:
 
-::
+.. code-block:: shell-session
 
     $ kubectl exec terminal-87 -- python3 /cloudcity/cc_door_client.py GetLocation 1
     Door location is lat = 10.222200393676758 long = 68.87879943847656
@@ -204,7 +206,7 @@ still works as intended:
 
 However, if we then again try to invoke ``SetAccessCode``, it is denied:
 
-::
+.. code-block:: shell-session
 
     $ kubectl exec terminal-87 -- python3 /cloudcity/cc_door_client.py SetAccessCode 1 999
 

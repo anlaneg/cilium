@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package main
 
@@ -22,12 +11,14 @@ import "C"
 import (
 	"github.com/cilium/cilium/proxylib/accesslog"
 	_ "github.com/cilium/cilium/proxylib/cassandra"
+	_ "github.com/cilium/cilium/proxylib/kafka"
 	_ "github.com/cilium/cilium/proxylib/memcached"
 	"github.com/cilium/cilium/proxylib/npds"
 	. "github.com/cilium/cilium/proxylib/proxylib"
 	_ "github.com/cilium/cilium/proxylib/r2d2"
 	_ "github.com/cilium/cilium/proxylib/testparsers"
 
+	"github.com/cilium/cilium/pkg/flowdebug"
 	"github.com/cilium/cilium/pkg/lock"
 	log "github.com/sirupsen/logrus"
 )
@@ -40,7 +31,7 @@ var (
 )
 
 func init() {
-	log.Debug("proxylib: Initializing library")
+	log.Info("proxylib: Initializing library")
 }
 
 // Copy value string from C-memory to Go-memory.
@@ -142,6 +133,7 @@ func OpenModule(params [][2]string, debug bool) uint64 {
 	if debug {
 		mutex.Lock()
 		log.SetLevel(log.DebugLevel)
+		flowdebug.Enable()
 		mutex.Unlock()
 	}
 	// Copy strings from C-memory to Go-memory so that the string remains valid

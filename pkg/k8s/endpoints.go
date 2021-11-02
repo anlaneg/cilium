@@ -1,16 +1,5 @@
-// Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
 package k8s
 
@@ -21,25 +10,27 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/tools/cache"
-
 	"github.com/cilium/cilium/pkg/ip"
-	"github.com/cilium/cilium/pkg/k8s/types"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_discovery_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	slim_discovery_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	"github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/service"
+	serviceStore "github.com/cilium/cilium/pkg/service/store"
 
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/api/discovery/v1beta1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/cache"
 )
 
 // Endpoints is an abstraction for the Kubernetes endpoints object. Endpoints
 // consists of a set of backend IPs in combination with a set of ports and
 // protocols. The name of the backend ports must match the names of the
 // frontend ports of the corresponding service.
+//
 // +k8s:deepcopy-gen=true
+// +deepequal-gen=true
+// +deepequal-gen:private-method=true
 type Endpoints struct {
 	// Backends is a map containing all backend IPs and ports. The key to
 	// the map is the backend IP in string form. The value defines the list
@@ -47,23 +38,24 @@ type Endpoints struct {
 	Backends map[string]*Backend
 }
 
-// Backend contains all ports and the node name of a given backend
-// +k8s:deepcopy-gen=true
-type Backend struct {
-	Ports    service.PortConfiguration
-	NodeName string
-}
-
-// DeepEquals returns true if both Backends are identical
-func (b *Backend) DeepEquals(o *Backend) bool {
+// DeepEqual returns true if both endpoints are deep equal.
+func (e *Endpoints) DeepEqual(o *Endpoints) bool {
 	switch {
-	case (b == nil) != (o == nil):
+	case (e == nil) != (o == nil):
 		return false
-	case (b == nil) && (o == nil):
+	case (e == nil) && (o == nil):
 		return true
 	}
+	return e.deepEqual(o)
+}
 
-	return b.NodeName == o.NodeName && b.Ports.DeepEquals(o.Ports)
+// Backend contains all ports and the node name of a given backend
+//
+// +k8s:deepcopy-gen=true
+// +deepequal-gen=true
+type Backend struct {
+	Ports    serviceStore.PortConfiguration
+	NodeName string
 }
 
 // String returns the string representation of an endpoints resource, with
@@ -92,33 +84,6 @@ func newEndpoints() *Endpoints {
 	}
 }
 
-// DeepEquals returns true if both endpoints are deep equal.
-func (e *Endpoints) DeepEquals(o *Endpoints) bool {
-	switch {
-	case (e == nil) != (o == nil):
-		return false
-	case (e == nil) && (o == nil):
-		return true
-	}
-
-	if len(e.Backends) != len(o.Backends) {
-		return false
-	}
-
-	for ip1, backend1 := range e.Backends {
-		backend2, ok := o.Backends[ip1]
-		if !ok {
-			return false
-		}
-
-		if !backend1.DeepEquals(backend2) {
-			return false
-		}
-	}
-
-	return true
-}
-
 // CIDRPrefixes returns the endpoint's backends as a slice of IPNets.
 func (e *Endpoints) CIDRPrefixes() ([]*net.IPNet, error) {
 	prefixes := make([]string, len(e.Backends))
@@ -137,7 +102,7 @@ func (e *Endpoints) CIDRPrefixes() ([]*net.IPNet, error) {
 }
 
 // ParseEndpointsID parses a Kubernetes endpoints and returns the ServiceID
-func ParseEndpointsID(svc *types.Endpoints) ServiceID {
+func ParseEndpointsID(svc *slim_corev1.Endpoints) ServiceID {
 	return ServiceID{
 		Name:      svc.ObjectMeta.Name,
 		Namespace: svc.ObjectMeta.Namespace,
@@ -145,14 +110,14 @@ func ParseEndpointsID(svc *types.Endpoints) ServiceID {
 }
 
 // ParseEndpoints parses a Kubernetes Endpoints resource
-func ParseEndpoints(ep *types.Endpoints) (ServiceID, *Endpoints) {
+func ParseEndpoints(ep *slim_corev1.Endpoints) (ServiceID, *Endpoints) {
 	endpoints := newEndpoints()
 
 	for _, sub := range ep.Subsets {
 		for _, addr := range sub.Addresses {
 			backend, ok := endpoints.Backends[addr.IP]
 			if !ok {
-				backend = &Backend{Ports: service.PortConfiguration{}}
+				backend = &Backend{Ports: serviceStore.PortConfiguration{}}
 				endpoints.Backends[addr.IP] = backend
 			}
 
@@ -170,17 +135,26 @@ func ParseEndpoints(ep *types.Endpoints) (ServiceID, *Endpoints) {
 	return ParseEndpointsID(ep), endpoints
 }
 
-// ParseEndpointSliceID parses a Kubernetes endpoints slice and returns the
-// ServiceID
-func ParseEndpointSliceID(svc *types.EndpointSlice) ServiceID {
-	return ServiceID{
-		Name:      svc.ObjectMeta.GetLabels()[v1beta1.LabelServiceName],
-		Namespace: svc.ObjectMeta.Namespace,
+type endpointSlice interface {
+	GetNamespace() string
+	GetName() string
+	GetLabels() map[string]string
+}
+
+// ParseEndpointSliceID parses a Kubernetes endpoints slice and returns a
+// EndpointSliceID
+func ParseEndpointSliceID(es endpointSlice) EndpointSliceID {
+	return EndpointSliceID{
+		ServiceID: ServiceID{
+			Name:      es.GetLabels()[slim_discovery_v1.LabelServiceName],
+			Namespace: es.GetNamespace(),
+		},
+		EndpointSliceName: es.GetName(),
 	}
 }
 
-// ParseEndpointSlice parses a Kubernetes Endpoints resource
-func ParseEndpointSlice(ep *types.EndpointSlice) (ServiceID, *Endpoints) {
+// ParseEndpointSliceV1Beta1 parses a Kubernetes EndpointsSlice v1beta1 resource
+func ParseEndpointSliceV1Beta1(ep *slim_discovery_v1beta1.EndpointSlice) (EndpointSliceID, *Endpoints) {
 	endpoints := newEndpoints()
 
 	for _, sub := range ep.Endpoints {
@@ -195,7 +169,7 @@ func ParseEndpointSlice(ep *types.EndpointSlice) (ServiceID, *Endpoints) {
 		for _, addr := range sub.Addresses {
 			backend, ok := endpoints.Backends[addr]
 			if !ok {
-				backend = &Backend{Ports: service.PortConfiguration{}}
+				backend = &Backend{Ports: serviceStore.PortConfiguration{}}
 				endpoints.Backends[addr] = backend
 				if nodeName, ok := sub.Topology["kubernetes.io/hostname"]; ok {
 					backend.NodeName = nodeName
@@ -203,7 +177,7 @@ func ParseEndpointSlice(ep *types.EndpointSlice) (ServiceID, *Endpoints) {
 			}
 
 			for _, port := range ep.Ports {
-				name, lbPort := parseEndpointPort(port)
+				name, lbPort := parseEndpointPortV1Beta1(port)
 				if lbPort != nil {
 					backend.Ports[name] = lbPort
 				}
@@ -214,15 +188,15 @@ func ParseEndpointSlice(ep *types.EndpointSlice) (ServiceID, *Endpoints) {
 	return ParseEndpointSliceID(ep), endpoints
 }
 
-// parseEndpointPort returns the port name and the port parsed as a L4Addr from
-// the given port.
-func parseEndpointPort(port v1beta1.EndpointPort) (string, *loadbalancer.L4Addr) {
+// parseEndpointPortV1Beta1 returns the port name and the port parsed as a
+// L4Addr from the given port.
+func parseEndpointPortV1Beta1(port slim_discovery_v1beta1.EndpointPort) (string, *loadbalancer.L4Addr) {
 	proto := loadbalancer.TCP
 	if port.Protocol != nil {
 		switch *port.Protocol {
-		case v1.ProtocolTCP:
+		case slim_corev1.ProtocolTCP:
 			proto = loadbalancer.TCP
-		case v1.ProtocolUDP:
+		case slim_corev1.ProtocolUDP:
 			proto = loadbalancer.UDP
 		default:
 			return "", nil
@@ -237,6 +211,123 @@ func parseEndpointPort(port v1beta1.EndpointPort) (string, *loadbalancer.L4Addr)
 	}
 	lbPort := loadbalancer.NewL4Addr(proto, uint16(*port.Port))
 	return name, lbPort
+}
+
+// ParseEndpointSliceV1 parses a Kubernetes Endpoints resource
+func ParseEndpointSliceV1(ep *slim_discovery_v1.EndpointSlice) (EndpointSliceID, *Endpoints) {
+	endpoints := newEndpoints()
+
+	for _, sub := range ep.Endpoints {
+		// ready indicates that this endpoint is prepared to receive traffic,
+		// according to whatever system is managing the endpoint. A nil value
+		// indicates an unknown state. In most cases consumers should interpret this
+		// unknown state as ready.
+		// More info: vendor/k8s.io/api/discovery/v1/types.go:117
+		if sub.Conditions.Ready != nil && !*sub.Conditions.Ready {
+			continue
+		}
+		for _, addr := range sub.Addresses {
+			backend, ok := endpoints.Backends[addr]
+			if !ok {
+				backend = &Backend{Ports: serviceStore.PortConfiguration{}}
+				endpoints.Backends[addr] = backend
+				if sub.NodeName != nil {
+					backend.NodeName = *sub.NodeName
+				} else {
+					if nodeName, ok := sub.DeprecatedTopology["kubernetes.io/hostname"]; ok {
+						backend.NodeName = nodeName
+					}
+				}
+			}
+
+			for _, port := range ep.Ports {
+				name, lbPort := parseEndpointPortV1(port)
+				if lbPort != nil {
+					backend.Ports[name] = lbPort
+				}
+			}
+		}
+	}
+
+	return ParseEndpointSliceID(ep), endpoints
+}
+
+// parseEndpointPortV1 returns the port name and the port parsed as a L4Addr from
+// the given port.
+func parseEndpointPortV1(port slim_discovery_v1.EndpointPort) (string, *loadbalancer.L4Addr) {
+	proto := loadbalancer.TCP
+	if port.Protocol != nil {
+		switch *port.Protocol {
+		case slim_corev1.ProtocolTCP:
+			proto = loadbalancer.TCP
+		case slim_corev1.ProtocolUDP:
+			proto = loadbalancer.UDP
+		default:
+			return "", nil
+		}
+	}
+	if port.Port == nil {
+		return "", nil
+	}
+	var name string
+	if port.Name != nil {
+		name = *port.Name
+	}
+	lbPort := loadbalancer.NewL4Addr(proto, uint16(*port.Port))
+	return name, lbPort
+}
+
+// EndpointSlices is the collection of all endpoint slices of a service.
+// The map key is the name of the endpoint slice or the name of the legacy
+// v1.Endpoint. The endpoints stored here are not namespaced since this
+// structure is only used as a value of another map that is already namespaced.
+// (see ServiceCache.endpoints).
+//
+// +deepequal-gen=true
+type EndpointSlices struct {
+	epSlices map[string]*Endpoints
+}
+
+// newEndpointsSlices returns a new EndpointSlices
+func newEndpointsSlices() *EndpointSlices {
+	return &EndpointSlices{
+		epSlices: map[string]*Endpoints{},
+	}
+}
+
+// GetEndpoints returns a read only a single *Endpoints structure with all
+// Endpoints' backends joined.
+func (es *EndpointSlices) GetEndpoints() *Endpoints {
+	if es == nil || len(es.epSlices) == 0 {
+		return nil
+	}
+	allEps := newEndpoints()
+	for _, eps := range es.epSlices {
+		for backend, ep := range eps.Backends {
+			allEps.Backends[backend] = ep
+		}
+	}
+	return allEps
+}
+
+// Upsert maps the 'esname' to 'e'.
+// - 'esName': Name of the Endpoint Slice
+// - 'e': Endpoints to store in the map
+func (es *EndpointSlices) Upsert(esName string, e *Endpoints) {
+	if es == nil {
+		panic("BUG: EndpointSlices is nil")
+	}
+	es.epSlices[esName] = e
+}
+
+// Delete deletes the endpoint slice in the internal map. Returns true if there
+// are not any more endpoints available in the map.
+func (es *EndpointSlices) Delete(esName string) bool {
+	if es == nil || len(es.epSlices) == 0 {
+		return true
+	}
+	delete(es.epSlices, esName)
+	return len(es.epSlices) == 0
 }
 
 // externalEndpoints is the collection of external endpoints in all remote
@@ -256,6 +347,12 @@ func newExternalEndpoints() externalEndpoints {
 // watch and process endpoint slices.
 func SupportsEndpointSlice() bool {
 	return version.Capabilities().EndpointSlice && option.Config.K8sEnableK8sEndpointSlice
+}
+
+// SupportsEndpointSliceV1 returns true if cilium-operator or cilium-agent should
+// watch and process endpoint slices V1.
+func SupportsEndpointSliceV1() bool {
+	return SupportsEndpointSlice() && version.Capabilities().EndpointSliceV1
 }
 
 // HasEndpointSlice returns true if the hasEndpointSlices is closed before the

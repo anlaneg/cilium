@@ -1,18 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-// +build !privileged_tests
+//go:build linux && !privileged_tests
+// +build linux,!privileged_tests
 
 package mountinfo
 
@@ -22,6 +12,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/checker"
 
+	"golang.org/x/sys/unix"
 	. "gopkg.in/check.v1"
 )
 
@@ -600,39 +591,21 @@ func (s *MountInfoTestSuite) TestGetMountInfo(c *C) {
 	c.Assert(err, IsNil)
 }
 
-// TestIsMountFSPrivate tests the private function isMountFS which expects
-// mountinfo to be provided as a slice.
-func (s *MountInfoTestSuite) TestIsMountFSPrivate(c *C) {
-	r := bytes.NewBuffer([]byte(mountInfoContent))
-	mountInfos, err := parseMountInfoFile(r)
-	c.Assert(err, IsNil)
-
-	// /sys/fs/bpffs should be recognized as a BPFFS mount.
-	mounted, bpffsInstance := isMountFS(mountInfos, FilesystemTypeBPFFS, "/sys/fs/bpf")
-	c.Assert(mounted, Equals, true)
-	c.Assert(bpffsInstance, Equals, true)
-
-	// /sys/fs/cgroup/unified should be recognized as a cgroup2 mount.
-	mounted, cgroup2Instance := isMountFS(mountInfos, FilesystemTypeCgroup2, "/sys/fs/cgroup/unified")
-	c.Assert(mounted, Equals, true)
-	c.Assert(cgroup2Instance, Equals, true)
-
-	// /run/user/463 should be recognized as a mount, but not of BPFFS type.
-	mounted, bpffsInstance = isMountFS(mountInfos, FilesystemTypeBPFFS, "/run/user/463")
-	c.Assert(mounted, Equals, true)
-	c.Assert(bpffsInstance, Equals, false)
-
-	// /foo/bar shouldn't be found in mountinfo.
-	mounted, bpffsInstance = isMountFS(mountInfos, FilesystemTypeBPFFS, "/foo/bar")
-	c.Assert(mounted, Equals, false)
-	c.Assert(bpffsInstance, Equals, false)
-}
-
-// TestIsMountFS tests the public funcion IsMountFS which gets mountinfo from
-// /proc/self/mountinfo. We cannot expect every system and machine to have any
-// predictable mounts. The only thing which can be checked is whether there is
-// no error returned by mountinfo parser.
+// TestIsMountFS tests the public function IsMountFS. We cannot expect every
+// system and machine to have any predictable mounts, but let's try a couple
+// of very well known paths.
 func (s *MountInfoTestSuite) TestIsMountFS(c *C) {
-	_, _, err := IsMountFS(FilesystemTypeBPFFS, "/sys/fs/bpf")
+	mounted, matched, err := IsMountFS(unix.PROC_SUPER_MAGIC, "/proc")
 	c.Assert(err, IsNil)
+	c.Assert(mounted, Equals, true)
+	c.Assert(matched, Equals, true)
+
+	mounted, matched, err = IsMountFS(FilesystemTypeBPFFS, "/sys/fs/bpf")
+	c.Assert(err, IsNil)
+	// We can't expect /sys/fs/bpf is mounted, so only check fstype
+	// if it is mounted. IOW, if /sys/fs/bpf is a mount point,
+	// we expect it to be bpffs.
+	if mounted {
+		c.Assert(matched, Equals, true)
+	}
 }

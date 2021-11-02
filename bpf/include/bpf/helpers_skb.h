@@ -8,14 +8,15 @@
 
 #include "compiler.h"
 #include "helpers.h"
+#include "features_skb.h"
 
 /* Only used helpers in Cilium go below. */
 
-/* Packet misc meta data */
-static __u32 BPF_FUNC(get_hash_recalc, struct __sk_buff *skb);
-
 /* Packet redirection */
 static int BPF_FUNC(redirect, int ifindex, __u32 flags);
+static int BPF_FUNC(redirect_neigh, int ifindex, struct bpf_redir_neigh *params,
+		    int plen, __u32 flags);
+static int BPF_FUNC(redirect_peer, int ifindex, __u32 flags);
 
 /* Packet manipulation */
 //自skb指定的offset位置加载长度为len的数据，存放到to中
@@ -38,6 +39,8 @@ static int BPF_FUNC(skb_change_proto, struct __sk_buff *skb, __u32 proto,
 		    __u32 flags);
 static int BPF_FUNC(skb_change_tail, struct __sk_buff *skb, __u32 nlen,
 		    __u32 flags);
+static int BPF_FUNC(skb_change_head, struct __sk_buff *skb, __u32 head_room,
+		    __u64 flags);
 
 static int BPF_FUNC(skb_pull_data, struct __sk_buff *skb, __u32 len);
 
@@ -52,5 +55,13 @@ static int BPF_FUNC(skb_set_tunnel_key, struct __sk_buff *skb,
 static int BPF_FUNC_REMAP(skb_event_output, struct __sk_buff *skb, void *map,
 			  __u64 index, const void *data, __u32 size) =
 			 (void *)BPF_FUNC_perf_event_output;
+
+/* Socket lookup, assign, release */
+static struct bpf_sock *BPF_FUNC(skc_lookup_tcp, struct __sk_buff *skb,
+				 struct bpf_sock_tuple *tuple, __u32 tuple_size,
+				 __u64 netns, __u64 flags);
+static int BPF_FUNC(sk_release, struct bpf_sock *sk);
+static int BPF_FUNC(sk_assign, struct __sk_buff *skb, struct bpf_sock *sk,
+		    __u64 flags);
 
 #endif /* __BPF_HELPERS_SKB__ */

@@ -24,6 +24,10 @@ all:
 install:
 	@echo "cilium-envoy must be installed separately"
 
+install-binary: install
+
+install-bash-completion:
+
 clean:
 
 else
@@ -34,10 +38,14 @@ all:
 
 install:
 ifndef DISABLE_ENVOY_INSTALLATION
-	docker create -ti --name cilium-envoy quay.io/cilium/cilium-envoy:${CILIUM_ENVOY_SHA} bash
+	docker create -ti --name cilium-envoy $(CILIUM_ENVOY_REF) bash
 	docker cp cilium-envoy:/usr/bin/cilium-envoy $(BINDIR)/cilium-envoy
 	docker rm -fv cilium-envoy
 endif
+
+install-binary: install
+
+install-bash-completion:
 
 clean:
 

@@ -1,16 +1,5 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package k8s
 
@@ -25,11 +14,11 @@ import (
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/controller"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
-	"github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/scheme"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
 	"github.com/sirupsen/logrus"
-	coreV1 "k8s.io/api/core/v1"
+	core_v1 "k8s.io/api/core/v1"
+	apiextclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -40,11 +29,19 @@ type K8sClient struct {
 	// kubernetes.Interface is the object through which interactions with
 	// Kubernetes are performed.
 	kubernetes.Interface
+
+	// ctrlMgr is the manager of controllers for this K8sClient.
+	ctrlMgr *controller.Manager
 }
 
 // K8sCiliumClient is a wrapper around clientset.Interface.
 type K8sCiliumClient struct {
 	clientset.Interface
+}
+
+// K8sAPIExtensionsClient is a wrapper around clientset.Interface.
+type K8sAPIExtensionsClient struct {
+	apiextclientset.Interface
 }
 
 func updateNodeAnnotation(c kubernetes.Interface, nodeName string, encryptKey uint8, v4CIDR, v6CIDR *cidr.CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP net.IP) error {
@@ -86,7 +83,7 @@ func updateNodeAnnotation(c kubernetes.Interface, nodeName string, encryptKey ui
 	}
 	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":%s}}`, raw))
 
-	_, err = c.CoreV1().Nodes().Patch(nodeName, types.StrategicMergePatchType, patch)
+	_, err = c.CoreV1().Nodes().Patch(context.TODO(), nodeName, types.StrategicMergePatchType, patch, v1.PatchOptions{})
 
 	return err
 }
@@ -113,9 +110,8 @@ func (k8sCli K8sClient) AnnotateNode(nodeName string, encryptKey uint8, v4CIDR, 
 				err := updateNodeAnnotation(k8sCli, nodeName, encryptKey, v4CIDR, v6CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP)
 				if err != nil {
 					scopedLog.WithFields(logrus.Fields{}).WithError(err).Warn("Unable to patch node resource with annotation")
-					return err
 				}
-				return SetNodeNetworkUnavailableFalse(k8sCli, nodeName)
+				return err
 			},
 		})
 
@@ -128,17 +124,18 @@ func (k8sCli K8sClient) GetSecrets(ctx context.Context, ns, name string) (map[st
 		return nil, fmt.Errorf("GetSecrets: No k8s, cannot access k8s secrets")
 	}
 
-	result := &coreV1.Secret{}
-	err := k8sCli.CoreV1().RESTClient().Get().
-		Context(ctx).
-		Namespace(ns).
-		Resource("secrets").
-		Name(name).
-		VersionedParams(&v1.GetOptions{}, scheme.ParameterCodec).
-		Do().
-		Into(result)
+	result, err := k8sCli.CoreV1().Secrets(ns).Get(ctx, name, v1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
 	return result.Data, nil
+}
+
+// GetK8sNode returns the node with the given nodeName.
+func (k8sCli K8sClient) GetK8sNode(ctx context.Context, nodeName string) (*core_v1.Node, error) {
+	if k8sCli.Interface == nil {
+		return nil, fmt.Errorf("GetK8sNode: No k8s, cannot access k8s nodes")
+	}
+
+	return k8sCli.CoreV1().Nodes().Get(ctx, nodeName, v1.GetOptions{})
 }

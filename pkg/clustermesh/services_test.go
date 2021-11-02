@@ -1,25 +1,14 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package clustermesh
 
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"time"
@@ -29,16 +18,17 @@ import (
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/k8s"
-	"github.com/cilium/cilium/pkg/k8s/types"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
+	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
+	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/testutils/allocator"
 
 	. "gopkg.in/check.v1"
-	"k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var etcdConfig = []byte(fmt.Sprintf("endpoints:\n- %s\n", kvstore.EtcdDummyAddress()))
@@ -63,25 +53,25 @@ var (
 func (s *ClusterMeshServicesTestSuite) SetUpTest(c *C) {
 	kvstore.SetupDummy("etcd")
 
-	s.randomName = testutils.RandomRune()
+	s.randomName = rand.RandomString()
 
 	kvstore.Client().DeletePrefix(context.TODO(), "cilium/state/services/v1/"+s.randomName)
 	s.svcCache = k8s.NewServiceCache(fakeDatapath.NewNodeAddressing())
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 
 	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	<-mgr.InitIdentityAllocator(nil, nil)
-	dir, err := ioutil.TempDir("", "multicluster")
+	dir, err := os.MkdirTemp("", "multicluster")
 	s.testDir = dir
 	c.Assert(err, IsNil)
 
 	config1 := path.Join(dir, s.randomName+"1")
-	err = ioutil.WriteFile(config1, etcdConfig, 0644)
+	err = os.WriteFile(config1, etcdConfig, 0644)
 	c.Assert(err, IsNil)
 
 	config2 := path.Join(dir, s.randomName+"2")
-	err = ioutil.WriteFile(config2, etcdConfig, 0644)
+	err = os.WriteFile(config2, etcdConfig, 0644)
 	c.Assert(err, IsNil)
 
 	cm, err := NewClusterMesh(Configuration{
@@ -143,19 +133,17 @@ func (s *ClusterMeshServicesTestSuite) TestClusterMeshServicesGlobal(c *C) {
 	kvstore.Client().Set(context.TODO(), k, []byte(v))
 
 	swgSvcs := lock.NewStoppableWaitGroup()
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "default",
-				Annotations: map[string]string{
-					"io.cilium/global-service": "true",
-				},
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"io.cilium/global-service": "true",
 			},
-			Spec: v1.ServiceSpec{
-				ClusterIP: "127.0.0.1",
-				Type:      v1.ServiceTypeClusterIP,
-			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			ClusterIP: "127.0.0.1",
+			Type:      slim_corev1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -166,21 +154,19 @@ func (s *ClusterMeshServicesTestSuite) TestClusterMeshServicesGlobal(c *C) {
 			event.Endpoints.Backends["20.0.185.196"] != nil
 	})
 
-	k8sEndpoints := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "default",
-			},
-			Subsets: []v1.EndpointSubset{
-				{
-					Addresses: []v1.EndpointAddress{{IP: "30.0.185.196"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "http",
-							Port:     100,
-							Protocol: v1.ProtocolTCP,
-						},
+	k8sEndpoints := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "default",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "30.0.185.196"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "http",
+						Port:     100,
+						Protocol: slim_corev1.ProtocolTCP,
 					},
 				},
 			},
@@ -223,19 +209,17 @@ func (s *ClusterMeshServicesTestSuite) TestClusterMeshServicesUpdate(c *C) {
 	k, v = s.prepareServiceUpdate("2", "20.0.185.196", "http2", "90")
 	kvstore.Client().Set(context.TODO(), k, []byte(v))
 
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "default",
-				Annotations: map[string]string{
-					"io.cilium/global-service": "true",
-				},
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"io.cilium/global-service": "true",
 			},
-			Spec: v1.ServiceSpec{
-				ClusterIP: "127.0.0.1",
-				Type:      v1.ServiceTypeClusterIP,
-			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			ClusterIP: "127.0.0.1",
+			Type:      slim_corev1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -244,10 +228,10 @@ func (s *ClusterMeshServicesTestSuite) TestClusterMeshServicesUpdate(c *C) {
 
 	s.expectEvent(c, k8s.UpdateService, svcID, func(event k8s.ServiceEvent) bool {
 		return event.Endpoints.Backends["10.0.185.196"] != nil &&
-			event.Endpoints.Backends["10.0.185.196"].Ports["http"].Equals(
+			event.Endpoints.Backends["10.0.185.196"].Ports["http"].DeepEqual(
 				loadbalancer.NewL4Addr(loadbalancer.TCP, 80)) &&
 			event.Endpoints.Backends["20.0.185.196"] != nil &&
-			event.Endpoints.Backends["20.0.185.196"].Ports["http2"].Equals(
+			event.Endpoints.Backends["20.0.185.196"].Ports["http2"].DeepEqual(
 				loadbalancer.NewL4Addr(loadbalancer.TCP, 90))
 	})
 
@@ -289,17 +273,15 @@ func (s *ClusterMeshServicesTestSuite) TestClusterMeshServicesNonGlobal(c *C) {
 	k, v = s.prepareServiceUpdate("2", "20.0.185.196", "http2", "90")
 	kvstore.Client().Set(context.TODO(), k, []byte(v))
 
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "default",
-				// shared annotation is NOT set
-			},
-			Spec: v1.ServiceSpec{
-				ClusterIP: "127.0.0.1",
-				Type:      v1.ServiceTypeClusterIP,
-			},
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "default",
+			// shared annotation is NOT set
+		},
+		Spec: slim_corev1.ServiceSpec{
+			ClusterIP: "127.0.0.1",
+			Type:      slim_corev1.ServiceTypeClusterIP,
 		},
 	}
 

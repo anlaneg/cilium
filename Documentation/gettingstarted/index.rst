@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _gs_guide:
 
@@ -23,14 +23,23 @@ Installation
    :maxdepth: 1
    :glob:
 
-   k8s-install-sandbox
-   k8s-install-self-managed
-   k8s-install-managed
-   k8s-installers
-   cni-chaining
+   k8s-install-default
+   k8s-install-helm
+   k8s-install-advanced
 
-Security Tutorials
-------------------
+Observability
+-------------
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+
+   hubble_setup
+   hubble_cli
+   hubble
+
+Network Policy Security Tutorials
+---------------------------------
 
 .. toctree::
    :maxdepth: 1
@@ -45,6 +54,8 @@ Security Tutorials
    cassandra
    memcached
    aws
+   policy-creation
+   host-firewall
 
 Advanced Networking
 -------------------
@@ -52,17 +63,31 @@ Advanced Networking
    :maxdepth: 1
    :glob:
 
-   aws-eni
+   alibabacloud-eni
    kube-router
    bird
-   clustermesh
-   flannel-integration
    ipvlan
    encryption
    host-services
    kubeproxy-free
-   kata-gce
+   bandwidth-manager
+   kata
    ipam
+   local-redirect-policy
+   bgp
+   egress-gateway
+
+Cluster Mesh
+------------
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+
+   clustermesh/clustermesh
+   clustermesh/services
+   clustermesh/policy
+   external-workloads
 
 Operations
 ----------
@@ -82,17 +107,6 @@ Istio
 
    istio
 
-Other Orchestrators
--------------------
-
-.. toctree::
-   :maxdepth: 1
-   :glob:
-
-   docker
-   mesos
-
 The best way to get help if you get stuck is to ask a question on the `Cilium
 Slack channel <https://cilium.herokuapp.com>`_.  With Cilium contributors
 across the globe, there is almost always someone available to help.
-

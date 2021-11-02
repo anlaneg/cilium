@@ -1,28 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package fqdn
 
 import (
 	"net"
 	"regexp"
-	"strings"
 
+	"github.com/cilium/cilium/pkg/fqdn/dns"
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
 
@@ -104,43 +92,47 @@ func mapSelectorsToIPs(fqdnSelectors map[api.FQDNSelector]struct{}, cache *DNSCa
 	return selectorsMissingIPs, selectorIPMapping
 }
 
-// sortedIPsAreEqual compares two lists of sorted IPs. If any differ it returns
-// false.
-func sortedIPsAreEqual(a, b []net.IP) bool {
-	// the IP set is definitely different if the lengths are different
-	if len(a) != len(b) {
-		return false
-	}
-
-	// lengths are equal, so each member in one set must be in the other
-	// Note: we sorted fullNewIPs above, and sorted oldIPs when they were
-	// inserted in this function, previously.
-	// If any IPs at the same index differ, updated = true.
-	for i := range a {
-		if !a[i].Equal(b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
 // prepareMatchName ensures a ToFQDNs.matchName field is used consistently.
 func prepareMatchName(matchName string) string {
-	return strings.ToLower(dns.Fqdn(matchName))
+	return dns.FQDN(matchName)
 }
 
-// KeepUniqueNames it gets a array of strings and return a new array of strings
-// with the unique names.
+// KeepUniqueNames removes duplicate names from the given slice while
+// maintaining order. The returned slice re-uses the memory of the
+// input slice.
 func KeepUniqueNames(names []string) []string {
-	result := []string{}
-	entries := map[string]bool{}
-
-	for _, item := range names {
-		if _, ok := entries[item]; ok {
-			continue
+	deleted := 0
+	namesLen := len(names)
+	// Use naive O(n^2) in-place algorithm for shorter slices,
+	// avoiding all memory allocations.  Limit of 48 names has
+	// been experimentally derived. For shorter slices N^2 search
+	// is upto 5 times faster than using a map. At 48 both
+	// implementations are roughly the same speed.  Above 48 the
+	// exponential kicks in and the naive loop becomes slower.
+	if namesLen < 48 {
+	Loop:
+		for i := 0; i < namesLen; i++ {
+			current := i - deleted
+			for j := 0; j < current; j++ {
+				if names[i] == names[j] {
+					deleted++
+					continue Loop
+				}
+			}
+			names[current] = names[i]
 		}
-		entries[item] = true
-		result = append(result, item)
+	} else {
+		// Use map
+		entries := make(map[string]struct{}, namesLen)
+		for i := 0; i < namesLen; i++ {
+			if _, ok := entries[names[i]]; ok {
+				deleted++
+				continue
+			}
+			entries[names[i]] = struct{}{}
+			names[i-deleted] = names[i]
+		}
 	}
-	return result
+	// truncate slice to leave off the duplicates
+	return names[:namesLen-deleted]
 }

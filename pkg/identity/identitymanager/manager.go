@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package identitymanager
 
 import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
@@ -112,7 +102,9 @@ func (idm *IdentityManager) RemoveOldAddNew(old, new *identity.Identity) {
 	if old == nil && new == nil {
 		return
 	}
-	if old != nil && new != nil && old.ID == new.ID {
+	// The host endpoint will always retain its reserved ID, but its labels may
+	// change so we need to update its identity.
+	if old != nil && new != nil && old.ID == new.ID && new.ID != identity.ReservedIdentityHost {
 		return
 	}
 
@@ -187,7 +179,7 @@ func (idm *IdentityManager) GetIdentityModels() []*models.IdentityEndpoints {
 
 	for _, v := range idm.identities {
 		identities = append(identities, &models.IdentityEndpoints{
-			Identity: v.identity.GetModel(),
+			Identity: model.CreateModel(v.identity),
 			RefCount: int64(v.refCount),
 		})
 	}

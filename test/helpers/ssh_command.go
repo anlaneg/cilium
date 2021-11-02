@@ -1,16 +1,5 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2021 Authors of Cilium
 
 package helpers
 
@@ -19,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"strconv"
@@ -76,7 +64,8 @@ func (cfg *SSHConfig) GetSSHClient() *SSHClient {
 		Auth: []ssh.AuthMethod{
 			cfg.GetSSHAgent(),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		// ssh.InsecureIgnoreHostKey is OK in test code.
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // lgtm[go/insecure-hostkeycallback]
 		Timeout:         15 * time.Second,
 	}
 
@@ -97,7 +86,7 @@ func (cfg *SSHConfig) String() string {
 
 // GetSSHAgent returns the ssh.AuthMethod corresponding to SSHConfig cfg.
 func (cfg *SSHConfig) GetSSHAgent() ssh.AuthMethod {
-	key, err := ioutil.ReadFile(cfg.identityFile)
+	key, err := os.ReadFile(cfg.identityFile)
 	if err != nil {
 		log.Fatalf("unable to retrieve ssh-key on target '%s': %s", cfg.target, err)
 	}
@@ -303,7 +292,7 @@ func (client *SSHClient) newSession() (*ssh.Session, error) {
 	} else {
 		connection, err = ssh.Dial(
 			"tcp",
-			fmt.Sprintf("%s:%d", client.Host, client.Port),
+			net.JoinHostPort(client.Host, fmt.Sprintf("%d", client.Port)),
 			client.Config)
 
 		if err != nil {
@@ -338,7 +327,8 @@ func GetSSHClient(host string, port int, user string) *SSHClient {
 		Auth: []ssh.AuthMethod{
 			SSHAgent(),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		// ssh.InsecureIgnoreHostKey is OK in test code.
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // lgtm[go/insecure-hostkeycallback]
 		Timeout:         15 * time.Second,
 	}
 

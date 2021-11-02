@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package types
+
+import (
+	"github.com/cilium/cilium/pkg/ipam/types"
+)
 
 // ENISpec is the ENI specification of a node. This specification is considered
 // by the cilium-operator to act as an IPAM operator and makes ENI IPs available
@@ -25,9 +18,15 @@ package types
 type ENISpec struct {
 	// InstanceID is the AWS InstanceId of the node. The InstanceID is used
 	// to retrieve AWS metadata for the node.
+	//
+	// OBSOLETE: This field is obsolete, please use Spec.InstanceID
+	//
+	// +kubebuilder:validation:Optional
 	InstanceID string `json:"instance-id,omitempty"`
 
 	// InstanceType is the AWS EC2 instance type, e.g. "m5.large"
+	//
+	// +kubebuilder:validation:Optional
 	InstanceType string `json:"instance-type,omitempty"`
 
 	// MinAllocate is the minimum number of IPs that must be allocated when
@@ -38,7 +37,8 @@ type ENISpec struct {
 	//
 	// OBSOLETE: This field is obsolete, please use Spec.IPAM.MinAllocate
 	//
-	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Optional
 	MinAllocate int `json:"min-allocate,omitempty"`
 
 	// PreAllocate defines the number of IP addresses that must be
@@ -48,7 +48,8 @@ type ENISpec struct {
 	//
 	// OBSOLETE: This field is obsolete, please use Spec.IPAM.PreAllocate
 	//
-	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Optional
 	PreAllocate int `json:"pre-allocate,omitempty"`
 
 	// MaxAboveWatermark is the maximum number of addresses to allocate
@@ -60,7 +61,8 @@ type ENISpec struct {
 	//
 	// OBSOLETE: This field is obsolete, please use Spec.IPAM.MaxAboveWatermark
 	//
-	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Optional
 	MaxAboveWatermark int `json:"max-above-watermark,omitempty"`
 
 	// FirstInterfaceIndex is the index of the first ENI to use for IP
@@ -68,39 +70,50 @@ type ENISpec struct {
 	// FirstInterfaceIndex is set to 1, then only eth1 and eth2 will be
 	// used for IP allocation, eth0 will be ignored for PodIP allocation.
 	//
-	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Optional
 	FirstInterfaceIndex *int `json:"first-interface-index,omitempty"`
 
 	// SecurityGroups is the list of security groups to attach to any ENI
 	// that is created and attached to the instance.
 	//
-	// +optional
+	// +kubebuilder:validation:Optional
 	SecurityGroups []string `json:"security-groups,omitempty"`
 
 	// SecurityGroupTags is the list of tags to use when evaliating what
 	// AWS security groups to use for the ENI.
 	//
-	// +optional
+	// +kubebuilder:validation:Optional
 	SecurityGroupTags map[string]string `json:"security-group-tags,omitempty"`
 
-	// SubnetTags is the list of tags to use when evaluating what AWS
-	// subnets to use for ENI and IP allocation
+	// SubnetIDs is the list of subnet ids to use when evaluating what AWS
+	// subnets to use for ENI and IP allocation.
 	//
-	// +optional
+	// +kubebuilder:validation:Optional
+	SubnetIDs []string `json:"subnet-ids,omitempty"`
+
+	// SubnetTags is the list of tags to use when evaluating what AWS
+	// subnets to use for ENI and IP allocation.
+	//
+	// +kubebuilder:validation:Optional
 	SubnetTags map[string]string `json:"subnet-tags,omitempty"`
 
-	// VpcID is the VPC ID to use when allocating ENIs
+	// VpcID is the VPC ID to use when allocating ENIs.
+	//
+	// +kubebuilder:validation:Optional
 	VpcID string `json:"vpc-id,omitempty"`
 
 	// AvailabilityZone is the availability zone to use when allocating
-	// ENIs
+	// ENIs.
+	//
+	// +kubebuilder:validation:Optional
 	AvailabilityZone string `json:"availability-zone,omitempty"`
 
 	// DeleteOnTermination defines that the ENI should be deleted when the
 	// associated instance is terminated. If the parameter is not set the
 	// default behavior is to delete the ENI on instance termination.
 	//
-	// +optional
+	// +kubebuilder:validation:Optional
 	DeleteOnTermination *bool `json:"delete-on-termination,omitempty"`
 }
 
@@ -150,14 +163,29 @@ type ENI struct {
 	// +optional
 	VPC AwsVPC `json:"vpc,omitempty"`
 
-	// Addresses is the list of all IPs associated with the ENI, including
-	// all secondary addresses
+	// Addresses is the list of all secondary IPs associated with the ENI
 	//
 	// +optional
 	Addresses []string `json:"addresses,omitempty"`
 
 	// SecurityGroups are the security groups associated with the ENI
 	SecurityGroups []string `json:"security-groups,omitempty"`
+}
+
+// InterfaceID returns the identifier of the interface
+func (e *ENI) InterfaceID() string {
+	return e.ID
+}
+
+// ForeachAddress iterates over all addresses and calls fn
+func (e *ENI) ForeachAddress(id string, fn types.AddressIterator) error {
+	for _, address := range e.Addresses {
+		if err := fn(id, e.ID, address, "", address); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ENIStatus is the status of ENI addressing of the node

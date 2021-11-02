@@ -1,28 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/defaults"
 
 	"github.com/spf13/cobra"
@@ -78,7 +66,7 @@ func getTemplateSHA(epID string) string {
 	if err != nil {
 		return brokenSHA
 	}
-	if f, err = os.Stat(template); err != nil {
+	if _, err = os.Stat(template); err != nil {
 		return brokenSHA
 	}
 	return filepath.Base(filepath.Dir(template))
@@ -88,7 +76,7 @@ func dumpShaList() {
 	bpfTemplateList := make(map[string][]string)
 
 	// Find all templates
-	templateDirs, err := ioutil.ReadDir(templatesDir)
+	templateDirs, err := os.ReadDir(templatesDir)
 	if err != nil {
 		Fatalf("failed to list template directory: %s\n", err)
 	}
@@ -97,7 +85,7 @@ func dumpShaList() {
 	}
 
 	// Find all endpoint usage of the templates
-	stateDirs, err := ioutil.ReadDir(stateDir)
+	stateDirs, err := os.ReadDir(stateDir)
 	if err != nil {
 		Fatalf("failed to list state directory: %s\n", err)
 	}

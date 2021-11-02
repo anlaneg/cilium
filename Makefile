@@ -1,26 +1,43 @@
+# Copyright 2017-2021 Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
+##@ Default
+all: precheck build postcheck ## Default make target that perform precheck -> build -> postcheck
+	@echo "Build finished."
+
+##@ Build, Install and Test
+debug: export NOOPT=1 ## Builds Cilium by disabling inlining, compiler optimizations and without stripping debug symbols, useful for debugging.
+debug: export NOSTRIP=1
+debug: all
+
 include Makefile.defs
 
-SUBDIRS_CILIUM_CONTAINER := proxylib envoy plugins/cilium-cni bpf cilium daemon cilium-health bugtool
+SUBDIRS_CILIUM_CONTAINER := proxylib envoy bpf cilium daemon cilium-health bugtool tools/mount
+SUBDIRS := $(SUBDIRS_CILIUM_CONTAINER) operator plugins tools hubble-relay
+
+SUBDIRS_CILIUM_CONTAINER += plugins/cilium-cni
 ifdef LIBNETWORK_PLUGIN
 SUBDIRS_CILIUM_CONTAINER += plugins/cilium-docker
 endif
-SUBDIRS := $(SUBDIRS_CILIUM_CONTAINER) operator plugins tools
-GOFILES_EVAL := $(subst _$(ROOT_DIR)/,,$(shell $(CGO_DISABLED) $(GOLIST) $(GO) list -e ./...))
+
+GOFILES_EVAL := $(subst _$(ROOT_DIR)/,,$(shell $(GO_LIST) -find -e ./...))
 GOFILES ?= $(GOFILES_EVAL)
-TESTPKGS_EVAL := $(subst github.com/cilium/cilium/,,$(shell $(CGO_DISABLED) $(GOLIST) $(GO) list -e ./... | grep -v '/api/v1\|/vendor\|/contrib' | grep -v -P 'test(?!/helpers/logutils)'))
+TESTPKGS_EVAL := $(subst github.com/cilium/cilium/,,$(shell echo $(GOFILES) | \
+	sed 's/ /\n/g' | \
+	grep -v '/api/v1\|/vendor\|/contrib' | \
+	grep -v '/test'))
+TESTPKGS_EVAL += "test/helpers/logutils"
 TESTPKGS ?= $(TESTPKGS_EVAL)
-GOLANGVERSION := $(shell $(GO) version 2>/dev/null | grep -Eo '(go[0-9].[0-9])')
 GOLANG_SRCFILES := $(shell for pkg in $(subst github.com/cilium/cilium/,,$(GOFILES)); do find $$pkg -name *.go -print; done | grep -v vendor | sort | uniq)
 
-SWAGGER_VERSION := v0.20.1
-SWAGGER := $(CONTAINER_ENGINE_FULL) run --rm -v $(CURDIR):$(CURDIR) -w $(CURDIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
+SWAGGER_VERSION := v0.25.0
+SWAGGER := $(CONTAINER_ENGINE) run -u $(shell id -u):$(shell id -g) --rm -v $(CURDIR):$(CURDIR) -w $(CURDIR) --entrypoint swagger quay.io/goswagger/swagger:$(SWAGGER_VERSION)
 
-COVERPKG_EVAL := $(shell if [ $$(echo "$(TESTPKGS)" | wc -w) -gt 1 ]; then echo "./..."; else echo "$(TESTPKGS)"; fi)
+COVERPKG_EVAL := $(shell if [ $$(echo "$(TESTPKGS)" | wc -w) -gt 1 ]; then echo "./..."; else echo "github.com/cilium/cilium/$(TESTPKGS)"; fi)
 COVERPKG ?= $(COVERPKG_EVAL)
 GOTEST_BASE := -test.v -timeout 360s
 GOTEST_UNIT_BASE := $(GOTEST_BASE) -check.vv
-GOTEST_PRIV_OPTS := $(GOTEST_UNIT_BASE) -tags=privileged_tests
-GOTEST_COVER_OPTS := -coverprofile=coverage.out -covermode=count -coverpkg $(COVERPKG)
+GOTEST_COVER_OPTS += -coverprofile=coverage.out -coverpkg $(COVERPKG)
 BENCH_EVAL := "."
 BENCH ?= $(BENCH_EVAL)
 BENCHFLAGS_EVAL := -bench=$(BENCH) -run=^$ -benchtime=10s
@@ -29,77 +46,108 @@ BENCHFLAGS ?= $(BENCHFLAGS_EVAL)
 LOGLEVEL ?= "error"
 SKIP_VET ?= "false"
 SKIP_KVSTORES ?= "false"
+SKIP_K8S_CODE_GEN_CHECK ?= "true"
+SKIP_CUSTOMVET_CHECK ?= "false"
 
 JOB_BASE_NAME ?= cilium_test
 
-UTC_DATE=$(shell date -u "+%Y-%m-%d")
-
 GO_VERSION := $(shell cat GO_VERSION)
+GO_MAJOR_AND_MINOR_VERSION := $(shell sed 's/\([0-9]\+\).\([0-9]\+\)\(.[0-9]\+\)\?/\1.\2/' GO_VERSION)
+GO_IMAGE_VERSION := $(shell awk -F. '{ z=$$3; if (z == "") z=0; print $$1 "." $$2 "." z}' GO_VERSION)
 
-# Since there's a bug with NFS or the kernel, the flock syscall hangs the documentation
-# build in the developer VM. For this reason the documentation build is skipped if NFS
-# is running in the developer VM.
-SKIP_DOCS ?= $(shell if mount | grep -q "/home/vagrant/go/src/github.com/cilium/cilium type nfs"; then echo "true"; else echo "false"; fi)
+DOCKER_FLAGS ?=
 
 TEST_LDFLAGS=-ldflags "-X github.com/cilium/cilium/pkg/kvstore.consulDummyAddress=https://consul:8443 \
 	-X github.com/cilium/cilium/pkg/kvstore.etcdDummyAddress=http://etcd:4002 \
-	-X github.com/cilium/cilium/pkg/testutils.CiliumRootDir=$(ROOT_DIR) \
-	-X github.com/cilium/cilium/pkg/datapath.DatapathSHA=1234567890abcdef7890"
+	-X github.com/cilium/cilium/pkg/datapath.DatapathSHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-TEST_UNITTEST_LDFLAGS= -ldflags "-X github.com/cilium/cilium/pkg/kvstore.consulDummyConfigFile=/tmp/cilium-consul-certs/cilium-consul.yaml \
-	-X github.com/cilium/cilium/pkg/testutils.CiliumRootDir=$(ROOT_DIR) \
-	-X github.com/cilium/cilium/pkg/datapath.DatapathSHA=1234567890abcdef7890 \
-	-X github.com/cilium/cilium/pkg/logging.DefaultLogLevelStr=$(LOGLEVEL)"
+TEST_UNITTEST_LDFLAGS=-ldflags "-X github.com/cilium/cilium/pkg/datapath.DatapathSHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+define print_help_line
+	@printf "  \033[36m%-29s\033[0m %s.\n" $(1) $(2)
+endef
 
 define generate_k8s_api
 	cd "./vendor/k8s.io/code-generator" && \
 	GO111MODULE=off bash ./generate-groups.sh $(1) \
-	    github.com/cilium/cilium/pkg/k8s/client \
 	    $(2) \
 	    $(3) \
+	    $(4) \
 	    --go-header-file "$(PWD)/hack/custom-boilerplate.go.txt"
 endef
 
+define generate_deepequal
+	cd "./vendor/github.com/cilium/deepequal-gen" && \
+	GO111MODULE=off go run main.go \
+	--input-dirs $(1) \
+	-O zz_generated.deepequal \
+	--go-header-file "$(PWD)/hack/custom-boilerplate.go.txt"
+endef
+
 define generate_k8s_api_all
-	$(call generate_k8s_api,all,$(1),$(2))
+	$(call generate_k8s_api,all,github.com/cilium/cilium/pkg/k8s/client,$(1),$(2))
+	$(call generate_deepequal,"$(call join-with-comma,$(foreach pkg,$(2),$(1)/$(subst ",,$(subst :,/,$(pkg)))))")
 endef
 
-define generate_k8s_api_deepcopy
-	$(call generate_k8s_api,deepcopy,$(1),$(2))
+define generate_k8s_api_deepcopy_deepequal
+	$(call generate_k8s_api,deepcopy,github.com/cilium/cilium/pkg/k8s/client,$(1),$(2))
+	@# Explanation for the 'subst' below:
+	@#   $(subst ",,$(subst :,/,$(pkg))) - replace all ':' with '/' and replace
+	@#    all '"' with '' from $pkg
+	@#   $(foreach pkg,$(2),$(1)/$(subst ",,$(subst :,/,$(pkg)))) - for each
+	@#    "$pkg", with the characters replaced, create a new string with the
+	@#    prefix $(1)
+	@#   Finally replace all spaces with commas from the generated strings.
+	$(call generate_deepequal,"$(call join-with-comma,$(foreach pkg,$(2),$(1)/$(subst ",,$(subst :,/,$(pkg)))))")
 endef
 
-all: precheck build postcheck
-	@echo "Build finished."
+define generate_k8s_api_deepcopy_deepequal_client
+	$(call generate_k8s_api,deepcopy$(comma)client,github.com/cilium/cilium/pkg/k8s/slim/k8s/$(1),$(2),$(3))
+	$(call generate_deepequal,"$(call join-with-comma,$(foreach pkg,$(3),$(2)/$(subst ",,$(subst :,/,$(pkg)))))")
+endef
 
-build: $(SUBDIRS)
+define generate_k8s_protobuf
+	PATH="$(PWD)/tools:$(PATH)" ./tools/go-to-protobuf \
+		--apimachinery-packages='-k8s.io/apimachinery/pkg/util/intstr,$\
+                                -k8s.io/apimachinery/pkg/api/resource,$\
+                                -k8s.io/apimachinery/pkg/runtime/schema,$\
+                                -k8s.io/apimachinery/pkg/runtime,$\
+                                -k8s.io/apimachinery/pkg/apis/meta/v1,$\
+                                -k8s.io/apimachinery/pkg/apis/meta/v1beta1'\
+		--drop-embedded-fields="github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1.TypeMeta" \
+		--proto-import="$(PWD)" \
+		--proto-import="$(PWD)/vendor" \
+		--proto-import="$(PWD)/tools/protobuf" \
+		--packages=$(1) \
+	    --go-header-file "$(PWD)/hack/custom-boilerplate.go.txt"
+endef
 
-build-container:
-	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) -C $$i all; done
+build: $(SUBDIRS) ## Builds all the components for Cilium by executing make in the respective sub directories.
 
-$(SUBDIRS): force
-	@ $(MAKE) -C $@ all
+build-container: ## Builds components required for cilium-agent container.
+	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) $(SUBMAKEOPTS) -C $$i all; done
 
-jenkins-precheck:
-	docker-compose -f test/docker-compose.yml -p $(JOB_BASE_NAME)-$$BUILD_NUMBER run --rm precheck
+$(SUBDIRS): force ## Execute default make target(make all) for the provided subdirectory.
+	@ $(MAKE) $(SUBMAKEOPTS) -C $@ all
 
-clean-jenkins-precheck:
-	docker-compose -f test/docker-compose.yml -p $(JOB_BASE_NAME)-$$BUILD_NUMBER rm
-	# remove the networks
-	docker-compose -f test/docker-compose.yml -p $(JOB_BASE_NAME)-$$BUILD_NUMBER down
-
-PRIV_TEST_PKGS_EVAL := $(shell for pkg in $(TESTPKGS); do echo $(pkg); done | xargs grep --include='*.go' -ril '+build privileged_tests' | xargs dirname | sort | uniq)
+PRIV_TEST_PKGS_EVAL := $(shell for pkg in $(TESTPKGS); do echo $$pkg; done | xargs grep --include='*.go' -ril '+build [^!]*privileged_tests' | xargs dirname | sort | uniq)
 PRIV_TEST_PKGS ?= $(PRIV_TEST_PKGS_EVAL)
+tests-privileged: GO_TAGS_FLAGS+=privileged_tests ## Run integration-tests for Cilium that requires elevated privileges.
 tests-privileged:
-	# cilium-map-migrate is a dependency of some unit tests.
-	$(MAKE) -C bpf cilium-map-migrate
-	$(QUIET)$(foreach pkg,$(PRIV_TEST_PKGS),\
-		$(GO) test $(GOFLAGS) $(TEST_LDFLAGS) github.com/cilium/cilium/$(pkg) $(GOTEST_PRIV_OPTS) || exit 1;)
+	$(MAKE) init-coverage
+	for pkg in $(patsubst %,github.com/cilium/cilium/%,$(PRIV_TEST_PKGS)); do \
+		PATH=$(PATH):$(ROOT_DIR)/bpf $(GO_TEST) $(TEST_LDFLAGS) $$pkg $(GOTEST_UNIT_BASE) $(GOTEST_COVER_OPTS) \
+		|| exit 1; \
+		tail -n +2 coverage.out >> coverage-all-tmp.out; \
+	done
+	$(MAKE) generate-cov
 
-start-kvstores:
+start-kvstores: ## Start running kvstores required for running Cilium integration-tests. More specifically this will run etcd and consul containers.
 ifeq ($(SKIP_KVSTORES),"false")
 	@echo Starting key-value store containers...
-	-$(CONTAINER_ENGINE_FULL) rm -f "cilium-etcd-test-container" 2> /dev/null
-	$(CONTAINER_ENGINE_FULL) run -d \
+	-$(QUIET)$(CONTAINER_ENGINE) rm -f "cilium-etcd-test-container" 2> /dev/null
+	$(QUIET)$(CONTAINER_ENGINE) run -d \
+		-e ETCD_UNSUPPORTED_ARCH=$(GOARCH) \
 		--name "cilium-etcd-test-container" \
 		-p 4002:4001 \
 		$(ETCD_IMAGE) \
@@ -109,210 +157,287 @@ ifeq ($(SKIP_KVSTORES),"false")
 		-listen-peer-urls http://0.0.0.0:2380 \
 		-initial-cluster-token etcd-cluster-1 \
 		-initial-cluster-state new
-	-$(CONTAINER_ENGINE_FULL) rm -f "cilium-consul-test-container" 2> /dev/null
-	rm -rf /tmp/cilium-consul-certs
-	mkdir /tmp/cilium-consul-certs
-	cp $(CURDIR)/test/consul/* /tmp/cilium-consul-certs
-	chmod -R a+rX /tmp/cilium-consul-certs
-	$(CONTAINER_ENGINE_FULL) run -d \
+	-$(QUIET)$(CONTAINER_ENGINE) rm -f "cilium-consul-test-container" 2> /dev/null
+	$(QUIET)rm -rf /tmp/cilium-consul-certs
+	$(QUIET)mkdir /tmp/cilium-consul-certs
+	$(QUIET)cp $(CURDIR)/test/consul/* /tmp/cilium-consul-certs
+	$(QUIET)chmod -R a+rX /tmp/cilium-consul-certs
+	$(QUIET)$(CONTAINER_ENGINE) run -d \
 		--name "cilium-consul-test-container" \
 		-p 8501:8443 \
 		-e 'CONSUL_LOCAL_CONFIG={"skip_leave_on_interrupt": true, "disable_update_check": true}' \
 		-v /tmp/cilium-consul-certs:/cilium-consul/ \
-		consul:1.1.0 \
+		$(CONSUL_IMAGE) \
 		agent -client=0.0.0.0 -server -bootstrap-expect 1 -config-file=/cilium-consul/consul-config.json
 endif
 
-stop-kvstores:
+stop-kvstores: ## Forcefully removes running kvstore components for Cilium unit-testing(etcd and consul containers).
 ifeq ($(SKIP_KVSTORES),"false")
-	$(CONTAINER_ENGINE_FULL) rm -f "cilium-etcd-test-container"
-	$(CONTAINER_ENGINE_FULL) rm -f "cilium-consul-test-container"
-	rm -rf /tmp/cilium-consul-certs
+	$(QUIET)$(CONTAINER_ENGINE) rm -f "cilium-etcd-test-container"
+	$(QUIET)$(CONTAINER_ENGINE) rm -f "cilium-consul-test-container"
+	$(QUIET)rm -rf /tmp/cilium-consul-certs
 endif
 
-tests: force
-	$(MAKE) unit-tests
-
-generate-cov:
+generate-cov: ## Generate coverage report for Cilium integration-tests.
 	# Remove generated code from coverage
 	$(QUIET) grep -Ev '(^github.com/cilium/cilium/api/v1)|(generated.deepcopy.go)|(^github.com/cilium/cilium/pkg/k8s/client/)' \
 		coverage-all-tmp.out > coverage-all.out
 	$(QUIET)$(GO) tool cover -html=coverage-all.out -o=coverage-all.html
 	$(QUIET) rm coverage.out coverage-all-tmp.out
+	@rmdir ./daemon/1 ./daemon/1_backup 2> /dev/null || true
 
-unit-tests: start-kvstores
-	$(QUIET) $(MAKE) -C tools/maptool/
-	$(QUIET) $(MAKE) -C test/bpf/
-	test/bpf/unit-test
+init-coverage: ## Initialize converage report for Cilium integration-tests.
+	$(QUIET) echo "mode: count" > coverage-all-tmp.out
+	$(QUIET) echo "mode: count" > coverage.out
+
+integration-tests: GO_TAGS_FLAGS+=integration_tests
+integration-tests: start-kvstores ## Runs all integration-tests for Cilium.
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C tools/maptool/
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C test/bpf/
 ifeq ($(SKIP_VET),"false")
 	$(MAKE) govet
 endif
-	$(QUIET) echo "mode: count" > coverage-all-tmp.out
-	$(QUIET) echo "mode: count" > coverage.out
-	$(QUIET)$(foreach pkg,$(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)),\
-		$(GO) test $(GOFLAGS) $(TEST_UNITTEST_LDFLAGS) $(pkg) $(GOTEST_BASE) $(GOTEST_COVER_OPTS) || exit 1; \
-		tail -n +2 coverage.out >> coverage-all-tmp.out;)
+	$(MAKE) init-coverage
+	# It seems that in some env if the path is large enough for the full list
+	# of files, the full bash command in that target gets too big for bash and
+	# hence will trigger an error of too many arguments. As a workaround, we
+	# have to process these packages in different subshells.
+	for pkg in $(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)); do \
+		$(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $$pkg $(GOTEST_BASE) $(GOTEST_COVER_OPTS) \
+		|| exit 1; \
+		tail -n +2 coverage.out >> coverage-all-tmp.out; \
+	done
 	$(MAKE) generate-cov
-	@rmdir ./daemon/1 ./daemon/1_backup 2> /dev/null || true
 	$(MAKE) stop-kvstores
 
-bench: start-kvstores
-	$(QUIET)$(foreach pkg,$(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)),\
-		$(GO) test $(GOFLAGS) $(TEST_UNITTEST_LDFLAGS) $(GOTEST_BASE) $(BENCHFLAGS) \
-			$(pkg) \
-		|| exit 1;)
+bench: start-kvstores ## Run benchmarks for Cilium integration-tests in the repository.
+	# Process the packages in different subshells. See comment in the
+	# "integration-tests" target above for an explanation.## Builds components
+	# required for cilium-agent container.
+	$(QUIET)for pkg in $(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)); do \
+		$(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $(GOTEST_BASE) $(BENCHFLAGS) \
+			$$pkg \
+		|| exit 1; \
+	done
 	$(MAKE) stop-kvstores
 
+bench-privileged: GO_TAGS_FLAGS+=privileged_tests ## Run benchmarks for priviliged tests.
 bench-privileged:
-	$(QUIET)$(foreach pkg,$(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)),\
-		$(GO) test $(GOFLAGS) $(TEST_UNITTEST_LDFLAGS) $(GOTEST_BASE) $(BENCHFLAGS) \
-			-tags=privileged_tests $(pkg) \
-		|| exit 1;)
+	# Process the packages in different subshells. See comment in the
+	# "integration-tests" target above for an explanation.
+	$(QUIET)for pkg in $(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)); do \
+		$(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $(GOTEST_BASE) $(BENCHFLAGS) $$pkg \
+		|| exit 1; \
+	done
 
-clean-tags:
+clean-tags: ## Remove all the tags files from the repository.
 	@$(ECHO_CLEAN) tags
 	@-rm -f cscope.out cscope.in.out cscope.po.out cscope.files tags
 
-cscope.files: $(GOLANG_SRCFILES) $(BPF_SRCFILES)
+cscope.files: $(GOLANG_SRCFILES) $(BPF_SRCFILES) ## Generate cscope.files with the list of all files to generate ctags for.
 	@echo $(GOLANG_SRCFILES) $(BPF_SRCFILES) | sed 's/ /\n/g' | sort > cscope.files
 
-tags: $(GOLANG_SRCFILES) $(BPF_SRCFILES) cscope.files
+tags: $(GOLANG_SRCFILES) $(BPF_SRCFILES) cscope.files ## Generate tags for Go and BPF source files.
 	@ctags $(GOLANG_SRCFILES) $(BPF_SRCFILES)
 	cscope -R -b -q
 
-clean-container:
-	-for i in $(SUBDIRS); do $(MAKE) -C $$i clean; done
+clean-container: ## Perform `make clean` for each component required in cilium-agent container.
+	-$(QUIET) for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) $(SUBMAKEOPTS) -C $$i clean; done
 
-clean: clean-container
-	-$(MAKE) -C ./contrib/packaging/deb clean
-	-$(MAKE) -C ./contrib/packaging/rpm clean
-	-rm -f GIT_VERSION
+clean: ## Perform overall cleanup for Cilium.
+	-$(QUIET) for i in $(SUBDIRS); do $(MAKE) $(SUBMAKEOPTS) -C $$i clean; done
+	-$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C ./contrib/packaging/deb clean
+	-$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C ./contrib/packaging/rpm clean
 
-install-bpf:
+veryclean: ## Perform complete cleanup for container engine images(including build cache).
+	-$(QUIET) $(CONTAINER_ENGINE) image prune -af
+	-$(QUIET) $(CONTAINER_ENGINE) builder prune -af
+
+install-bpf: ## Copies over the BPF source files from bpf/ to /var/lib/cilium/bpf/
 	$(QUIET)$(INSTALL) -m 0750 -d $(DESTDIR)$(LOCALSTATEDIR)/lib/cilium
 	-rm -rf $(DESTDIR)$(LOCALSTATEDIR)/lib/cilium/bpf/*
 	$(foreach bpfsrc,$(BPF_SRCFILES), $(INSTALL) -D -m 0644 $(bpfsrc) $(DESTDIR)$(LOCALSTATEDIR)/lib/cilium/$(bpfsrc);)
 
-install: install-bpf
+install: install-bpf ## Performs install for all the Cilium sub components (daemon, operator, relay etc.)
 	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
-	for i in $(SUBDIRS); do $(MAKE) -C $$i install; done
+	for i in $(SUBDIRS); do $(MAKE) $(SUBMAKEOPTS) -C $$i install; done
 
-install-container: install-bpf
+install-container: install-bpf ## Performs install for all components required for cilium-agent container.
 	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
-	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) -C $$i install; done
+	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) $(SUBMAKEOPTS) -C $$i install; done
+
+install-container-binary: install-bpf ## Install binaries for all components required for cilium-agent container.
+	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
+	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) $(SUBMAKEOPTS) -C $$i install-binary; done
+
+install-bash-completion: ## Install bash completion for all components required for cilium-agent container.
+	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
+	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) $(SUBMAKEOPTS) -C $$i install-bash-completion; done
 
 # Workaround for not having git in the build environment
-GIT_VERSION: .git
-	echo "$(GIT_VERSION)" >GIT_VERSION
+# Touch the file only if needed
+GIT_VERSION: force
+	@if [ "$(GIT_VERSION)" != "`cat 2>/dev/null GIT_VERSION`" ] ; then echo "$(GIT_VERSION)" >GIT_VERSION; fi
 
-docker-cilium-image-for-developers:
-	# DOCKER_BUILDKIT allows for faster build as well as the ability to use
-	# a dedicated dockerignore file per Dockerfile.
-	DOCKER_BUILDKIT=1 $(CONTAINER_ENGINE_FULL) build \
-	     --build-arg LOCKDEBUG=\
-	     --build-arg V=\
-	     --build-arg LIBNETWORK_PLUGIN=\
-	     -t "cilium/cilium-dev:"latest"" . -f ./cilium-dev.Dockerfile
+build-deb: ## Build deb package of cilium.
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C ./contrib/packaging/deb
 
-docker-image: clean docker-image-no-clean docker-operator-image docker-plugin-image
+build-rpm: ## Build rpm package of cilium.
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C ./contrib/packaging/rpm
 
-docker-image-no-clean: GIT_VERSION
-	$(CONTAINER_ENGINE_FULL) build \
-		--build-arg LOCKDEBUG=${LOCKDEBUG} \
-		--build-arg V=${V} \
-		--build-arg LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
-		-t "cilium/cilium:$(DOCKER_IMAGE_TAG)" .
-	$(QUIET)echo "Push like this when ready:"
-	$(QUIET)echo "${CONTAINER_ENGINE} push cilium/cilium:$(DOCKER_IMAGE_TAG)"
-
-dev-docker-image: GIT_VERSION
-	$(CONTAINER_ENGINE_FULL) build \
-		--build-arg LOCKDEBUG=${LOCKDEBUG} \
-		--build-arg V=${V} \
-		--build-arg LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
-		-t "cilium/cilium-dev:$(DOCKER_IMAGE_TAG)" .
-	$(QUIET)echo "Push like this when ready:"
-	$(QUIET)echo "${CONTAINER_ENGINE} push cilium/cilium-dev:$(DOCKER_IMAGE_TAG)"
-
-docker-operator-image: GIT_VERSION
-	$(CONTAINER_ENGINE_FULL) build --build-arg LOCKDEBUG=${LOCKDEBUG} -f cilium-operator.Dockerfile -t "cilium/operator:$(DOCKER_IMAGE_TAG)" .
-	$(QUIET)echo "Push like this when ready:"
-	$(QUIET)echo "docker push cilium/operator:$(DOCKER_IMAGE_TAG)"
-
-docker-plugin-image: GIT_VERSION
-	$(CONTAINER_ENGINE_FULL) build --build-arg LOCKDEBUG=${LOCKDEUBG} -f cilium-docker-plugin.Dockerfile -t "cilium/docker-plugin:$(DOCKER_IMAGE_TAG)" .
-	$(QUIET)echo "Push like this when ready:"
-	$(QUIET)echo "docker push cilium/docker-plugin:$(DOCKER_IMAGE_TAG)"
-
-docker-image-runtime:
-	cd contrib/packaging/docker && ${CONTAINER_ENGINE} build -t "cilium/cilium-runtime:$(UTC_DATE)" -f Dockerfile.runtime .
-
-docker-image-builder:
-	${CONTAINER_ENGINE_FULL} build -t "cilium/cilium-builder:$(UTC_DATE)" -f Dockerfile.builder .
-
-build-deb:
-	$(MAKE) -C ./contrib/packaging/deb
-
-build-rpm:
-	$(MAKE) -C ./contrib/packaging/rpm
-
-runtime-tests:
-	$(MAKE) -C tests runtime-tests
+runtime-tests: ## Run runtime-tests for Cilium.
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C tests runtime-tests
 
 k8s-tests:
-	$(MAKE) -C tests k8s-tests
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C tests k8s-tests
 
-generate-api: api/v1/openapi.yaml
+-include Makefile.docker
+
+##@ API targets
+CRD_OPTIONS ?= "crd:crdVersions=v1"
+manifests: ## Generate K8s manifests e.g. CRD, RBAC etc.
+	$(eval TMPDIR := $(shell mktemp -d))
+	cd "./vendor/sigs.k8s.io/controller-tools/cmd/controller-gen" && \
+	$(QUIET)$(GO) run ./... $(CRD_OPTIONS) paths="$(PWD)/pkg/k8s/apis/cilium.io/v2;$(PWD)/pkg/k8s/apis/cilium.io/v2alpha1" output:crd:artifacts:config="$(TMPDIR)";
+	$(QUIET)$(GO) run ./tools/crdcheck "$(TMPDIR)"
+	mv ${TMPDIR}/cilium.io_ciliumnetworkpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnetworkpolicies.yaml
+	mv ${TMPDIR}/cilium.io_ciliumclusterwidenetworkpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumclusterwidenetworkpolicies.yaml
+	mv ${TMPDIR}/cilium.io_ciliumendpoints.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumendpoints.yaml
+	mv ${TMPDIR}/cilium.io_ciliumidentities.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumidentities.yaml
+	mv ${TMPDIR}/cilium.io_ciliumnodes.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnodes.yaml
+	mv ${TMPDIR}/cilium.io_ciliumexternalworkloads.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumexternalworkloads.yaml
+	mv ${TMPDIR}/cilium.io_ciliumlocalredirectpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumlocalredirectpolicies.yaml
+	mv ${TMPDIR}/cilium.io_ciliumegressnatpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumegressnatpolicies.yaml
+	rm -rf $(TMPDIR)
+
+generate-api: api/v1/openapi.yaml ## Generate cilium-agent client, model and server code from openapi spec.
 	@$(ECHO_GEN)api/v1/openapi.yaml
-	-$(SWAGGER) generate server -s server -a restapi \
-		-t api/v1 -f api/v1/openapi.yaml --default-scheme=unix -C api/v1/cilium-server.yml
-	-$(SWAGGER) generate client -a restapi \
-		-t api/v1 -f api/v1/openapi.yaml
+	-$(QUIET)$(SWAGGER) generate server -s server -a restapi \
+		-t api/v1 \
+		-f api/v1/openapi.yaml \
+		--default-scheme=unix \
+		-C api/v1/cilium-server.yml \
+		-r hack/spdx-copyright-header.txt
+	-$(QUIET)$(SWAGGER) generate client -a restapi \
+		-t api/v1 \
+		-f api/v1/openapi.yaml \
+		-r hack/spdx-copyright-header.txt
+	@# sort goimports automatically
+	-$(QUIET) find api/v1/client/ -type f -name "*.go" -print | PATH="$(PWD)/tools:$(PATH)" xargs goimports -w
+	-$(QUIET) find api/v1/models/ -type f -name "*.go" -print | PATH="$(PWD)/tools:$(PATH)" xargs goimports -w
+	-$(QUIET) find api/v1/server/ -type f -name "*.go" -print | PATH="$(PWD)/tools:$(PATH)" xargs goimports -w
 
-generate-health-api: api/v1/health/openapi.yaml
+generate-health-api: api/v1/health/openapi.yaml ## Generate cilium-health client, model and server code from openapi spec.
 	@$(ECHO_GEN)api/v1/health/openapi.yaml
-	-$(SWAGGER) generate server -s server -a restapi \
-		-t api/v1 -t api/v1/health/ -f api/v1/health/openapi.yaml --default-scheme=unix -C api/v1/cilium-server.yml
-	-$(SWAGGER) generate client -a restapi \
-		-t api/v1 -t api/v1/health/ -f api/v1/health/openapi.yaml
+	-$(QUIET)$(SWAGGER) generate server -s server -a restapi \
+		-t api/v1 \
+		-t api/v1/health/ \
+		-f api/v1/health/openapi.yaml \
+		--default-scheme=unix \
+		-C api/v1/cilium-server.yml \
+		-r hack/spdx-copyright-header.txt
+	-$(QUIET)$(SWAGGER) generate client -a restapi \
+		-t api/v1 \
+		-t api/v1/health/ \
+		-f api/v1/health/openapi.yaml \
+		-r hack/spdx-copyright-header.txt
+	@# sort goimports automatically
+	-$(QUIET) find api/v1/health/ -type f -name "*.go" -print | PATH="$(PWD)/tools:$(PATH)" xargs goimports -w
 
-generate-k8s-api:
-	$(call generate_k8s_api_all,github.com/cilium/cilium/pkg/k8s/apis,"cilium.io:v2")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg/aws,"eni:types")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"azure:types")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"ipam:types")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"policy:api")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:loadbalancer")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:k8s")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:node")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:service")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/api,"v1:models")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"k8s:types")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:policymap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:ipcache")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:lxcmap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:tunnel")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:encrypt")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:metricsmap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:nat")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:lbmap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:eppolicymap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:sockmap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium/pkg,"maps:ctmap")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:tuple")
-	$(call generate_k8s_api_deepcopy,github.com/cilium/cilium,"pkg:bpf")
+generate-operator-api: api/v1/operator/openapi.yaml ## Generate cilium-operator client, model and server code from openapi spec.
+	@$(ECHO_GEN)api/v1/operator/openapi.yaml
+	-$(QUIET)$(SWAGGER) generate server -s server -a restapi \
+		-t api/v1 \
+		-t api/v1/operator/ \
+		-f api/v1/operator/openapi.yaml \
+		--default-scheme=http \
+		-C api/v1/cilium-server.yml \
+		-r hack/spdx-copyright-header.txt
+	-$(QUIET)$(SWAGGER) generate client -a restapi \
+		-t api/v1 \
+		-t api/v1/operator/ \
+		-f api/v1/operator/openapi.yaml \
+		-r hack/spdx-copyright-header.txt
+	@# sort goimports automatically
+	-$(QUIET) find api/v1/operator/ -type f -name "*.go" -print | PATH="$(PWD)/tools:$(PATH)" xargs goimports -w
 
-vps:
+generate-hubble-api: api/v1/flow/flow.proto api/v1/peer/peer.proto api/v1/observer/observer.proto api/v1/relay/relay.proto ## Generate hubble proto Go sources.
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C api/v1
+
+generate-k8s-api: ## Generate Cilium k8s API client, deepcopy and deepequal Go sources.
+	$(call generate_k8s_protobuf,$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1beta1$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/util/intstr$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1$(comma)$\
+	github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/apiextensions/v1)
+	$(call generate_k8s_api_deepcopy_deepequal_client,client,github.com/cilium/cilium/pkg/k8s/slim/k8s/api,"$\
+	discovery:v1beta1\
+	discovery:v1\
+	networking:v1\
+	core:v1")
+	$(call generate_k8s_api_deepcopy_deepequal_client,apiextensions-client,github.com/cilium/cilium/pkg/k8s/slim/k8s/apis,"$\
+	apiextensions:v1")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/pkg/k8s/slim/k8s/apis,"$\
+	util:intstr\
+	meta:v1\
+	meta:v1beta1")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/pkg/k8s/slim/k8s,"$\
+	apis:labels")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/pkg,"$\
+	aws:types\
+	azure:types\
+	ipam:types\
+	alibabacloud:types\
+	k8s:types\
+	k8s:utils\
+	maps:ctmap\
+	maps:encrypt\
+	maps:eppolicymap\
+	maps:eventsmap\
+	maps:fragmap\
+	maps:ipcache\
+	maps:ipmasq\
+	maps:lbmap\
+	maps:lxcmap\
+	maps:metricsmap\
+	maps:nat\
+	maps:neighborsmap\
+	maps:policymap\
+	maps:signalmap\
+	maps:sockmap\
+	maps:tunnel\
+	node:types\
+	policy:api\
+	service:store")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/pkg/policy,"api:kafka")
+	$(call generate_k8s_api_all,github.com/cilium/cilium/pkg/k8s/apis,"cilium.io:v2 cilium.io:v2alpha1")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/pkg/aws,"eni:types")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/pkg/alibabacloud,"eni:types")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium/api,"v1:models")
+	$(call generate_k8s_api_deepcopy_deepequal,github.com/cilium/cilium,"$\
+	pkg:bpf\
+	pkg:k8s\
+	pkg:labels\
+	pkg:loadbalancer\
+	pkg:tuple\
+	pkg:recorder")
+
+##@ Development
+vps: ## List all the running vagrant VMs.
 	VBoxManage list runningvms
 
-reload:
+reload: ## Reload cilium-agent and cilium-docker systemd service after installing built binaries.
 	sudo systemctl stop cilium cilium-docker
 	sudo $(MAKE) install
 	sudo systemctl start cilium cilium-docker
 	sleep 6
 	cilium status
 
-release:
+release: ## Perform a Git release for Cilium.
 	$(eval TAG_VERSION := $(shell git tag | grep v$(VERSION) > /dev/null; echo $$?))
 	$(eval BRANCH := $(shell git rev-parse --abbrev-ref HEAD))
 	$(info Checking if tag $(VERSION) is created '$(TAG_VERSION)' $(BRANCH))
@@ -323,18 +448,18 @@ release:
 	git tag v$(VERSION)
 	git archive --format tar $(BRANCH) | gzip > ../cilium_$(VERSION).orig.tar.gz
 
-gofmt:
+gofmt: ## Run gofmt on Go source files in the repository.
 	$(QUIET)for pkg in $(GOFILES); do $(GO) fmt $$pkg; done
 
-govet:
+govet: ## Run govet on Go source files in the repository.
 	@$(ECHO_CHECK) vetting all GOFILES...
-	$(QUIET) $(GOLIST) $(GO) vet \
+	$(QUIET) $(GO_VET) \
     ./api/... \
     ./bugtool/... \
     ./cilium/... \
     ./cilium-health/... \
-    ./common/... \
     ./daemon/... \
+    ./hubble-relay/... \
     ./operator/... \
     ./pkg/... \
     ./plugins/... \
@@ -347,38 +472,36 @@ govet:
     ./test/k8sT/... \
     ./tools/...
 
-ineffassign:
-	@$(ECHO_CHECK) $(GOFILES)
-	$(QUIET) ineffassign .
+lint: ## Run golangci-lint and check if the helper headers in bpf/mock are up-to-date.
+	@$(ECHO_CHECK) golangci-lint
+	$(QUIET) golangci-lint run
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C bpf/mock/ check_helper_headers
 
-logging-subsys-field:
+logging-subsys-field: ## Validate logrus subsystem field for logs in Go source code.
 	@$(ECHO_CHECK) contrib/scripts/check-logging-subsys-field.sh
 	$(QUIET) contrib/scripts/check-logging-subsys-field.sh
 
-check-microk8s:
+check-microk8s: ## Validate if microk8s is ready to install cilium.
 	@$(ECHO_CHECK) microk8s is ready...
 	$(QUIET)microk8s.status >/dev/null \
 		|| (echo "Error: Microk8s is not running" && exit 1)
-	$(QUIET)microk8s.status -o yaml | grep -q "registry.*enabled" \
-		|| (echo "Error: Microk8s registry must be enabled" && exit 1)
 
 LOCAL_IMAGE_TAG=local
-LOCAL_IMAGE=localhost:32000/cilium/cilium:$(LOCAL_IMAGE_TAG)
-microk8s: check-microk8s
+LOCAL_IMAGE=localhost:32000/$(DOCKER_DEV_ACCOUNT)/cilium-dev:$(LOCAL_IMAGE_TAG)
+microk8s: check-microk8s ## Build cilium-dev docker image and import to mircrok8s
 	$(QUIET)$(MAKE) dev-docker-image DOCKER_IMAGE_TAG=$(LOCAL_IMAGE_TAG)
 	@echo "  DEPLOY image to microk8s ($(LOCAL_IMAGE))"
-	$(CONTAINER_ENGINE_FULL) tag cilium/cilium-dev:$(LOCAL_IMAGE_TAG) $(LOCAL_IMAGE)
-	$(CONTAINER_ENGINE_FULL) push $(LOCAL_IMAGE)
-	$(QUIET)kubectl apply -f contrib/k8s/microk8s-prepull.yaml
-	$(QUIET)kubectl -n kube-system delete pod -l name=prepull
-	$(QUIET)kubectl -n kube-system rollout status ds/prepull
-	@echo
-	@echo "Update image tag like this when ready:"
-	@echo "    kubectl -n kube-system set image ds/cilium cilium-agent=$(LOCAL_IMAGE)"
-	@echo "Or, redeploy the Cilium pods:"
-	@echo "    kubectl -n kube-system delete pod -l k8s-app=cilium"
+	$(QUIET)$(CONTAINER_ENGINE) tag $(IMAGE_REPOSITORY)/cilium-dev:$(LOCAL_IMAGE_TAG) $(LOCAL_IMAGE)
+	$(QUIET)./contrib/scripts/microk8s-import.sh $(LOCAL_IMAGE)
 
-precheck: ineffassign logging-subsys-field
+kind: ## Create a kind cluster for Cilium development.
+	$(QUIET)./contrib/scripts/kind.sh
+
+precheck: logging-subsys-field ## Peform build precheck for the source code.
+ifeq ($(SKIP_K8S_CODE_GEN_CHECK),"false")
+	@$(ECHO_CHECK) contrib/scripts/check-k8s-code-gen.sh
+	$(QUIET) contrib/scripts/check-k8s-code-gen.sh
+endif
 	@$(ECHO_CHECK) contrib/scripts/check-fmt.sh
 	$(QUIET) contrib/scripts/check-fmt.sh
 	@$(ECHO_CHECK) contrib/scripts/check-log-newlines.sh
@@ -387,33 +510,31 @@ precheck: ineffassign logging-subsys-field
 	$(QUIET) contrib/scripts/check-missing-tags-in-tests.sh
 	@$(ECHO_CHECK) contrib/scripts/check-assert-deep-equals.sh
 	$(QUIET) contrib/scripts/check-assert-deep-equals.sh
-	$(QUIET) $(MAKE) -C bpf build_all
+	@$(ECHO_CHECK) contrib/scripts/lock-check.sh
+	$(QUIET) contrib/scripts/lock-check.sh
+ifeq ($(SKIP_CUSTOMVET_CHECK),"false")
+	@$(ECHO_CHECK) contrib/scripts/custom-vet-check.sh
+	$(QUIET) contrib/scripts/custom-vet-check.sh
+endif
+	@$(ECHO_CHECK) contrib/scripts/rand-check.sh
+	$(QUIET) contrib/scripts/rand-check.sh
 
-pprof-help:
-	@echo "Available pprof targets:"
-	@echo "  pprof-heap"
-	@echo "  pprof-profile"
-	@echo "  pprof-block"
-	@echo "  pprof-trace-5s"
-	@echo "  pprof-mutex"
-
-pprof-heap:
+pprof-heap: ## Get Go pprof heap profile.
 	$(QUIET)$(GO) tool pprof http://localhost:6060/debug/pprof/heap
 
-pprof-profile:
+pprof-profile: ## Get Go pprof profile.
 	$(QUIET)$(GO) tool pprof http://localhost:6060/debug/pprof/profile
 
-
-pprof-block:
+pprof-block: ## Get Go pprof block profile.
 	$(QUIET)$(GO) tool pprof http://localhost:6060/debug/pprof/block
 
-pprof-trace-5s:
+pprof-trace-5s: ## Get Go pprof trace for a duration of 5 seconds.
 	curl http://localhost:6060/debug/pprof/trace?seconds=5
 
-pprof-mutex:
+pprof-mutex: ## Get Go pprof mutex profile.
 	$(QUIET)$(GO) tool pprof http://localhost:6060/debug/pprof/mutex
 
-update-authors:
+update-authors: ## Update AUTHORS file for Cilium repository.
 	@echo "Updating AUTHORS file..."
 	@echo "The following people, in alphabetical order, have either authored or signed" > AUTHORS
 	@echo "off on commits in the Cilium repository:" >> AUTHORS
@@ -421,60 +542,78 @@ update-authors:
 	@contrib/scripts/extract_authors.sh >> AUTHORS
 	@cat .authors.aux >> AUTHORS
 
-docs-container:
-	$(QUIET)cp -r ./api ./Documentation/_api
-	$(CONTAINER_ENGINE_FULL) image build -t cilium/docs-builder -f Documentation/Dockerfile ./Documentation; \
-	  (ret=$$?; rm -r ./Documentation/_api && exit $$ret)
+test-docs: ## Build HTML documentation.
+	$(MAKE) -C Documentation html
 
-DOCS_PORT=9081
-render-docs: test-docs
-	$(CONTAINER_ENGINE_FULL) container run --rm -dit --name docs-cilium -p $(DOCS_PORT):80 -v $$(pwd)/Documentation/_build/html/:/usr/local/apache2/htdocs/ httpd:2.4
-	@echo "$$(tput setaf 2)Running at http://localhost:$(DOCS_PORT)$$(tput sgr0)"
+render-docs: test-docs ## Run server to render documentation.
+	$(MAKE) -C Documentation run-server
 
-test-docs: docs-container
-	-$(CONTAINER_ENGINE_FULL) container rm -f docs-cilium >/dev/null 2>&1 || true
-	$(CONTAINER_ENGINE_FULL) container run --rm -v $$(pwd):/srv/ cilium/docs-builder /bin/bash -c 'make html'
+render-docs-live-preview: ## Run server with live preview to render documentation.
+	$(MAKE) -C Documentation live-preview
 
-manpages:
+manpages: ## Generate manpage for Cilium CLI.
 	-rm -r man
 	mkdir -p man
 	cilium cmdman -d man
 
-install-manpages:
+install-manpages: ## Install manpages the Cilium CLI.
 	cp man/* /usr/local/share/man/man1/
 	mandb
 
-# Strip "tabs assets" errors from the dummy target, but fail on target failure.
-check-docs:
-	$(QUIET)($(MAKE) -C Documentation/ dummy SPHINXOPTS="$(SPHINXOPTS)" 2>&1 && touch $@.ok) \
-		| grep -v "tabs assets"
-	@rm $@.ok 2>/dev/null
+postcheck: build ## Run Cilium build postcheck (update-cmdref, build documentation etc.).
+	$(QUIET)$(MAKE) $(SUBMAKEOPTS) -C Documentation check
 
-postcheck: build
-	@$(ECHO_CHECK) contrib/scripts/check-cmdref.sh
-	$(QUIET) MAKE=$(MAKE) contrib/scripts/check-cmdref.sh
-	@$(ECHO_CHECK) contrib/scripts/lock-check.sh
-	$(QUIET) contrib/scripts/lock-check.sh
-	@$(SKIP_DOCS) || $(MAKE) check-docs
+licenses-all: ## Generate file with all the License from dependencies.
+	@$(GO) run ./tools/licensegen > LICENSE.all || ( rm -f LICENSE.all ; false )
 
-minikube:
-	$(QUIET) contrib/scripts/minikube.sh
+update-go-version: update-dev-doctor-go-version update-gh-actions-go-version update-main-go-version update-travis-go-version update-test-go-version update-images-go-version ## Update Go version for all the components (travis, dev-doctor, gh-actions etc.).
 
-update-golang: update-golang-dockerfiles update-travis-go-version update-test-go-version
+update-dev-doctor-go-version: ## Update dev-doctor Go version.
+	$(QUIET) sed -i 's/^const minGoVersionStr = ".*"/const minGoVersionStr = "$(GO_MAJOR_AND_MINOR_VERSION)"/' tools/dev-doctor/config.go
+	@echo "Updated go version in tools/dev-doctor to $(GO_MAJOR_AND_MINOR_VERSION)"
 
-update-golang-dockerfiles:
-	$(QUIET) sed -i 's/GO_VERSION .*/GO_VERSION $(GO_VERSION)/g' Dockerfile.builder
-	$(QUIET) for fl in $(shell find . -name "*Dockerfile*") ; do sed -i 's/golang:.* /golang:$(GO_VERSION) as /g' $$fl ; done
-	@echo "Updated go version in Dockerfiles to $(GO_VERSION)"
+update-gh-actions-go-version: ## Update Go version in GitHub action config.
+	$(QUIET) for fl in $(shell find .github/workflows -name "*.yaml" -print) ; do sed -i 's/go-version: .*/go-version: $(GO_IMAGE_VERSION)/g' $$fl ; done
+	@echo "Updated go version in GitHub Actions to $(GO_IMAGE_VERSION)"
 
-update-travis-go-version:
-	$(QUIET) sed -e 's/TRAVIS_GO_VERSION/$(GO_VERSION)/g' .travis.yml.tmpl > .travis.yml
+update-main-go-version: ## Update Go version in main.go.
+	$(QUIET) for fl in $(shell find .  -name main.go -not -path "./vendor/*" -print); do \
+		sed -i \
+			-e 's|^//go:build go.*|//go:build go$(GO_MAJOR_AND_MINOR_VERSION)|g' \
+			-e 's|^// +build go.*|// +build go$(GO_MAJOR_AND_MINOR_VERSION)|g' \
+			$$fl ; \
+	done
+
+update-travis-go-version: ## Update Go version in TravisCI config.
+	$(QUIET) sed -i 's/go: ".*/go: "$(GO_VERSION)"/g' .travis.yml
 	@echo "Updated go version in .travis.yml to $(GO_VERSION)"
 
-update-test-go-version:
+update-test-go-version: ## Update Go version in test scripts.
 	$(QUIET) sed -i 's/GO_VERSION=.*/GO_VERSION="$(GO_VERSION)"/g' test/kubernetes-test.sh
 	$(QUIET) sed -i 's/GOLANG_VERSION=.*/GOLANG_VERSION="$(GO_VERSION)"/g' test/packet/scripts/install.sh
 	@echo "Updated go version in test scripts to $(GO_VERSION)"
 
-.PHONY: force generate-api generate-health-api install
+update-images-go-version: ## Update Go version in Dockerfiles.
+	$(QUIET) sed -i 's/^go_version=.*/go_version=$(GO_IMAGE_VERSION)/g' images/scripts/update-golang-image.sh
+	$(QUIET) $(MAKE) -C images update-golang-image
+	@echo "Updated go version in image Dockerfiles to $(GO_IMAGE_VERSION)"
+
+dev-doctor: ## Run Cilium dev-doctor to validate local development environment.
+	$(QUIET)$(GO) version 2>/dev/null || ( echo "go not found, see https://golang.org/doc/install" ; false )
+	$(QUIET)$(GO) run ./tools/dev-doctor
+
+help: Makefile ## Display help for the Makefile, from https://www.thapaliya.com/en/writings/well-documented-makefiles/
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-28s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@# There is also a list of target we have to manually put the information about.
+	@# These are templated targets.
+	$(call print_help_line,"docker-cilium-image","Build cilium-agent docker image")
+	$(call print_help_line,"dev-docker-image","Build cilium-agent development docker image")
+	$(call print_help_line,"docker-plugin-image","Build cilium-docker plugin image")
+	$(call print_help_line,"docker-hubble-relay-image","Build hubble-relay docker image")
+	$(call print_help_line,"docker-clustermesh-apiserver-image","Build docker image for Cilium clustermesh APIServer")
+	$(call print_help_line,"docker-operator-image","Build cilium-operator docker image")
+	$(call print_help_line,"docker-operator-*-image","Build platform specific cilium-operator images(aws, azure, generic)")
+	$(call print_help_line,"docker-*-image-unstripped","Build unstripped version of above docker images(cilium, hubble-relay, operator etc.)")
+
+.PHONY: help clean clean-container dev-doctor force generate-api generate-health-api generate-operator-api generate-hubble-api install licenses-all veryclean
 force :;

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -20,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cilium/cilium/common"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/maps/ipcache"
 
 	"github.com/hashicorp/go-immutable-radix"
@@ -102,12 +91,11 @@ func getLPMValue(ip net.IP, entries map[string][]string) (interface{}, bool) {
 		ip = ip.To4()
 	}
 
-	var lpmEntries []lpmEntry
+	lpmEntries := make([]lpmEntry, 0, len(entries))
 	for cidr, identity := range entries {
 		currIP, subnet, err := net.ParseCIDR(cidr)
-
 		if err != nil {
-			log.Warnf("unable to parse ipcache entry '%s' as a CIDR: %s", cidr, err)
+			log.WithError(err).Warnf("unable to parse ipcache entry %q as a CIDR", cidr)
 			continue
 		}
 

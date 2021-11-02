@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package envoy
 
@@ -20,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/cilium/cilium/pkg/envoy/xds"
-	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
@@ -30,7 +18,7 @@ import (
 
 const (
 	// ListenerTypeURL is the type URL of Listener resources.
-	ListenerTypeURL = "type.googleapis.com/envoy.api.v2.Listener"
+	ListenerTypeURL = "type.googleapis.com/envoy.config.listener.v3.Listener"
 
 	// NetworkPolicyTypeURL is the type URL of NetworkPolicy resources.
 	NetworkPolicyTypeURL = "type.googleapis.com/cilium.NetworkPolicy"
@@ -77,13 +65,13 @@ func (cache *NPHDSCache) OnIPIdentityCacheGC() {
 // OnIPIdentityCacheChange pushes modifications to the IP<->Identity mapping
 // into the Network Policy Host Discovery Service (NPHDS).
 func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModification, cidr net.IPNet,
-	oldHostIP, newHostIP net.IP, oldID *identity.NumericIdentity, newID identity.NumericIdentity,
+	oldHostIP, newHostIP net.IP, oldID *ipcache.Identity, newID ipcache.Identity,
 	encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
 	// An upsert where an existing pair exists should translate into a
 	// delete (for the old Identity) followed by an upsert (for the new).
 	if oldID != nil && modType == ipcache.Upsert {
 		// Skip update if identity is identical
-		if *oldID == newID {
+		if oldID.ID == newID.ID {
 			return
 		}
 
@@ -99,7 +87,7 @@ func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModificati
 	})
 
 	// Look up the current resources for the specified Identity.
-	resourceName := newID.StringID()
+	resourceName := newID.ID.StringID()
 	msg, err := cache.Lookup(NetworkPolicyHostsTypeURL, resourceName)
 	if err != nil {
 		scopedLog.WithError(err).Warning("Can't lookup NPHDS cache")
@@ -122,12 +110,12 @@ func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModificati
 		sort.Strings(hostAddresses)
 
 		newNpHost := envoyAPI.NetworkPolicyHosts{
-			Policy:        uint64(newID),
+			Policy:        uint64(newID.ID),
 			HostAddresses: hostAddresses,
 		}
 		if err := newNpHost.Validate(); err != nil {
 			scopedLog.WithError(err).WithFields(logrus.Fields{
-				logfields.XDSResource: newNpHost,
+				logfields.XDSResource: newNpHost.String(),
 			}).Warning("Could not validate NPHDS resource update on upsert")
 			return
 		}

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package route
 
@@ -19,7 +8,6 @@ import (
 	"net"
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/option"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -79,56 +67,4 @@ func (r *Route) ToIPCommand(dev string) []string {
 	}
 	res = append(res, "dev", dev)
 	return res
-}
-
-func lookupDefaultRoute(family int) (netlink.Route, error) {
-	linkIndex := 0
-
-	routes, err := netlink.RouteListFiltered(family, &netlink.Route{Dst: nil}, netlink.RT_FILTER_DST)
-	if err != nil {
-		return netlink.Route{}, fmt.Errorf("Unable to list direct routes: %s", err)
-	}
-
-	if len(routes) == 0 {
-		return netlink.Route{}, fmt.Errorf("Default route not found for family %d", family)
-	}
-
-	for _, route := range routes {
-		if linkIndex != 0 && linkIndex != route.LinkIndex {
-			return netlink.Route{}, fmt.Errorf("Found default routes with different netdev ifindices: %v vs %v",
-				linkIndex, route.LinkIndex)
-		}
-		linkIndex = route.LinkIndex
-	}
-
-	log.Debugf("Found default route on node %v", routes[0])
-	return routes[0], nil
-}
-
-// NodeDeviceWithDefaultRoute returns the node's device which handles the
-// default route in the current namespace
-func NodeDeviceWithDefaultRoute() (netlink.Link, error) {
-	linkIndex := 0
-	if option.Config.EnableIPv4 {
-		route, err := lookupDefaultRoute(netlink.FAMILY_V4)
-		if err != nil {
-			return nil, err
-		}
-		linkIndex = route.LinkIndex
-	}
-	if option.Config.EnableIPv6 {
-		route, err := lookupDefaultRoute(netlink.FAMILY_V6)
-		if err != nil {
-			return nil, err
-		}
-		if linkIndex != 0 && linkIndex != route.LinkIndex {
-			return nil, fmt.Errorf("IPv4/IPv6 have different link indices")
-		}
-		linkIndex = route.LinkIndex
-	}
-	link, err := netlink.LinkByIndex(linkIndex)
-	if err != nil {
-		return nil, err
-	}
-	return link, nil
 }

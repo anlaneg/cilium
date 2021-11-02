@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _gs_cassandra:
 
@@ -26,7 +26,7 @@ Deploy the Demo Application
 
 Now that we have Cilium deployed and ``kube-dns`` operating correctly we can
 deploy our demo Cassandra application.  Since our first
-`HTTP-aware Cilium  Star Wars demo <https://www.cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you>`_
+`HTTP-aware Cilium  Star Wars demo <https://cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you/>`_
 showed how the Galactic Empire used HTTP-aware security policies to protect the Death Star from the
 Rebel Alliance, this Cassandra demo is Star Wars-themed as well.
 
@@ -77,7 +77,7 @@ Running ``kubectl get svc,pods`` will inform you about the progress of the opera
 Each pod will go through several states until it reaches ``Running`` at which
 point the setup is ready.
 
-::
+.. code-block:: shell-session
 
     $ kubectl get svc,pods
     NAME                    TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
@@ -101,7 +101,7 @@ First, we'll create the keyspaces and tables mentioned above, and populate them 
 
 Next, create two environment variables that refer to the *empire-hq* and *empire-outpost* pods:
 
-::
+.. code-block:: shell-session
 
    $ HQ_POD=$(kubectl get pods -l app=empire-hq -o jsonpath='{.items[0].metadata.name}')
    $ OUTPOST_POD=$(kubectl get pods -l app=empire-outpost -o jsonpath='{.items[0].metadata.name}')
@@ -110,9 +110,9 @@ Next, create two environment variables that refer to the *empire-hq* and *empire
 Now we will run the 'cqlsh' Cassandra client in the *empire-outpost* pod, telling it to access
 the Cassandra cluster identified by the 'cassandra-svc' DNS name:
 
-::
+.. code-block:: shell-session
 
-    $ kubectl exec -it $OUTPOST_POD cqlsh -- cassandra-svc
+    $ kubectl exec -it $OUTPOST_POD -- cqlsh cassandra-svc
     Connected to Test Cluster at cassandra-svc:9042.
     [cqlsh 5.0.1 | Cassandra 3.11.3 | CQL spec 3.4.4 | Native protocol v4]
     Use HELP for help.
@@ -121,7 +121,7 @@ the Cassandra cluster identified by the 'cassandra-svc' DNS name:
 Next, using the cqlsh prompt, we'll show that the outpost can add records to the "daily_records" table
 in the "attendance" keyspace:
 
-::
+.. code-block:: shell-session
 
     cqlsh> INSERT INTO attendance.daily_records (creation, loc_id, present, empire_member_id) values (now(), 074AD3B9-A47D-4EBC-83D3-CAD75B1911CE, true, 6AD3139F-EBFC-4E0C-9F79-8F997BA01D90);
 
@@ -137,7 +137,7 @@ but it could read all entries as well.
 
 To see this, we can run the following command:
 
-::
+.. code-block:: shell-session
 
   $ cqlsh> SELECT * FROM attendance.daily_records;
 
@@ -163,7 +163,7 @@ Uh oh!  The rebels now has strategic information about empire troop strengths at
 But even more nasty from a security perspective is that the outpost container can also access information in any keyspace,
 including the deathstar keyspace.  For example, run:
 
-::
+.. code-block:: shell-session
 
  $ cqlsh> SELECT * FROM deathstar.scrum_notes;
 
@@ -221,7 +221,7 @@ Apply this Cassandra-aware network security policy using ``kubectl`` in a new wi
 
 If we then again try to perform the attacks from the *empire-outpost* pod, we'll see that they are denied:
 
-::
+.. code-block:: shell-session
 
   $ cqlsh> SELECT * FROM attendance.daily_records;
   Unauthorized: Error from server: code=2100 [Unauthorized] message="Request Unauthorized"
@@ -235,7 +235,7 @@ could easily be confused with a network error), but rather we respond with the C
 Likewise, if the outpost pod ever tries to access a table in another keyspace, like deathstar, this request will also be
 denied:
 
-::
+.. code-block:: shell-session
 
   $ cqlsh> SELECT * FROM deathstar.scrum_notes;
   Unauthorized: Error from server: code=2100 [Unauthorized] message="Request Unauthorized"
@@ -244,9 +244,9 @@ This is blocked as well, thanks to the Cilium network policy.
 
 Use another window to confirm that the *empire-hq* pod still has full access to the cassandra cluster:
 
-::
+.. code-block:: shell-session
 
-    $ kubectl exec -it $HQ_POD cqlsh -- cassandra-svc
+    $ kubectl exec -it $HQ_POD -- cqlsh cassandra-svc
     Connected to Test Cluster at cassandra-svc:9042.
     [cqlsh 5.0.1 | Cassandra 3.11.3 | CQL spec 3.4.4 | Native protocol v4]
     Use HELP for help.
@@ -255,7 +255,7 @@ Use another window to confirm that the *empire-hq* pod still has full access to 
 The power of Cilium's identity-based security allows *empire-hq* to still have full access
 to both tables:
 
-::
+.. code-block:: shell-session
 
 
   $ cqlsh> SELECT * FROM attendance.daily_records;
@@ -270,7 +270,7 @@ to both tables:
 
 Similarly, the deathstar can still access the scrum notes:
 
-::
+.. code-block:: shell-session
 
   $ cqlsh> SELECT * FROM deathstar.scrum_notes;
 
@@ -284,10 +284,10 @@ Cassandra-Aware Visibility (Bonus)
 As a bonus, you can re-run the above queries with policy enforced and view how Cilium provides Cassandra-aware visibility, including
 whether requests are forwarded or denied.   First, use "kubectl exec" to access the cilium pod.
 
-::
+.. code-block:: shell-session
 
   $ CILIUM_POD=$(kubectl get pods -n kube-system -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}')
-  $ kubectl exec -it -n kube-system $CILIUM_POD /bin/bash
+  $ kubectl exec -it -n kube-system $CILIUM_POD -- /bin/bash
   root@minikube:~#
 
 Next, start Cilium monitor, and limit the output to only "l7" type messages using the "-t" flag:

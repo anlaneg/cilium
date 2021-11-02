@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
@@ -28,8 +18,10 @@ import (
 var _ = Describe("RuntimeKafka", func() {
 
 	var (
-		vm          *helpers.SSHMeta
-		monitorStop = func() error { return nil }
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
+		monitorRes    *helpers.CmdRes
+		monitorStop   = func() error { return nil }
 
 		allowedTopic  = "allowedTopic"
 		disallowTopic = "disallowTopic"
@@ -114,8 +106,7 @@ var _ = Describe("RuntimeKafka", func() {
 		status.ExpectSuccess()
 
 		containers("create")
-		epsReady := vm.WaitEndpointsReady()
-		Expect(epsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		err := waitForKafkaBroker(client, createTopicCmd(topicTest))
 		Expect(err).To(BeNil(), "Kafka broker failed to come up")
@@ -145,11 +136,12 @@ var _ = Describe("RuntimeKafka", func() {
 	})
 
 	JustBeforeEach(func() {
-		monitorStop = vm.MonitorStart()
+		testStartTime = time.Now()
+		monitorRes, monitorStop = vm.MonitorStart("--type l7")
 	})
 
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 		Expect(monitorStop()).To(BeNil(), "cannot stop monitor command")
 	})
 
@@ -157,7 +149,7 @@ var _ = Describe("RuntimeKafka", func() {
 		vm.ReportFailed("cilium policy get")
 	})
 
-	It("Kafka Policy Ingress", func() {
+	SkipItIf(helpers.SkipRaceDetectorEnabled, "Kafka Policy Ingress", func() {
 		_, err := vm.PolicyImportAndWait(vm.GetFullPath("Policies-kafka.json"), helpers.HelperTimeout)
 		Expect(err).Should(BeNil())
 
@@ -165,7 +157,7 @@ var _ = Describe("RuntimeKafka", func() {
 		Expect(err).Should(BeNil(), "Cannot get endpoint list")
 		Expect(endPoints[helpers.Enabled]).To(Equal(1),
 			"Check number of endpoints with policy enforcement enabled")
-		Expect(endPoints[helpers.Disabled]).To(Equal(2),
+		Expect(endPoints[helpers.Disabled]).To(Equal(3),
 			"Check number of endpoints with policy enforcement disabled")
 
 		By("Allowed topic")
@@ -185,15 +177,18 @@ var _ = Describe("RuntimeKafka", func() {
 		By("Disable topic")
 		res = consumer(disallowTopic, MaxMessages)
 		res.ExpectFail("Kafka consumer can access to disallowTopic")
+
+		monitorRes.WaitUntilMatch("verdict Denied offsetfetch topic disallowTopic => 29")
+		monitorRes.ExpectContains("verdict Denied offsetfetch topic disallowTopic => 29")
 	})
 
-	It("Kafka Policy Role Ingress", func() {
+	SkipItIf(helpers.SkipRaceDetectorEnabled, "Kafka Policy Role Egress", func() {
 		_, err := vm.PolicyImportAndWait(vm.GetFullPath("Policies-kafka-Role.json"), helpers.HelperTimeout)
 		Expect(err).Should(BeNil(), "Expected nil got %s while importing policy Policies-kafka-Role.json", err)
 
 		endPoints, err := vm.PolicyEndpointsSummary()
 		Expect(err).Should(BeNil(), "Expect nil. Failed to apply policy on all endpoints with error :%s", err)
-		Expect(endPoints[helpers.Enabled]).To(Equal(1), "Expected 1 endpoint to be policy enabled. Policy enforcement failed")
+		Expect(endPoints[helpers.Enabled]).To(Equal(2), "Expected 2 endpoint to be policy enabled. Policy enforcement failed")
 		Expect(endPoints[helpers.Disabled]).To(Equal(2), "Expected 2 endpoint to be policy disabled. Policy enforcement failed")
 
 		By("Sending produce request on kafka topic `allowedTopic`")
@@ -208,7 +203,7 @@ var _ = Describe("RuntimeKafka", func() {
 			Should(ContainSubstring("Processed a total of %d messages", MaxMessages),
 				"Kafka did not process the expected number of messages")
 
-		By("Disable topic")
+		By("Non-allowed topic")
 		// Consumer timeout didn't work correctly, so make sure that AUTH is present in the reply
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -216,5 +211,8 @@ var _ = Describe("RuntimeKafka", func() {
 			"docker exec -i %s %s", client, consumerCmd(disallowTopic, MaxMessages)))
 		err = res.WaitUntilMatch("{disallowTopic=TOPIC_AUTHORIZATION_FAILED}")
 		Expect(err).To(BeNil(), "Traffic in disallowTopic is allowed")
+
+		monitorRes.WaitUntilMatch("verdict Denied metadata topic disallowTopic => 29")
+		monitorRes.ExpectContains("verdict Denied metadata topic disallowTopic => 29")
 	})
 })

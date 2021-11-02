@@ -1,50 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipam
 
 import (
 	"context"
 	"fmt"
-	"net"
-	"strings"
 
 	"github.com/cilium/cilium/pkg/azure/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ipam"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
-	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/math"
 
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	// maxAttachRetries is the maximum number of attachment retries
-	maxAttachRetries = 5
-)
-
 // Node represents a node representing an Azure instance
 type Node struct {
-	mutex lock.RWMutex
+	// k8sObj is the CiliumNode custom resource representing the node
+	k8sObj *v2.CiliumNode
 
 	// node contains the general purpose fields of a node
 	node *ipam.Node
-
-	// k8sObj is the CiliumNode custom resource representing the node
-	k8sObj *v2.CiliumNode
 
 	// manager is the Azure node manager responsible for this node
 	manager *InstancesManager
@@ -55,45 +34,20 @@ func (n *Node) UpdatedNode(obj *v2.CiliumNode) {
 	n.k8sObj = obj
 }
 
-// GetMaxAboveWatermark returns the max-above-watermark setting for an Azure node
-func (n *Node) GetMaxAboveWatermark() int {
-	return n.k8sObj.Spec.IPAM.MaxAboveWatermark
-}
-
-// GetPreAllocate returns the pre-allocation setting for an Azure node
-func (n *Node) GetPreAllocate() int {
-	if n.k8sObj.Spec.IPAM.PreAllocate != 0 {
-		return n.k8sObj.Spec.IPAM.PreAllocate
-	}
-	return defaults.ENIPreAllocation
-}
-
-// GetMinAllocate returns the min-allocation setting for an Azure node
-func (n *Node) GetMinAllocate() int {
-	return n.k8sObj.Spec.IPAM.MinAllocate
-}
-
-func (n *Node) instanceIdLocked() (id string) {
-	if n.k8sObj != nil {
-		id = strings.ToLower(n.k8sObj.Spec.Azure.InstanceID)
-	}
-	return
-}
-
 // PopulateStatusFields fills in the status field of the CiliumNode custom
 // resource with Azure specific information
 func (n *Node) PopulateStatusFields(k8sObj *v2.CiliumNode) {
-	n.mutex.RLock()
 	k8sObj.Status.Azure.Interfaces = []types.AzureInterface{}
-	for _, iface := range n.manager.GetInterfaces(n.instanceIdLocked()) {
-		k8sObj.Status.Azure.Interfaces = append(k8sObj.Status.Azure.Interfaces, *iface)
-	}
-	n.mutex.RUnlock()
-}
 
-// PopulateSpecFields fills in the spec field of the CiliumNode custom resource
-// with Azure specific information
-func (n *Node) PopulateSpecFields(k8sObj *v2.CiliumNode) {
+	n.manager.mutex.RLock()
+	defer n.manager.mutex.RUnlock()
+	n.manager.instances.ForeachInterface(n.node.InstanceID(), func(instanceID, interfaceID string, interfaceObj ipamTypes.InterfaceRevision) error {
+		iface, ok := interfaceObj.Resource.(*types.AzureInterface)
+		if ok {
+			k8sObj.Status.Azure.Interfaces = append(k8sObj.Status.Azure.Interfaces, *(iface.DeepCopy()))
+		}
+		return nil
+	})
 }
 
 // PrepareIPRelease prepares the release of IPs
@@ -109,8 +63,25 @@ func (n *Node) ReleaseIPs(ctx context.Context, r *ipam.ReleaseAction) error {
 // PrepareIPAllocation returns the number of IPs that can be allocated/created.
 func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationAction, err error) {
 	a = &ipam.AllocationAction{}
+	requiredIfaceName := n.k8sObj.Spec.Azure.InterfaceName
+	n.manager.mutex.RLock()
+	defer n.manager.mutex.RUnlock()
+	err = n.manager.instances.ForeachInterface(n.node.InstanceID(), func(instanceID, interfaceID string, interfaceObj ipamTypes.InterfaceRevision) error {
+		iface, ok := interfaceObj.Resource.(*types.AzureInterface)
+		if !ok {
+			return fmt.Errorf("invalid interface object")
+		}
 
-	for _, iface := range n.manager.GetInterfaces(n.instanceIdLocked()) {
+		if requiredIfaceName != "" {
+			if iface.Name != requiredIfaceName {
+				scopedLog.WithFields(logrus.Fields{
+					"ifaceName":    iface.Name,
+					"requiredName": requiredIfaceName,
+				}).Debug("Not considering interface for allocation since it does not match the required name")
+				return nil
+			}
+		}
+
 		scopedLog.WithFields(logrus.Fields{
 			"id":           iface.ID,
 			"numAddresses": len(iface.Addresses),
@@ -118,82 +89,55 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 
 		availableOnInterface := math.IntMax(types.InterfaceAddressLimit-len(iface.Addresses), 0)
 		if availableOnInterface <= 0 {
-			continue
-		} else {
-			a.AvailableInterfaces++
+			return nil
 		}
 
-		scopedLog.WithFields(logrus.Fields{
-			"id":                   iface.ID,
-			"availableOnInterface": availableOnInterface,
-		}).Debug("Interface has IPs available")
+		a.AvailableInterfaces++
 
-		subnets := map[string]struct{}{}
+		if a.InterfaceID == "" {
+			scopedLog.WithFields(logrus.Fields{
+				"id":                   iface.ID,
+				"availableOnInterface": availableOnInterface,
+			}).Debug("Interface has IPs available")
 
-		for _, address := range iface.Addresses {
-			if address.Subnet != "" {
-				subnets[address.Subnet] = struct{}{}
-			}
-		}
-
-		// No IP address assigned to interface yet, pick any subnet
-		if len(subnets) == 0 {
-			for _, subnet := range n.manager.getSubnets() {
-				subnets[subnet.subnet.ID] = struct{}{}
-			}
-		}
-
-		for subnetID := range subnets {
-			if subnet := n.manager.getSubnet(subnetID); subnet != nil {
-				available := subnet.allocator.Free()
-				if available > 0 && a.InterfaceID == "" {
-					scopedLog.WithFields(logrus.Fields{
-						"subnetID":           subnetID,
-						"availableAddresses": available,
-					}).Debug("Subnet has IPs available")
-
-					a.InterfaceID = iface.ID
-					a.PoolID = ipam.PoolID(subnetID)
-					a.AvailableForAllocation = math.IntMin(available, availableOnInterface)
+			preferredPoolIDs := []ipamTypes.PoolID{}
+			for _, address := range iface.Addresses {
+				if address.Subnet != "" {
+					preferredPoolIDs = append(preferredPoolIDs, ipamTypes.PoolID(address.Subnet))
 				}
 			}
+
+			poolID, available := n.manager.subnets.FirstSubnetWithAvailableAddresses(preferredPoolIDs)
+			if poolID != ipamTypes.PoolNotExists {
+				scopedLog.WithFields(logrus.Fields{
+					"subnetID":           poolID,
+					"availableAddresses": available,
+				}).Debug("Subnet has IPs available")
+
+				a.InterfaceID = iface.ID
+				a.Interface = interfaceObj
+				a.PoolID = poolID
+				a.AvailableForAllocation = math.IntMin(available, availableOnInterface)
+			}
 		}
-	}
+		return nil
+	})
 
 	return
 }
 
 // AllocateIPs performs the Azure IP allocation operation
 func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction) error {
-	subnetID := string(a.PoolID)
-	subnet := n.manager.getSubnet(subnetID)
-	if subnet == nil {
-		return fmt.Errorf("subnet no longer available")
+	iface, ok := a.Interface.Resource.(*types.AzureInterface)
+	if !ok {
+		return fmt.Errorf("invalid interface object")
 	}
 
-	ips := []net.IP{}
-
-	for i := 0; i < a.AvailableForAllocation; i++ {
-		ip, err := subnet.allocator.AllocateNext()
-		if err != nil {
-			for _, ip = range ips {
-				subnet.allocator.Release(ip)
-			}
-			return err
-		}
-
-		ips = append(ips, ip)
+	if iface.GetVMScaleSetName() == "" {
+		return n.manager.api.AssignPrivateIpAddressesVM(ctx, string(a.PoolID), iface.Name, a.AvailableForAllocation)
+	} else {
+		return n.manager.api.AssignPrivateIpAddressesVMSS(ctx, iface.GetVMID(), iface.GetVMScaleSetName(), string(a.PoolID), iface.Name, a.AvailableForAllocation)
 	}
-
-	err := n.manager.api.AssignPrivateIpAddresses(ctx, subnetID, a.InterfaceID, ips)
-	if err != nil {
-		for _, ip := range ips {
-			subnet.allocator.Release(ip)
-		}
-		return err
-	}
-
-	return nil
 }
 
 // CreateInterface is called to create a new interface. This operation is
@@ -202,38 +146,47 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	return 0, "", fmt.Errorf("not implemented")
 }
 
-// LogFields extends the log entry with Azure IPAM specific fields
-func (n *Node) LogFields(logger *logrus.Entry) *logrus.Entry {
-	if n.k8sObj != nil {
-		logger = logger.WithField("instanceID", n.k8sObj.Spec.Azure.InstanceID)
-	}
-	return logger
-}
-
 // ResyncInterfacesAndIPs is called to retrieve and interfaces and IPs as known
 // to the Azure API and return them
 func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, error) {
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
-
-	if n.k8sObj.Spec.Azure.InstanceID == "" {
+	if n.node.InstanceID() == "" {
 		return nil, nil
 	}
 
 	available := ipamTypes.AllocationMap{}
-	interfaces := n.manager.GetInterfaces(n.instanceIdLocked())
-	for _, iface := range interfaces {
-		for _, address := range iface.Addresses {
-			if address.State == types.StateSucceeded {
-				available[address.IP] = ipamTypes.AllocationIP{Resource: iface.ID}
-			} else {
-				log.WithFields(logrus.Fields{
-					"ip":    address.IP,
-					"state": address.State,
-				}).Warning("Ignoring potentially available IP due to non-successful state")
-			}
+	n.manager.mutex.RLock()
+	defer n.manager.mutex.RUnlock()
+	n.manager.instances.ForeachAddress(n.node.InstanceID(), func(instanceID, interfaceID, ip, poolID string, addressObj ipamTypes.Address) error {
+		address, ok := addressObj.(types.AzureAddress)
+		if !ok {
+			scopedLog.WithField("ip", ip).Warning("Not an Azure address object, ignoring IP")
+			return nil
 		}
-	}
+
+		if address.State == types.StateSucceeded {
+			available[address.IP] = ipamTypes.AllocationIP{Resource: interfaceID}
+		} else {
+			scopedLog.WithFields(logrus.Fields{
+				"ip":    address.IP,
+				"state": address.State,
+			}).Warning("Ignoring potentially available IP due to non-successful state")
+		}
+		return nil
+	})
 
 	return available, nil
+}
+
+// GetMaximumAllocatableIPv4 returns the maximum amount of IPv4 addresses
+// that can be allocated to the instance
+func (n *Node) GetMaximumAllocatableIPv4() int {
+	// An Azure node can allocate up to 256 private IP addresses
+	// source: https://github.com/MicrosoftDocs/azure-docs/blob/master/includes/azure-virtual-network-limits.md#networking-limits---azure-resource-manager
+	return types.InterfaceAddressLimit
+}
+
+// GetMinimumAllocatableIPv4 returns the minimum amount of IPv4 addresses that
+// must be allocated to the instance.
+func (n *Node) GetMinimumAllocatableIPv4() int {
+	return defaults.IPAMPreAllocation
 }

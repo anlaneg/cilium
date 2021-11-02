@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -28,13 +17,16 @@ import (
 )
 
 var (
-	deprecatedAddRev bool // TODO(v1.8+): remove it
-	k8sExternalIPs   bool
-	k8sNodePort      bool
-	k8sTrafficPolicy string
-	idU              uint64
-	frontend         string
-	backends         []string
+	k8sExternalIPs     bool
+	k8sNodePort        bool
+	k8sHostPort        bool
+	k8sLoadBalancer    bool
+	k8sTrafficPolicy   string
+	k8sClusterInternal bool
+	localRedirect      bool
+	idU                uint64
+	frontend           string
+	backends           []string
 )
 
 // serviceUpdateCmd represents the service_update command
@@ -51,9 +43,11 @@ func init() {
 	serviceUpdateCmd.Flags().Uint64VarP(&idU, "id", "", 0, "Identifier")
 	serviceUpdateCmd.Flags().BoolVarP(&k8sExternalIPs, "k8s-external", "", false, "Set service as a k8s ExternalIPs")
 	serviceUpdateCmd.Flags().BoolVarP(&k8sNodePort, "k8s-node-port", "", false, "Set service as a k8s NodePort")
+	serviceUpdateCmd.Flags().BoolVarP(&k8sLoadBalancer, "k8s-load-balancer", "", false, "Set service as a k8s LoadBalancer")
+	serviceUpdateCmd.Flags().BoolVarP(&k8sHostPort, "k8s-host-port", "", false, "Set service as a k8s HostPort")
+	serviceUpdateCmd.Flags().BoolVarP(&localRedirect, "local-redirect", "", false, "Set service as Local Redirect")
 	serviceUpdateCmd.Flags().StringVarP(&k8sTrafficPolicy, "k8s-traffic-policy", "", "Cluster", "Set service with k8s externalTrafficPolicy as {Local,Cluster}")
-	serviceUpdateCmd.Flags().BoolVarP(&deprecatedAddRev, "rev", "", false, "Add reverse translation")
-	serviceUpdateCmd.Flags().MarkDeprecated("rev", "and it is inactive")
+	serviceUpdateCmd.Flags().BoolVarP(&k8sClusterInternal, "k8s-cluster-internal", "", false, "Set service as cluster-internal for externalTrafficPolicy=Local")
 	serviceUpdateCmd.Flags().StringVarP(&frontend, "frontend", "", "", "Frontend address")
 	serviceUpdateCmd.Flags().StringSliceVarP(&backends, "backends", "", []string{}, "Backend address or addresses (<IP:Port>)")
 }
@@ -64,12 +58,25 @@ func parseFrontendAddress(address string) (*models.FrontendAddress, net.IP) {
 		Fatalf("Unable to parse frontend address: %s\n", err)
 	}
 
+	scope := models.FrontendAddressScopeExternal
+	if k8sClusterInternal {
+		scope = models.FrontendAddressScopeInternal
+	}
+
 	// FIXME support more than TCP
 	return &models.FrontendAddress{
 		IP:       frontend.IP.String(),
 		Port:     uint16(frontend.Port),
 		Protocol: models.FrontendAddressProtocolTCP,
+		Scope:    scope,
 	}, frontend.IP
+}
+
+func boolToInt(set bool) int {
+	if set {
+		return 1
+	}
+	return 0
 }
 
 func updateService(cmd *cobra.Command, args []string) {
@@ -97,12 +104,18 @@ func updateService(cmd *cobra.Command, args []string) {
 		spec.Flags = &models.ServiceSpecFlags{}
 	}
 
-	if k8sExternalIPs && k8sNodePort {
-		Fatalf("Cannot set both --k8s-external and --k8s-node-port for a service")
+	if boolToInt(k8sExternalIPs)+boolToInt(k8sNodePort)+boolToInt(k8sHostPort)+boolToInt(k8sLoadBalancer)+boolToInt(localRedirect) > 1 {
+		Fatalf("Can only set one of --k8s-external, --k8s-node-port, --k8s-load-balancer, --k8s-host-port, --local-redirect for a service")
 	} else if k8sExternalIPs {
 		spec.Flags = &models.ServiceSpecFlags{Type: models.ServiceSpecFlagsTypeExternalIPs}
 	} else if k8sNodePort {
 		spec.Flags = &models.ServiceSpecFlags{Type: models.ServiceSpecFlagsTypeNodePort}
+	} else if k8sLoadBalancer {
+		spec.Flags = &models.ServiceSpecFlags{Type: models.ServiceSpecFlagsTypeLoadBalancer}
+	} else if k8sHostPort {
+		spec.Flags = &models.ServiceSpecFlags{Type: models.ServiceSpecFlagsTypeHostPort}
+	} else if localRedirect {
+		spec.Flags = &models.ServiceSpecFlags{Type: models.ServiceSpecFlagsTypeLocalRedirect}
 	} else {
 		spec.Flags = &models.ServiceSpecFlags{Type: models.ServiceSpecFlagsTypeClusterIP}
 	}

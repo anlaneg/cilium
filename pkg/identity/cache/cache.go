@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cache
 
@@ -21,6 +10,7 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/identity"
+	identitymodel "github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/idpool"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
@@ -50,8 +40,7 @@ func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
 	log.Debug("getting identity cache for identity allocator manager")
 	cache := IdentityCache{}
 
-	if m.IdentityAllocator != nil {
-
+	if m.isGlobalIdentityAllocatorInitialized() {
 		m.IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
 			if val != nil {
 				if gi, ok := val.(GlobalIdentity); ok {
@@ -68,7 +57,7 @@ func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
 		cache[key] = identity.Labels.LabelArray()
 	}
 
-	if m.localIdentities != nil {
+	if m.isLocalIdentityAllocatorInitialized() {
 		for _, identity := range m.localIdentities.GetIdentities() {
 			cache[identity.ID] = identity.Labels.LabelArray()
 		}
@@ -81,27 +70,30 @@ func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
 func (m *CachingIdentityAllocator) GetIdentities() IdentitiesModel {
 	identities := IdentitiesModel{}
 
-	m.IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
-		if gi, ok := val.(GlobalIdentity); ok {
-			identity := identity.NewIdentityFromLabelArray(identity.NumericIdentity(id), gi.LabelArray)
-			identities = append(identities, identity.GetModel())
-		}
+	if m.isGlobalIdentityAllocatorInitialized() {
+		m.IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
+			if gi, ok := val.(GlobalIdentity); ok {
+				identity := identity.NewIdentityFromLabelArray(identity.NumericIdentity(id), gi.LabelArray)
+				identities = append(identities, identitymodel.CreateModel(identity))
+			}
 
-	})
+		})
+	}
 	// append user reserved identities
 	for _, v := range identity.ReservedIdentityCache {
-		identities = append(identities, v.GetModel())
+		identities = append(identities, identitymodel.CreateModel(v))
 	}
 
-	for _, v := range m.localIdentities.GetIdentities() {
-		identities = append(identities, v.GetModel())
+	if m.isLocalIdentityAllocatorInitialized() {
+		for _, v := range m.localIdentities.GetIdentities() {
+			identities = append(identities, identitymodel.CreateModel(v))
+		}
 	}
-
 	return identities
 }
 
 type identityWatcher struct {
-	stopChan chan bool
+	stopChan chan struct{}
 	owner    IdentityAllocatorOwner
 }
 
@@ -198,25 +190,55 @@ func (w *identityWatcher) stop() {
 	close(w.stopChan)
 }
 
+// isLocalIdentityAllocatorInitialized returns true if m.localIdentities is not nil.
+func (m *CachingIdentityAllocator) isLocalIdentityAllocatorInitialized() bool {
+	select {
+	case <-m.localIdentityAllocatorInitialized:
+		return m.localIdentities != nil
+	default:
+		return false
+	}
+}
+
+// isGlobalIdentityAllocatorInitialized returns true if m.IdentityAllocator is not nil.
+// Note: This does not mean that the identities have been synchronized,
+// see WaitForInitialGlobalIdentities to wait for a fully populated cache.
+func (m *CachingIdentityAllocator) isGlobalIdentityAllocatorInitialized() bool {
+	select {
+	case <-m.globalIdentityAllocatorInitialized:
+		return m.IdentityAllocator != nil
+	default:
+		return false
+	}
+}
+
 // LookupIdentity looks up the identity by its labels but does not create it.
-// This function will first search through the local cache and fall back to
-// querying the kvstore.
+// This function will first search through the local cache, then the caches for
+// remote kvstores and finally fall back to the main kvstore.
+// May return nil for lookups if the allocator has not yet been synchronized.
 func (m *CachingIdentityAllocator) LookupIdentity(ctx context.Context, lbls labels.Labels) *identity.Identity {
 	if reservedIdentity := identity.LookupReservedIdentityByLabels(lbls); reservedIdentity != nil {
 		return reservedIdentity
+	}
+
+	if !m.isLocalIdentityAllocatorInitialized() {
+		return nil
 	}
 
 	if identity := m.localIdentities.lookup(lbls); identity != nil {
 		return identity
 	}
 
-	if m.IdentityAllocator == nil {
+	if !identity.RequiresGlobalIdentity(lbls) || !m.isGlobalIdentityAllocatorInitialized() {
 		return nil
 	}
 
 	lblArray := lbls.LabelArray()
-	id, err := m.IdentityAllocator.Get(ctx, GlobalIdentity{lblArray})
+	id, err := m.IdentityAllocator.GetIncludeRemoteCaches(ctx, GlobalIdentity{lblArray})
 	if err != nil {
+		return nil
+	}
+	if id > identity.MaxNumericIdentity {
 		return nil
 	}
 
@@ -230,7 +252,9 @@ func (m *CachingIdentityAllocator) LookupIdentity(ctx context.Context, lbls labe
 var unknownIdentity = identity.NewIdentity(identity.IdentityUnknown, labels.Labels{labels.IDNameUnknown: labels.NewLabel(labels.IDNameUnknown, "", labels.LabelSourceReserved)})
 
 // LookupIdentityByID returns the identity by ID. This function will first
-// search through the local cache and fall back to querying the kvstore.
+// search through the local cache, then the caches for remote kvstores and
+// finally fall back to the main kvstore
+// May return nil for lookups if the allocator has not yet been synchronized.
 func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id identity.NumericIdentity) *identity.Identity {
 	if id == identity.IdentityUnknown {
 		return unknownIdentity
@@ -240,7 +264,7 @@ func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id id
 		return identity
 	}
 
-	if m.IdentityAllocator == nil {
+	if !m.isLocalIdentityAllocatorInitialized() {
 		return nil
 	}
 
@@ -248,7 +272,11 @@ func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id id
 		return identity
 	}
 
-	allocatorKey, err := m.IdentityAllocator.GetByID(ctx, idpool.ID(id))
+	if !m.isGlobalIdentityAllocatorInitialized() || id.HasLocalScope() {
+		return nil
+	}
+
+	allocatorKey, err := m.IdentityAllocator.GetByIDIncludeRemoteCaches(ctx, idpool.ID(id))
 	if err != nil {
 		return nil
 	}

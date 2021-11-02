@@ -1,22 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package version
 
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -34,8 +25,18 @@ type CiliumVersion struct {
 	AuthorDate string
 }
 
-// Version is set during build
+// ciliumVersion is set to Cilium's version, revision and git author time reference during build.
+var ciliumVersion string
+
+// Version is the complete Cilium version string including Go version.
 var Version string
+
+func init() {
+	// Mimic the output of `go version` and append it to ciliumVersion.
+	// Report GOOS/GOARCH of the actual binary, not the system it was built on, in case it was
+	// cross-compiled. See #13122
+	Version = fmt.Sprintf("%s go version %s %s/%s", ciliumVersion, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
 
 // FromString converts a version string into struct
 func FromString(versionString string) CiliumVersion {

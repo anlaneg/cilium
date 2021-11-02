@@ -1,16 +1,5 @@
-// Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2021 Authors of Cilium
 
 package helpers
 
@@ -20,28 +9,25 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/versioncheck"
 	"github.com/cilium/cilium/test/config"
 	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 
-	go_version "github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"golang.org/x/sys/unix"
 )
 
-func init() {
-	// ensure that our random numbers are seeded differently on each run
-	rand.Seed(time.Now().UnixNano())
-}
+// ensure that our random numbers are seeded differently on each run
+var randGen = rand.NewSafeRand(time.Now().UnixNano())
 
 // IsRunningOnJenkins detects if the currently running Ginkgo application is
 // most likely running in a Jenkins environment. Returns true if certain
@@ -81,28 +67,22 @@ func CountValues(key string, data []string) (int, int) {
 
 // MakeUID returns a randomly generated string.
 func MakeUID() string {
-	return fmt.Sprintf("%08x", rand.Uint32())
+	return fmt.Sprintf("%08x", randGen.Uint32())
 }
 
-// RenderTemplateToFile renders a text/template string into a target filename
-// with specific persmisions. Returns eturn an error if the template cannot be
-// validated or the file cannot be created.
-func RenderTemplateToFile(filename string, tmplt string, perm os.FileMode) error {
+// RenderTemplate renders a text/template string into a buffer.
+// Returns eturn an error if the template cannot be validated.
+func RenderTemplate(tmplt string) (*bytes.Buffer, error) {
 	t, err := template.New("").Parse(tmplt)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	content := new(bytes.Buffer)
 	err = t.Execute(content, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	err = ioutil.WriteFile(filename, content.Bytes(), perm)
-	if err != nil {
-		return err
-	}
-	return nil
+	return content, nil
 }
 
 // TimeoutConfig represents the configuration for the timeout of a command.
@@ -114,11 +94,11 @@ type TimeoutConfig struct {
 // Validate ensuires that the parameters for the TimeoutConfig are reasonable
 // for running in tests.
 func (c *TimeoutConfig) Validate() error {
-	if c.Timeout < 10*time.Second {
-		return fmt.Errorf("Timeout too short (must be at least 10 seconds): %v", c.Timeout)
+	if c.Timeout < 5*time.Second {
+		return fmt.Errorf("Timeout too short (must be at least 5 seconds): %v", c.Timeout)
 	}
 	if c.Ticker == 0 {
-		c.Ticker = 5 * time.Second
+		c.Ticker = 1 * time.Second
 	} else if c.Ticker < time.Second {
 		return fmt.Errorf("Timeout config Ticker interval too short (must be at least 1 second): %v", c.Ticker)
 	}
@@ -129,6 +109,23 @@ func (c *TimeoutConfig) Validate() error {
 // the timeout in config is reached. Returns an error if the timeout is
 // exceeded for body to execute successfully.
 func WithTimeout(body func() bool, msg string, config *TimeoutConfig) error {
+	err := RepeatUntilTrue(body, config)
+	if err != nil {
+		return fmt.Errorf("%s: %s", msg, err)
+	}
+
+	return nil
+}
+
+// RepeatUntilTrueDefaultTimeout calls RepeatUntilTrue with the default timeout
+// HelperTimeout
+func RepeatUntilTrueDefaultTimeout(body func() bool) error {
+	return RepeatUntilTrue(body, &TimeoutConfig{Timeout: HelperTimeout})
+}
+
+// RepeatUntilTrue repeatedly calls body until body returns true or the timeout
+// expires
+func RepeatUntilTrue(body func() bool, config *TimeoutConfig) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
@@ -162,7 +159,7 @@ func WithTimeout(body func() bool, msg string, config *TimeoutConfig) error {
 				go asyncBody(bodyChan)
 			}
 		case <-done:
-			return fmt.Errorf("Timeout reached: %s", msg)
+			return fmt.Errorf("%s timeout expired", config.Timeout)
 		}
 	}
 }
@@ -227,6 +224,8 @@ func HoldEnvironment(description ...string) {
 	fmt.Fprintf(os.Stdout, "\n\nPausing test for debug, use vagrant to access test setup.")
 	fmt.Fprintf(os.Stdout, "\nRun \"kill -SIGCONT %d\" to continue.\n", pid)
 	unix.Kill(pid, unix.SIGSTOP)
+	time.Sleep(time.Millisecond)
+	fmt.Fprintf(os.Stdout, "Test resumed.\n")
 }
 
 // Fail is a Ginkgo failure handler which raises a SIGSTOP for the test process
@@ -278,8 +277,26 @@ func CreateLogFile(filename string, data []byte) error {
 	}
 
 	finalPath := filepath.Join(path, filename)
-	err = ioutil.WriteFile(finalPath, data, LogPerm)
-	return err
+	return os.WriteFile(finalPath, data, LogPerm)
+}
+
+// WriteToReportFile writes data to filename. It appends to existing files.
+func WriteToReportFile(data []byte, filename string) error {
+	testPath, err := CreateReportDirectory()
+	if err != nil {
+		log.WithError(err).Errorf("cannot create test results path '%s'", testPath)
+		return err
+	}
+
+	err = WriteOrAppendToFile(
+		filepath.Join(testPath, filename),
+		data,
+		LogPerm)
+	if err != nil {
+		log.WithError(err).Errorf("cannot create monitor log file %s", filename)
+		return err
+	}
+	return nil
 }
 
 // reportMap saves the output of the given commands to the specified filename.
@@ -302,7 +319,7 @@ func reportMapContext(ctx context.Context, path string, reportCmds map[string]st
 
 	for cmd, logfile := range reportCmds {
 		res := node.ExecContext(ctx, cmd, ExecOptions{SkipLog: true})
-		err := ioutil.WriteFile(
+		err := os.WriteFile(
 			fmt.Sprintf("%s/%s", path, logfile),
 			res.CombineOutput().Bytes(),
 			LogPerm)
@@ -371,7 +388,7 @@ func DNSDeployment(base string) string {
 	var DNSEngine = "coredns"
 	k8sVersion := GetCurrentK8SEnv()
 	switch k8sVersion {
-	case "1.7", "1.8", "1.9", "1.10":
+	case "1.8", "1.9", "1.10":
 		DNSEngine = "kubedns"
 	}
 
@@ -393,18 +410,18 @@ func DNSDeployment(base string) string {
 
 // getK8sSupportedConstraints returns the Kubernetes versions supported by
 // a specific Cilium version.
-func getK8sSupportedConstraints(ciliumVersion string) (go_version.Range, error) {
+func getK8sSupportedConstraints(ciliumVersion string) (semver.Range, error) {
 	cst, err := versioncheck.Version(ciliumVersion)
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case IsCiliumV1_5(cst):
-		return versioncheck.MustCompile(">=1.8.0 <1.16.0"), nil
-	case IsCiliumV1_6(cst):
-		return versioncheck.MustCompile(">=1.8.0 <1.18.0"), nil
-	case IsCiliumV1_7(cst):
-		return versioncheck.MustCompile(">=1.10.0 <1.18.0"), nil
+	case IsCiliumV1_11(cst):
+		return versioncheck.MustCompile(">=1.16.0 <1.23.0"), nil
+	case IsCiliumV1_10(cst):
+		return versioncheck.MustCompile(">=1.16.0 <1.22.0"), nil
+	case IsCiliumV1_9(cst):
+		return versioncheck.MustCompile(">=1.12.0 <1.20.0"), nil
 	case IsCiliumV1_8(cst):
 		return versioncheck.MustCompile(">=1.10.0 <1.19.0"), nil
 	default:
@@ -427,11 +444,12 @@ func CanRunK8sVersion(ciliumVersion, k8sVersionStr string) (bool, error) {
 }
 
 // failIfContainsBadLogMsg makes a test case to fail if any message from
-// given log messages contains an entry from badLogMessages (map key) AND
+// given log messages contains an entry from the blacklist (map key) AND
 // does not contain ignore messages (map value).
-func failIfContainsBadLogMsg(logs string) {
+func failIfContainsBadLogMsg(logs, label string, blacklist map[string][]string) {
+	uniqueFailures := make(map[string]int)
 	for _, msg := range strings.Split(logs, "\n") {
-		for fail, ignoreMessages := range badLogMessages {
+		for fail, ignoreMessages := range blacklist {
 			if strings.Contains(msg, fail) {
 				ok := false
 				for _, ignore := range ignoreMessages {
@@ -441,23 +459,107 @@ func failIfContainsBadLogMsg(logs string) {
 					}
 				}
 				if !ok {
-					fmt.Fprintf(CheckLogs, "⚠️  Found a %q in logs\n", fail)
-					ginkgoext.Fail(fmt.Sprintf("Found a %q in Cilium Logs", fail))
+					count, _ := uniqueFailures[fail]
+					uniqueFailures[fail] = count + 1
 				}
 			}
 		}
 	}
+	if len(uniqueFailures) > 0 {
+		failures := make([]string, 0, len(uniqueFailures))
+		for f, c := range uniqueFailures {
+			failures = append(failures, f)
+			fmt.Fprintf(CheckLogs, "⚠️  Found %q in logs %d times\n", f, c)
+		}
+		failureMsgs := strings.Join(failures, "\n")
+		Fail(fmt.Sprintf("Found %d %s logs matching list of errors that must be investigated:\n%s", len(uniqueFailures), label, failureMsgs))
+	}
 }
 
-// RunsOnNetNext checks whether a test case is running on the net next machine
-// which means running on the latest (probably) unreleased kernel
-func RunsOnNetNext() bool {
-	return os.Getenv("NETNEXT") == "true"
+// RunsOnNetNextKernel checks whether a test case is running on the net-next
+// kernel (depending on the image, it's the latest kernel either from net-next.git
+// or bpf-next.git tree).
+func RunsOnNetNextKernel() bool {
+	netNext := os.Getenv("NETNEXT")
+	if netNext == "true" || netNext == "1" {
+		return true
+	}
+	netNext = os.Getenv("KERNEL")
+	return netNext == "net-next"
 }
 
-// DoesNotRunOnNetNext is the complement function of RunsOnNetNext.
-func DoesNotRunOnNetNext() bool {
-	return !RunsOnNetNext()
+// DoesNotRunOnNetNextKernel is the complement function of RunsOnNetNextKernel.
+func DoesNotRunOnNetNextKernel() bool {
+	return !RunsOnNetNextKernel()
+}
+
+// RunsOn54Kernel checks whether a test case is running on the 5.4 kernel.
+func RunsOn54Kernel() bool {
+	return os.Getenv("KERNEL") == "54"
+}
+
+// DoesNotRunOn54Kernel is the complement function of RunsOn54Kernel.
+func DoesNotRunOn54Kernel() bool {
+	return !RunsOn54Kernel()
+}
+
+// RunsOn419Kernel checks whether a test case is running on the 4.19 kernel.
+func RunsOn419Kernel() bool {
+	return os.Getenv("KERNEL") == "419"
+}
+
+func GKENativeRoutingCIDR() string {
+	return os.Getenv("NATIVE_CIDR")
+}
+
+// DoesNotRunOn419Kernel is the complement function of RunsOn419Kernel.
+func DoesNotRunOn419Kernel() bool {
+	return !RunsOn419Kernel()
+}
+
+// RunsOn419OrLaterKernel checks whether a test case is running on the bpf-next,
+// 4.19.x (x > 57), or 5.4 kernels.
+func RunsOn419OrLaterKernel() bool {
+	return RunsOnNetNextKernel() || RunsOn419Kernel() || RunsOn54Kernel()
+}
+
+// DoesNotRunOn419OrLaterKernel is the complement function of
+// RunsOn419OrLaterKernel.
+func DoesNotRunOn419OrLaterKernel() bool {
+	return !RunsOn419OrLaterKernel()
+}
+
+// RunsOnGKE returns true if the tests are running on GKE.
+func RunsOnGKE() bool {
+	return GetCurrentIntegration() == CIIntegrationGKE
+}
+
+// DoesNotRunOnGKE is the complement function of DoesNotRunOnGKE.
+func DoesNotRunOnGKE() bool {
+	return !RunsOnGKE()
+}
+
+// RunsOnEKS returns true if the tests are running on EKS.
+func RunsOnEKS() bool {
+	return GetCurrentIntegration() == CIIntegrationEKS
+}
+
+// DoesNotRunOnEKS is the complement function of DoesNotRunOnEKS.
+func DoesNotRunOnEKS() bool {
+	return !RunsOnEKS()
+}
+
+// RunsWithKubeProxyReplacement returns true if the kernel supports our
+// kube-proxy replacement. Note that kube-proxy may still be running
+// alongside Cilium.
+func RunsWithKubeProxyReplacement() bool {
+	return RunsOnGKE() || RunsOn419OrLaterKernel()
+}
+
+// DoesNotRunWithKubeProxyReplacement is the complement function of
+// RunsWithKubeProxyReplacement.
+func DoesNotRunWithKubeProxyReplacement() bool {
+	return !RunsWithKubeProxyReplacement()
 }
 
 // DoesNotHaveHosts returns a function which returns true if a CI job
@@ -470,6 +572,11 @@ func DoesNotHaveHosts(count int) func() bool {
 			return c < count
 		}
 	}
+}
+
+// RunsWithHostFirewall returns true is Cilium runs with the host firewall enabled.
+func RunsWithHostFirewall() bool {
+	return os.Getenv("HOST_FIREWALL") != "0" && os.Getenv("HOST_FIREWALL") != ""
 }
 
 // RunsWithKubeProxy returns true if cilium runs together with k8s' kube-proxy.
@@ -493,7 +600,104 @@ func DoesNotExistNodeWithoutCilium() bool {
 	return !ExistNodeWithoutCilium()
 }
 
+// HasHostReachableServices returns true if the given Cilium pod has TCP and/or
+// UDP host reachable services are enabled.
+func (kub *Kubectl) HasHostReachableServices(pod string, checkTCP, checkUDP bool) bool {
+	status := kub.CiliumExecContext(context.TODO(), pod,
+		"cilium status -o jsonpath='{.kube-proxy-replacement.features.hostReachableServices}'")
+	status.ExpectSuccess("Failed to get status: %s", status.OutputPrettyPrint())
+	lines := status.ByLines()
+	Expect(len(lines)).ShouldNot(Equal(0), "Failed to get hostReachableServices status")
+
+	// One-line result is e.g. "{true [TCP UDP]}" if host-reachable
+	// services are activated for both protocols.
+	if checkUDP && !strings.Contains(lines[0], "UDP") {
+		return false
+	}
+	if checkTCP && !strings.Contains(lines[0], "TCP") {
+		return false
+	}
+	return true
+}
+
+// HasBPFNodePort returns true if the given Cilium pod has BPF NodePort enabled.
+func (kub *Kubectl) HasBPFNodePort(pod string) bool {
+	status := kub.CiliumExecContext(context.TODO(), pod,
+		"cilium status -o jsonpath='{.kube-proxy-replacement.features.nodePort.enabled}'")
+	status.ExpectSuccess("Failed to get status: %s", status.OutputPrettyPrint())
+	lines := status.ByLines()
+	Expect(len(lines)).ShouldNot(Equal(0), "Failed to get nodePort status")
+	return strings.Contains(lines[0], "true")
+}
+
 // GetNodeWithoutCilium returns a name of a node which does not run cilium.
 func GetNodeWithoutCilium() string {
 	return os.Getenv("NO_CILIUM_ON_NODE")
+}
+
+// GetLatestImageVersion infers which docker tag should be used
+func GetLatestImageVersion() string {
+	if len(config.CiliumTestConfig.CiliumTag) > 0 {
+		return config.CiliumTestConfig.CiliumTag
+	}
+	return "latest"
+}
+
+// SkipQuarantined returns whether test under quarantine should be skipped
+func SkipQuarantined() bool {
+	return !config.CiliumTestConfig.RunQuarantined
+}
+
+// SkipGKEQuarantined returns whether test under quarantine on GKE should be skipped
+func SkipGKEQuarantined() bool {
+	return SkipQuarantined() && IsIntegration(CIIntegrationGKE)
+}
+
+// SkipRaceDetectorEnabled returns whether tests failing with race detector
+// enabled should be skipped.
+func SkipRaceDetectorEnabled() bool {
+	race := os.Getenv("RACE")
+	return race == "1" || race == "true"
+}
+
+// SkipK8sVersions returns true if the current K8s versions matched the
+// constraints passed in argument.
+func SkipK8sVersions(k8sVersions string) bool {
+	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
+	if err != nil {
+		return false
+	}
+	constraint := versioncheck.MustCompile(k8sVersions)
+	return constraint(k8sVersion)
+}
+
+// DualStackSupported returns whether the current environment has DualStack IPv6
+// enabled or not for the cluster.
+func DualStackSupported() bool {
+	supportedVersions := versioncheck.MustCompile(">=1.18.0")
+	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
+	if err != nil {
+		// If we cannot conclude the k8s version we assume that dual stack is not
+		// supported.
+		return false
+	}
+
+	// We only have DualStack enabled in Vagrant test env.
+	return GetCurrentIntegration() == "" && supportedVersions(k8sVersion)
+}
+
+// DualStackSupportBeta returns true if the environment has a Kubernetes version that
+// has support for k8s DualStack beta API types.
+func DualStackSupportBeta() bool {
+	// DualStack support was promoted to beta with API types finalized in k8s 1.21
+	// The API types for dualstack services are same in k8s 1.20 and 1.21 so we include
+	// K8s version 1.20 as well.
+	// https://github.com/kubernetes/kubernetes/pull/98969
+	supportedVersions := versioncheck.MustCompile(">=1.20.0")
+	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
+	if err != nil {
+		return false
+	}
+
+	return GetCurrentIntegration() == "" && supportedVersions(k8sVersion)
 }

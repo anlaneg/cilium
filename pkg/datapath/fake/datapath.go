@@ -1,16 +1,5 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
 package fake
 
@@ -72,28 +61,32 @@ func (f *fakeDatapath) InstallProxyRules(uint16, bool, string) error {
 	return nil
 }
 
-func (f *fakeDatapath) RemoveProxyRules(uint16, bool, string) error {
-	return nil
-}
-
 func (f *fakeDatapath) SupportsOriginalSourceAddr() bool {
 	return false
 }
 
-func (f *fakeDatapath) RemoveRules() {}
+func (f *fakeDatapath) InstallRules(ifName string, quiet, install bool) error {
+	return nil
+}
 
-func (f *fakeDatapath) InstallRules(ifName string) error {
+func (m *fakeDatapath) GetProxyPort(name string) uint16 {
+	return 0
+}
+
+func (m *fakeDatapath) InstallNoTrackRules(IP string, port uint16, ipv6 bool) error {
 	return nil
 }
-func (f *fakeDatapath) TransientRulesStart(ifName string) error {
+
+func (m *fakeDatapath) RemoveNoTrackRules(IP string, port uint16, ipv6 bool) error {
 	return nil
-}
-func (f *fakeDatapath) TransientRulesEnd(quiet bool) {
-	return
 }
 
 func (f *fakeDatapath) Loader() datapath.Loader {
 	return f.loader
+}
+
+func (f *fakeDatapath) WireguardAgent() datapath.WireguardAgent {
+	return nil
 }
 
 // Loader is an interface to abstract out loading of datapath programs.
@@ -116,10 +109,6 @@ func (f *fakeLoader) EndpointHash(cfg datapath.EndpointConfiguration) (string, e
 	panic("implement me")
 }
 
-func (f *fakeLoader) DeleteDatapath(ctx context.Context, ifName, direction string) error {
-	panic("implement me")
-}
-
 func (f *fakeLoader) Unload(ep datapath.Endpoint) {
 }
 
@@ -127,11 +116,11 @@ func (f *fakeLoader) CallsMapPath(id uint16) string {
 	return ""
 }
 
-// Reinitialize does nothing.
-func (f *fakeLoader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, deviceMTU int, iptMgr datapath.IptablesManager, p datapath.Proxy, r datapath.RouteReserver) error {
-	return nil
+func (f *fakeLoader) CustomCallsMapPath(id uint16) string {
+	return ""
 }
 
-func (f *fakeDatapath) SetupIPVLAN(netNS string) (int, int, error) {
-	return 0, 0, nil
+// Reinitialize does nothing.
+func (f *fakeLoader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, deviceMTU int, iptMgr datapath.IptablesManager, p datapath.Proxy) error {
+	return nil
 }

@@ -1,18 +1,8 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package clustermesh
 
@@ -20,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"testing"
@@ -31,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
+	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 	"github.com/cilium/cilium/pkg/testutils"
 	"github.com/cilium/cilium/pkg/testutils/allocator"
 
@@ -102,24 +92,24 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 	kvstore.SetupDummy("etcd")
 	defer kvstore.Client().Close()
 
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
 	<-mgr.InitIdentityAllocator(nil, nil)
 	defer mgr.Close()
 
-	dir, err := ioutil.TempDir("", "multicluster")
+	dir, err := os.MkdirTemp("", "multicluster")
 	c.Assert(err, IsNil)
 	defer os.RemoveAll(dir)
 
 	etcdConfig := []byte(fmt.Sprintf("endpoints:\n- %s\n", kvstore.EtcdDummyAddress()))
 
 	config1 := path.Join(dir, "cluster1")
-	err = ioutil.WriteFile(config1, etcdConfig, 0644)
+	err = os.WriteFile(config1, etcdConfig, 0644)
 	c.Assert(err, IsNil)
 
 	config2 := path.Join(dir, "cluster2")
-	err = ioutil.WriteFile(config2, etcdConfig, 0644)
+	err = os.WriteFile(config2, etcdConfig, 0644)
 	c.Assert(err, IsNil)
 
 	cm, err := NewClusterMesh(Configuration{

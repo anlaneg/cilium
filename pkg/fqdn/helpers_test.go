@@ -1,22 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package fqdn
 
 import (
+	"fmt"
+	"math/rand"
 	"net"
 	"time"
 
@@ -26,20 +18,68 @@ import (
 	. "gopkg.in/check.v1"
 )
 
+var (
+	ciliumIOSel = api.FQDNSelector{
+		MatchName: "cilium.io",
+	}
+
+	githubSel = api.FQDNSelector{
+		MatchName: "github.com",
+	}
+
+	ciliumIOSelMatchPattern = api.FQDNSelector{
+		MatchPattern: "*cilium.io.",
+	}
+)
+
 func (ds *DNSCacheTestSuite) TestKeepUniqueNames(c *C) {
+	r := rand.New(rand.NewSource(99))
+
+	data := make([]string, 48)
+	uniq := []string{}
+	for i := 0; i < len(data); i++ {
+		rnd := r.Float64()
+		// Duplicate name with 10% probability
+		if i > 0 && rnd < 0.1 {
+			data[i] = data[int(float64(i-1)*r.Float64())]
+		} else {
+			data[i] = fmt.Sprintf("a%d.domain.com", i)
+			uniq = append(uniq, data[i])
+		}
+	}
+
 	testData := []struct {
 		argument []string
 		expected []string
 	}{
+		{[]string{"a"}, []string{"a"}},
+		{[]string{"a", "a"}, []string{"a"}},
+		{[]string{"a", "b"}, []string{"a", "b"}},
+		{[]string{"a", "b", "b"}, []string{"a", "b"}},
 		{[]string{"a", "b", "c"}, []string{"a", "b", "c"}},
 		{[]string{"a", "b", "a", "c"}, []string{"a", "b", "c"}},
 		{[]string{""}, []string{""}},
 		{[]string{}, []string{}},
+		{data, uniq},
 	}
 
 	for _, item := range testData {
 		val := KeepUniqueNames(item.argument)
 		c.Assert(val, checker.DeepEquals, item.expected)
+	}
+}
+
+// Note: each "op" works on size things
+func (ds *DNSCacheTestSuite) BenchmarkKeepUniqueNames(c *C) {
+	c.StopTimer()
+	data := make([]string, 48)
+	for i := 0; i < len(data); i++ {
+		data[i] = fmt.Sprintf("a%d.domain.com", i)
+	}
+	c.StartTimer()
+
+	for i := 0; i < c.N; i++ {
+		KeepUniqueNames(data)
 	}
 }
 

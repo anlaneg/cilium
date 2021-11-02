@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package idpool
 
 import (
-	"math/rand"
 	"strconv"
-	"time"
 
 	"github.com/cilium/cilium/pkg/lock"
 )
@@ -78,15 +65,12 @@ type IDPool struct {
 }
 
 // NewIDPool returns a new ID pool
-func NewIDPool(minID ID, maxID ID) *IDPool {
-	p := &IDPool{
-		minID: minID,
-		maxID: maxID,
+func NewIDPool(minID ID, maxID ID) IDPool {
+	return IDPool{
+		minID:   minID,
+		maxID:   maxID,
+		idCache: newIDCache(minID, maxID),
 	}
-
-	p.idCache = newIDCache(p.minID, p.maxID)
-
-	return p
 }
 
 // LeaseAvailableID returns an available ID at random from the pool.
@@ -170,10 +154,7 @@ func newIDCache(minID ID, maxID ID) *idCache {
 		leased: make(map[ID]struct{}),
 	}
 
-	random := rand.New(rand.NewSource(time.Now().UnixNano()))
-	seq := random.Perm(n)
-	for i := 0; i < n; i++ {
-		id := ID(seq[i]) + minID
+	for id := minID; id < maxID+1; id++ {
 		c.ids[id] = struct{}{}
 	}
 

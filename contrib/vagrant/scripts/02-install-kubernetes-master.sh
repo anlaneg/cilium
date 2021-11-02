@@ -75,12 +75,13 @@ ExecStart=/usr/bin/kube-apiserver \\
   --etcd-certfile='/var/lib/kubernetes/etcd-k8s-api-server.pem' \\
   --etcd-keyfile='/var/lib/kubernetes/etcd-k8s-api-server-key.pem' \\
   --etcd-servers=https://${controllers_ips[0]}:2379 \\
-  --feature-gates=CustomResourceValidation=true \\
+  --feature-gates=EndpointSlice=true \\
   --kubelet-certificate-authority='/var/lib/kubernetes/ca-kubelet.pem' \\
   --kubelet-client-certificate='/var/lib/kubernetes/k8s-api-server.pem' \\
   --kubelet-client-key='/var/lib/kubernetes/k8s-api-server-key.pem' \\
-  --kubelet-https \\
-  --service-account-key-file='/var/lib/kubernetes/k8s-controller-manager-sa.pem' \\
+  --service-account-issuer='api' \\
+  --service-account-signing-key-file='/var/lib/kubernetes/k8s-controller-manager-sa-key.pem' \\
+  --service-account-key-file='/var/lib/kubernetes/k8s-controller-manager-sa-key.pem' \\
   --service-cluster-ip-range=${k8s_service_cluster_ip_range} \\
   --service-node-port-range=30000-32767 \\
   --tls-cert-file='/var/lib/kubernetes/k8s-api-server.pem' \\
@@ -134,7 +135,8 @@ ExecStart=/usr/bin/kube-controller-manager \\
   --configure-cloud-routes=false \\
   --kubeconfig='/var/lib/kubernetes/controller-manager.kubeconfig' \\
   --leader-elect=true \\
-  --node-cidr-mask-size ${k8s_node_cidr_mask_size} \\
+  --node-cidr-mask-size-ipv4=${k8s_node_cidr_v4_mask_size} \\
+  --node-cidr-mask-size-ipv6=${k8s_node_cidr_v6_mask_size} \\
   --use-service-account-credentials \\
   --service-account-private-key-file='/var/lib/kubernetes/k8s-controller-manager-sa-key.pem' \\
   --service-cluster-ip-range=${k8s_service_cluster_ip_range} \\

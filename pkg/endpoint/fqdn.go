@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package endpoint
 
@@ -40,9 +29,9 @@ func (e *Endpoint) MarkDNSCTEntry(dstIP net.IP, now time.Time) {
 
 // MarkCTGCTime is the START time of a GC run. It is used by the DNS garbage
 // collector to determine whether a DNS zombie can be deleted. This is done by
-// comparing the timestamp of the start CT GC run with the ailve timestamps of
+// comparing the timestamp of the start CT GC run with the alive timestamps of
 // specific DNS zombies IPs marked with MarkDNSCTEntry.
-// NOTE: While the timestamp is ths start of the run, it should be set AFTER
+// NOTE: While the timestamp is the start of the run, it should be set AFTER
 // the run completes. This avoids a race between the DNS garbage collector and
 // the CT GC. This would occur when a DNS zombie that has not been visited by
 // the CT GC run is seen by a concurrent DNS garbage collector run, and then

@@ -1,27 +1,16 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package tuple
 
 import (
-	"bytes"
 	"fmt"
+	"strings"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/types"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
+	"github.com/cilium/cilium/pkg/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
@@ -48,16 +37,16 @@ func (k *TupleKey4) NewValue() bpf.MapValue { return &TupleValStub{} }
 // ToNetwork converts TupleKey4 ports to network byte order.
 func (k *TupleKey4) ToNetwork() TupleKey {
 	n := *k
-	n.SourcePort = byteorder.HostToNetwork(n.SourcePort).(uint16)
-	n.DestPort = byteorder.HostToNetwork(n.DestPort).(uint16)
+	n.SourcePort = byteorder.HostToNetwork16(n.SourcePort)
+	n.DestPort = byteorder.HostToNetwork16(n.DestPort)
 	return &n
 }
 
 // ToHost converts TupleKey4 ports to host byte order.
 func (k *TupleKey4) ToHost() TupleKey {
 	n := *k
-	n.SourcePort = byteorder.NetworkToHost(n.SourcePort).(uint16)
-	n.DestPort = byteorder.NetworkToHost(n.DestPort).(uint16)
+	n.SourcePort = byteorder.NetworkToHost16(n.SourcePort)
+	n.DestPort = byteorder.NetworkToHost16(n.DestPort)
 	return &n
 }
 
@@ -71,9 +60,9 @@ func (k *TupleKey4) String() string {
 	return fmt.Sprintf("%s:%d, %d, %d, %d", k.DestAddr, k.SourcePort, k.DestPort, k.NextHeader, k.Flags)
 }
 
-// Dump writes the contents of key to buffer and returns true if the value for
-// next header in the key is nonzero.
-func (k TupleKey4) Dump(buffer *bytes.Buffer, reverse bool) bool {
+// Dump writes the contents of key to sb and returns true if the value for next
+// header in the key is nonzero.
+func (k TupleKey4) Dump(sb *strings.Builder, reverse bool) bool {
 	var addrDest string
 
 	if k.NextHeader == 0 {
@@ -88,23 +77,23 @@ func (k TupleKey4) Dump(buffer *bytes.Buffer, reverse bool) bool {
 	}
 
 	if k.Flags&TUPLE_F_IN != 0 {
-		buffer.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
+		sb.WriteString(fmt.Sprintf("%s IN %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.SourcePort,
 			k.DestPort),
 		)
 	} else {
-		buffer.WriteString(fmt.Sprintf("%s OUT %s %d:%d ",
+		sb.WriteString(fmt.Sprintf("%s OUT %s %d:%d ",
 			k.NextHeader.String(), addrDest, k.DestPort,
 			k.SourcePort),
 		)
 	}
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
-		buffer.WriteString("related ")
+		sb.WriteString("related ")
 	}
 
 	if k.Flags&TUPLE_F_SERVICE != 0 {
-		buffer.WriteString("service ")
+		sb.WriteString("service ")
 	}
 
 	return true
@@ -150,9 +139,9 @@ func (k *TupleKey4Global) ToHost() TupleKey {
 	}
 }
 
-// Dump writes the contents of key to buffer and returns true if the
+// Dump writes the contents of key to sb and returns true if the
 // value for next header in the key is nonzero.
-func (k TupleKey4Global) Dump(buffer *bytes.Buffer, reverse bool) bool {
+func (k TupleKey4Global) Dump(sb *strings.Builder, reverse bool) bool {
 	var addrSource, addrDest string
 
 	if k.NextHeader == 0 {
@@ -169,23 +158,23 @@ func (k TupleKey4Global) Dump(buffer *bytes.Buffer, reverse bool) bool {
 	}
 
 	if k.Flags&TUPLE_F_IN != 0 {
-		buffer.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
+		sb.WriteString(fmt.Sprintf("%s IN %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
 		)
 	} else {
-		buffer.WriteString(fmt.Sprintf("%s OUT %s:%d -> %s:%d ",
+		sb.WriteString(fmt.Sprintf("%s OUT %s:%d -> %s:%d ",
 			k.NextHeader.String(), addrSource, k.SourcePort,
 			addrDest, k.DestPort),
 		)
 	}
 
 	if k.Flags&TUPLE_F_RELATED != 0 {
-		buffer.WriteString("related ")
+		sb.WriteString("related ")
 	}
 
 	if k.Flags&TUPLE_F_SERVICE != 0 {
-		buffer.WriteString("service ")
+		sb.WriteString("service ")
 	}
 
 	return true

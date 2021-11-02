@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _gs_microk8s:
 
@@ -23,9 +23,9 @@ Install microk8s
 
 #. Enable the microk8s Cilium service
 
-   ::
+   .. code-block:: shell-session
 
-      microk8s.enable cilium
+      microk8s enable cilium
 
 #. Cilium is now configured! The ``cilium`` CLI is provided as ``microk8s.cilium``.
 

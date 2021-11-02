@@ -13,9 +13,9 @@
 #include "eth.h"
 #include "dbg.h"
 
-#if defined ENABLE_NAT46 && \
-    (!defined ENABLE_IPV4 || !defined ENABLE_IPV6 || \
-     !defined CONNTRACK || !defined ENABLE_HOST_REDIRECT)
+#if defined(ENABLE_NAT46) && \
+    (!defined(ENABLE_IPV4) || !defined(ENABLE_IPV6) || \
+     !defined(CONNTRACK) || !defined(ENABLE_HOST_REDIRECT))
 #error "ENABLE_NAT46 requisite options are not configured, see lib/nat46.h."
 #endif
 
@@ -45,15 +45,15 @@ static __always_inline int get_csum_offset(__u8 protocol)
 
 static __always_inline int icmp4_to_icmp6(struct __ctx_buff *ctx, int nh_off)
 {
-	struct icmphdr icmp4;
-	struct icmp6hdr icmp6 = {};
+	struct icmphdr icmp4 __align_stack_8;
+	struct icmp6hdr icmp6 __align_stack_8 = {};
 
 	if (ctx_load_bytes(ctx, nh_off, &icmp4, sizeof(icmp4)) < 0)
 		return DROP_INVALID;
-	else
-		icmp6.icmp6_cksum = icmp4.checksum;
 
-	switch(icmp4.type) {
+	icmp6.icmp6_cksum = icmp4.checksum;
+
+	switch (icmp4.type) {
 	case ICMP_ECHO:
 		icmp6.icmp6_type = ICMPV6_ECHO_REQUEST;
 		icmp6.icmp6_identifier = icmp4.un.echo.id;
@@ -66,7 +66,7 @@ static __always_inline int icmp4_to_icmp6(struct __ctx_buff *ctx, int nh_off)
 		break;
 	case ICMP_DEST_UNREACH:
 		icmp6.icmp6_type = ICMPV6_DEST_UNREACH;
-		switch(icmp4.code) {
+		switch (icmp4.code) {
 		case ICMP_NET_UNREACH:
 		case ICMP_HOST_UNREACH:
 			icmp6.icmp6_code = ICMPV6_NOROUTE;
@@ -129,15 +129,15 @@ static __always_inline int icmp4_to_icmp6(struct __ctx_buff *ctx, int nh_off)
 
 static __always_inline int icmp6_to_icmp4(struct __ctx_buff *ctx, int nh_off)
 {
-	struct icmphdr icmp4 = {};
-	struct icmp6hdr icmp6;
+	struct icmphdr icmp4 __align_stack_8 = {};
+	struct icmp6hdr icmp6 __align_stack_8;
 
 	if (ctx_load_bytes(ctx, nh_off, &icmp6, sizeof(icmp6)) < 0)
 		return DROP_INVALID;
-	else
-		icmp4.checksum = icmp6.icmp6_cksum;
 
-	switch(icmp6.icmp6_type) {
+	icmp4.checksum = icmp6.icmp6_cksum;
+
+	switch (icmp6.icmp6_type) {
 	case ICMPV6_ECHO_REQUEST:
 		icmp4.type = ICMP_ECHO;
 		icmp4.un.echo.id = icmp6.icmp6_identifier;
@@ -150,7 +150,7 @@ static __always_inline int icmp6_to_icmp4(struct __ctx_buff *ctx, int nh_off)
 		break;
 	case ICMPV6_DEST_UNREACH:
 		icmp4.type = ICMP_DEST_UNREACH;
-		switch(icmp6.icmp6_code) {
+		switch (icmp6.icmp6_code) {
 		case ICMPV6_NOROUTE:
 		case ICMPV6_NOT_NEIGHBOUR:
 		case ICMPV6_ADDR_UNREACH:
@@ -165,6 +165,7 @@ static __always_inline int icmp6_to_icmp4(struct __ctx_buff *ctx, int nh_off)
 		default:
 			return DROP_UNKNOWN_ICMP6_CODE;
 		}
+		break;
 	case ICMPV6_PKT_TOOBIG:
 		icmp4.type = ICMP_DEST_UNREACH;
 		icmp4.code = ICMP_FRAG_NEEDED;
@@ -179,7 +180,7 @@ static __always_inline int icmp6_to_icmp4(struct __ctx_buff *ctx, int nh_off)
 		icmp4.code = icmp6.icmp6_code;
 		break;
 	case ICMPV6_PARAMPROB:
-		switch(icmp6.icmp6_code) {
+		switch (icmp6.icmp6_code) {
 		case ICMPV6_HDR_FIELD:
 			icmp4.type = ICMP_PARAMETERPROB;
 			icmp4.code = 0;
@@ -191,6 +192,7 @@ static __always_inline int icmp6_to_icmp4(struct __ctx_buff *ctx, int nh_off)
 		default:
 			return DROP_UNKNOWN_ICMP6_CODE;
 		}
+		break;
 	default:
 		return DROP_UNKNOWN_ICMP6_TYPE;
 	}
@@ -203,8 +205,8 @@ static __always_inline int icmp6_to_icmp4(struct __ctx_buff *ctx, int nh_off)
 	return csum_diff(&icmp6, sizeof(icmp6), &icmp4, sizeof(icmp4), 0);
 }
 
-static __always_inline int ipv6_prefix_match(struct in6_addr *addr,
-					     union v6addr *v6prefix)
+static __always_inline int ipv6_prefix_match(const struct in6_addr *addr,
+					     const union v6addr *v6prefix)
 {
 	if (addr->in6_u.u6_addr32[0] == v6prefix->p1 &&
 	    addr->in6_u.u6_addr32[1] == v6prefix->p2 &&
@@ -221,7 +223,8 @@ static __always_inline int ipv6_prefix_match(struct in6_addr *addr,
  * d6 = nat46_prefix<d4> or v6_dst if non null
  */
 static __always_inline int ipv4_to_ipv6(struct __ctx_buff *ctx, struct iphdr *ip4,
-					int nh_off, union v6addr *v6_dst)
+					int nh_off,
+					const union v6addr *v6_dst)
 {
 	struct ipv6hdr v6 = {};
 	struct iphdr v4;
@@ -231,7 +234,7 @@ static __always_inline int ipv4_to_ipv6(struct __ctx_buff *ctx, struct iphdr *ip
 	__be16 protocol = bpf_htons(ETH_P_IPV6);
 	__u64 csum_flags = BPF_F_PSEUDO_HDR;
 	union v6addr nat46_prefix = NAT46_PREFIX;
-	
+
 	if (ctx_load_bytes(ctx, nh_off, &v4, sizeof(v4)) < 0)
 		return DROP_INVALID;
 
@@ -289,7 +292,7 @@ static __always_inline int ipv4_to_ipv6(struct __ctx_buff *ctx, struct iphdr *ip
 			csum_flags |= BPF_F_MARK_MANGLED_0;
 	}
 
-	/* 
+	/*
 	 * get checksum from inner header tcp / udp / icmp
 	 * undo ipv4 pseudohdr checksum and
 	 * add  ipv6 pseudohdr checksum
@@ -297,8 +300,7 @@ static __always_inline int ipv4_to_ipv6(struct __ctx_buff *ctx, struct iphdr *ip
 	csum_off = get_csum_offset(v6.nexthdr);
 	if (csum_off < 0)
 		return csum_off;
-	else
-		csum_off += sizeof(struct ipv6hdr);
+	csum_off += sizeof(struct ipv6hdr);
 
 	if (l4_csum_replace(ctx, nh_off + csum_off, 0, csum, csum_flags) < 0)
 		return DROP_CSUM_L4;
@@ -362,6 +364,7 @@ static __always_inline int ipv6_to_ipv4(struct __ctx_buff *ctx, int nh_off,
 
 	if (v6.nexthdr == IPPROTO_ICMPV6) {
 		__be32 csum1 = 0;
+
 		csum = icmp6_to_icmp4(ctx, nh_off + sizeof(v4));
 		csum1 = ipv6_pseudohdr_checksum(&v6, IPPROTO_ICMPV6,
 						bpf_ntohs(v6.payload_len), 0);
@@ -373,7 +376,7 @@ static __always_inline int ipv6_to_ipv4(struct __ctx_buff *ctx, int nh_off,
 		if (v4.protocol == IPPROTO_UDP)
 			csum_flags |= BPF_F_MARK_MANGLED_0;
 	}
-	/* 
+	/*
 	 * get checksum from inner header tcp / udp / icmp
 	 * undo ipv6 pseudohdr checksum and
 	 * add  ipv4 pseudohdr checksum
@@ -381,8 +384,7 @@ static __always_inline int ipv6_to_ipv4(struct __ctx_buff *ctx, int nh_off,
 	csum_off = get_csum_offset(v4.protocol);
 	if (csum_off < 0)
 		return csum_off;
-	else
-		csum_off += sizeof(struct iphdr);
+	csum_off += sizeof(struct iphdr);
 
 	if (l4_csum_replace(ctx, nh_off + csum_off, 0, csum, csum_flags) < 0)
 		return DROP_CSUM_L4;

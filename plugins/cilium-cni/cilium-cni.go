@@ -1,16 +1,10 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2020 Authors of Cilium
+
+// Ensure build fails on versions of Go that are not supported by Cilium.
+// This build tag should be kept in sync with the version specified in go.mod.
+//go:build go1.17
+// +build go1.17
 
 package main
 
@@ -23,19 +17,19 @@ import (
 	"sort"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/client"
+	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/endpoint/connector"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/netns"
-	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/sysctl"
-	"github.com/cilium/cilium/pkg/uuid"
 	"github.com/cilium/cilium/pkg/version"
 	chainingapi "github.com/cilium/cilium/plugins/cilium-cni/chaining/api"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/awscni"
@@ -44,6 +38,7 @@ import (
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/generic-veth"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/portmap"
 	"github.com/cilium/cilium/plugins/cilium-cni/types"
+	"github.com/cilium/ebpf"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	cniTypes "github.com/containernetworking/cni/pkg/types"
@@ -51,6 +46,7 @@ import (
 	cniVersion "github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ns"
 	gops "github.com/google/gops/agent"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -61,7 +57,6 @@ var (
 )
 
 func init() {
-	logging.SetLogLevel(logrus.DebugLevel)
 	runtime.LockOSThread()
 }
 
@@ -76,10 +71,6 @@ type CmdState struct {
 }
 
 func main() {
-	if err := gops.Listen(gops.Options{}); err != nil {
-		log.WithError(err).Warn("Unable to start gops")
-	}
-
 	skel.PluginMain(cmdAdd,
 		nil,
 		cmdDel,
@@ -264,6 +255,17 @@ func prepareIP(ipAddr string, isIPv6 bool, state *CmdState, mtu int) (*cniTypesV
 	}, rt, nil
 }
 
+func setupLogging(n *types.NetConf) error {
+	f := n.LogFormat
+	if f == "" {
+		f = string(logging.DefaultLogFormat)
+	}
+	logOptions := logging.LogOptions{
+		logging.FormatOpt: f,
+	}
+	return logging.SetupLogging([]string{}, logOptions, "cilium-cni", n.EnableDebug)
+}
+
 func cmdAdd(args *skel.CmdArgs) (err error) {
 	var (
 		ipConfig *cniTypesVer.IPConfig
@@ -273,26 +275,29 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		c        *client.Client
 		netNs    ns.NetNS
 	)
-	logger := log.WithField("eventUUID", uuid.NewUUID())
 
 	n, err = types.LoadNetConf(args.StdinData)
 	if err != nil {
-		// In case of an error is helpful to always print the processing CNI
-		// ADD request.
-		logger.Infof("Processing CNI ADD request %#v", args)
 		err = fmt.Errorf("unable to parse CNI configuration \"%s\": %s", args.StdinData, err)
 		return
 	}
-	if !n.EnableDebug {
-		logger.Logger.SetLevel(logrus.InfoLevel)
+
+	if innerErr := setupLogging(n); innerErr != nil {
+		err = fmt.Errorf("unable to setup logging: %w", innerErr)
+		return
+	}
+
+	logger := log.WithField("eventUUID", uuid.New())
+
+	if n.EnableDebug {
+		if err := gops.Listen(gops.Options{}); err != nil {
+			log.WithError(err).Warn("Unable to start gops")
+		} else {
+			defer gops.Close()
+		}
 	}
 	logger.Debugf("Processing CNI ADD request %#v", args)
 
-	n, err = types.LoadNetConf(args.StdinData)
-	if err != nil {
-		err = fmt.Errorf("unable to parse CNI configuration \"%s\": %s", args.StdinData, err)
-		return
-	}
 	logger.Debugf("CNI NetConf: %#v", n)
 	if n.PrevResult != nil {
 		logger.Debugf("CNI Previous result: %#v", n.PrevResult)
@@ -341,6 +346,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	netNs, err = ns.GetNS(args.Netns)
 	if err != nil {
 		err = fmt.Errorf("failed to open netns %q: %s", args.Netns, err)
+		return
 	}
 	defer netNs.Close()
 
@@ -379,7 +385,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 
 	switch conf.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		var (
 			veth      *netlink.Veth
 			peer      *netlink.Link
@@ -408,12 +414,12 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			err = fmt.Errorf("unable to set up veth on container side: %s", err)
 			return
 		}
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		ipvlanConf := *conf.IpvlanConfiguration
 		index := int(ipvlanConf.MasterDeviceIndex)
 
-		var mapFD int
-		mapFD, err = connector.CreateAndSetupIpvlanSlave(
+		var m *ebpf.Map
+		m, err = connector.CreateAndSetupIpvlanSlave(
 			ep.ContainerID, args.IfName, netNs,
 			int(conf.DeviceMTU), index, ipvlanConf.OperationMode, ep,
 		)
@@ -421,7 +427,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			err = fmt.Errorf("unable to setup ipvlan datapath: %s", err)
 			return
 		}
-		defer unix.Close(mapFD)
+		defer m.Close()
 	}
 
 	podName := string(cniArgs.K8S_POD_NAMESPACE) + "/" + string(cniArgs.K8S_POD_NAME)
@@ -489,17 +495,12 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 
 	switch conf.IpamMode {
-	case option.IPAMENI:
-		err = eniAdd(ipConfig, ipam.IPV4, conf)
+	case ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
+		err = interfaceAdd(ipConfig, ipam.IPV4, conf)
 		if err != nil {
-			err = fmt.Errorf("unable to setup ENI datapath: %s", err)
+			err = fmt.Errorf("unable to setup interface datapath: %s", err)
 			return
 		}
-
-	case option.IPAMAzure:
-		// No specific action is required. The standard veth based
-		// approach is selected for now. The agent will set up the
-		// routes as necessary.
 	}
 
 	var macAddrStr string
@@ -521,6 +522,11 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		Mac:     macAddrStr,
 		Sandbox: args.Netns,
 	})
+
+	// Add to the result the Interface as index of Interfaces
+	for i := range res.Interfaces {
+		res.IPs[i].Interface = cniTypesVer.Int(i)
+	}
 
 	// Specify that endpoint must be regenerated synchronously. See GH-4409.
 	ep.SyncBuildEndpoint = true
@@ -544,19 +550,24 @@ func cmdDel(args *skel.CmdArgs) error {
 	// Note about when to return errors: kubelet will retry the deletion
 	// for a long time. Therefore, only return an error for errors which
 	// are guaranteed to be recoverable.
-
-	logger := log.WithField("eventUUID", uuid.NewUUID())
-
 	n, err := types.LoadNetConf(args.StdinData)
 	if err != nil {
-		// In case of an error is helpful to always print the processing CNI
-		// DEL request.
-		logger.Infof("Processing CNI DEL request %#v", args)
 		err = fmt.Errorf("unable to parse CNI configuration \"%s\": %s", args.StdinData, err)
 		return err
 	}
-	if !n.EnableDebug {
-		logger.Logger.SetLevel(logrus.InfoLevel)
+
+	if err := setupLogging(n); err != nil {
+		return fmt.Errorf("unable to setup logging: %w", err)
+	}
+
+	logger := log.WithField("eventUUID", uuid.New())
+
+	if n.EnableDebug {
+		if err := gops.Listen(gops.Options{}); err != nil {
+			log.WithError(err).Warn("Unable to start gops")
+		} else {
+			defer gops.Close()
+		}
 	}
 	logger.Debugf("Processing CNI DEL request %#v", args)
 

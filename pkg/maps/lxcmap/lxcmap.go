@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package lxcmap
 
@@ -19,7 +8,7 @@ import (
 	"net"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/mac"
 )
@@ -45,7 +34,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 )
 
 // MAC is the __u64 representation of a MAC address.
@@ -60,19 +49,6 @@ func (m MAC) String() string {
 		uint64((m&0x00FF00000000)>>32),
 		uint64((m&0xFF0000000000)>>40),
 	)
-}
-
-// ParseMAC parses s only as an IEEE 802 MAC-48.
-func ParseMAC(s string) (MAC, error) {
-	ha, err := net.ParseMAC(s)
-	if err != nil {
-		return 0, err
-	}
-	if len(ha) != 6 {
-		return 0, fmt.Errorf("invalid MAC address %s", s)
-	}
-	return MAC(ha[5])<<40 | MAC(ha[4])<<32 | MAC(ha[3])<<24 |
-		MAC(ha[2])<<16 | MAC(ha[1])<<8 | MAC(ha[0]), nil
 }
 
 const (
@@ -111,7 +87,6 @@ func GetBPFKeys(e EndpointFrontend) []*EndpointKey {
 // Must only be called if init() succeeded.
 func GetBPFValue(e EndpointFrontend) (*EndpointInfo, error) {
 	mac, err := e.LXCMac().Uint64()
-
 	if err != nil {
 		return nil, fmt.Errorf("invalid LXC MAC: %v", err)
 	}
@@ -189,7 +164,7 @@ func (v *EndpointInfo) IsHost() bool {
 // String returns the human readable representation of an EndpointInfo
 func (v *EndpointInfo) String() string {
 	if v.Flags&EndpointFlagHost != 0 {
-		return fmt.Sprintf("(localhost)")
+		return "(localhost)"
 	}
 
 	return fmt.Sprintf("id=%-5d flags=0x%04X ifindex=%-3d mac=%s nodemac=%s",

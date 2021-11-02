@@ -1,15 +1,16 @@
 package perf
 
 import (
+	"errors"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"sync/atomic"
 	"unsafe"
 
 	"github.com/cilium/ebpf/internal/unix"
-
-	"github.com/pkg/errors"
 )
 
 // perfEventRing is a page of metadata followed by
@@ -23,18 +24,12 @@ type perfEventRing struct {
 
 func newPerfEventRing(cpu, perCPUBuffer, watermark int) (*perfEventRing, error) {
 	if watermark >= perCPUBuffer {
-		return nil, errors.Errorf("watermark must be smaller than perCPUBuffer")
+		return nil, errors.New("watermark must be smaller than perCPUBuffer")
 	}
-
-	// Round to nearest page boundary and allocate
-	// an extra page for meta data
-	pageSize := os.Getpagesize()
-	nPages := (perCPUBuffer + pageSize - 1) / pageSize
-	size := (1 + nPages) * pageSize
 
 	fd, err := createPerfEvent(cpu, watermark)
 	if err != nil {
-		return nil, errors.Wrap(err, "can't create perf event")
+		return nil, err
 	}
 
 	if err := unix.SetNonblock(fd, true); err != nil {
@@ -42,10 +37,10 @@ func newPerfEventRing(cpu, perCPUBuffer, watermark int) (*perfEventRing, error) 
 		return nil, err
 	}
 
-	mmap, err := unix.Mmap(fd, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	mmap, err := unix.Mmap(fd, 0, perfBufferSize(perCPUBuffer), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		unix.Close(fd)
-		return nil, err
+		return nil, fmt.Errorf("can't mmap: %v", err)
 	}
 
 	// This relies on the fact that we allocate an extra metadata page,
@@ -65,10 +60,27 @@ func newPerfEventRing(cpu, perCPUBuffer, watermark int) (*perfEventRing, error) 
 	return ring, nil
 }
 
+// mmapBufferSize returns a valid mmap buffer size for use with perf_event_open (1+2^n pages)
+func perfBufferSize(perCPUBuffer int) int {
+	pageSize := os.Getpagesize()
+
+	// Smallest whole number of pages
+	nPages := (perCPUBuffer + pageSize - 1) / pageSize
+
+	// Round up to nearest power of two number of pages
+	nPages = int(math.Pow(2, math.Ceil(math.Log2(float64(nPages)))))
+
+	// Add one for metadata
+	nPages += 1
+
+	return nPages * pageSize
+}
+
 func (ring *perfEventRing) Close() {
 	runtime.SetFinalizer(ring, nil)
-	unix.Close(ring.fd)
-	unix.Munmap(ring.mmap)
+
+	_ = unix.Close(ring.fd)
+	_ = unix.Munmap(ring.mmap)
 
 	ring.fd = -1
 	ring.mmap = nil
@@ -89,7 +101,10 @@ func createPerfEvent(cpu, watermark int) (int, error) {
 
 	attr.Size = uint32(unsafe.Sizeof(attr))
 	fd, err := unix.PerfEventOpen(&attr, -1, cpu, -1, unix.PERF_FLAG_FD_CLOEXEC)
-	return fd, errors.Wrap(err, "can't create perf event")
+	if err != nil {
+		return -1, fmt.Errorf("can't create perf event: %w", err)
+	}
+	return fd, nil
 }
 
 type ringReader struct {

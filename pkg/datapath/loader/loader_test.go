@@ -1,17 +1,7 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
+//go:build privileged_tests
 // +build privileged_tests
 
 package loader
@@ -19,7 +9,6 @@ package loader
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,8 +18,12 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/datapath/linux/config"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/elf"
+	"github.com/cilium/cilium/pkg/maps/callsmap"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/testutils"
 
 	"github.com/vishvananda/netlink"
@@ -47,7 +40,8 @@ var (
 
 	dirInfo *directoryInfo
 	ep      = testutils.NewTestEndpoint()
-	bpfDir  = filepath.Join(testutils.CiliumRootDir, "bpf")
+	hostEp  = testutils.NewTestHostEndpoint()
+	bpfDir  = filepath.Join("..", "..", "..", "bpf")
 )
 
 // SetTestIncludes allows test files to configure additional include flags.
@@ -60,6 +54,8 @@ func Test(t *testing.T) {
 }
 
 func (s *LoaderTestSuite) SetUpSuite(c *C) {
+
+	ctmap.InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
 	SetTestIncludes([]string{
 		fmt.Sprintf("-I%s", bpfDir),
 		fmt.Sprintf("-I%s", filepath.Join(bpfDir, "include")),
@@ -70,21 +66,24 @@ func (s *LoaderTestSuite) SetUpSuite(c *C) {
 	sourceFile := filepath.Join(bpfDir, endpointProg)
 	err = os.Symlink(sourceFile, endpointProg)
 	c.Assert(err, IsNil)
+	sourceFile = filepath.Join(bpfDir, hostEndpointProg)
+	err = os.Symlink(sourceFile, hostEndpointProg)
+	c.Assert(err, IsNil)
+
+	// Set datapath in ipvlan mode to avoid loading the second master device.
+	// Loading that second device requires a proper compilation of the
+	// bpf_host.o object file with the adtual endpoint configurations, and not
+	// just the template compilation as we test here.
+	option.Config.DatapathMode = datapathOption.DatapathModeIpvlan
 }
 
 func (s *LoaderTestSuite) TearDownSuite(c *C) {
 	SetTestIncludes(nil)
 	os.RemoveAll(endpointProg)
+	os.RemoveAll(hostEndpointProg)
 }
 
 func (s *LoaderTestSuite) TearDownTest(c *C) {
-	// Old map names as created by older versions of these tests
-	//
-	// FIXME GH-6701: Remove for 1.5.0
-	os.Remove("/sys/fs/bpf/tc/globals/cilium_policy_foo")
-	os.Remove("/sys/fs/bpf/tc/globals/cilium_calls_111")
-	os.Remove("/sys/fs/bpf/tc/globals/cilium_ep_config_111")
-
 	files, err := filepath.Glob("/sys/fs/bpf/tc/globals/test_*")
 	if err != nil {
 		panic(err)
@@ -104,7 +103,7 @@ func runTests(m *testing.M) (int, error) {
 	SetTestIncludes([]string{"-I/usr/include/x86_64-linux-gnu/"})
 	defer SetTestIncludes(nil)
 
-	tmpDir, err := ioutil.TempDir("/tmp/", "cilium_")
+	tmpDir, err := os.MkdirTemp("/tmp/", "cilium_")
 	if err != nil {
 		return 1, fmt.Errorf("Failed to create temporary directory: %s", err)
 	}
@@ -161,15 +160,26 @@ func getDirs(tmpDir string) *directoryInfo {
 	}
 }
 
-// TestCompileAndLoad checks that the datapath can be compiled and loaded.
-func (s *LoaderTestSuite) TestCompileAndLoad(c *C) {
+func (s *LoaderTestSuite) testCompileAndLoad(c *C, ep *testutils.TestEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 	stats := &metrics.SpanStat{}
 
 	l := &Loader{}
-	err := l.compileAndLoad(ctx, &ep, dirInfo, stats)
+	err := l.compileAndLoad(ctx, ep, dirInfo, stats)
 	c.Assert(err, IsNil)
+}
+
+// TestCompileAndLoadDefaultEndpoint checks that the datapath can be compiled
+// and loaded.
+func (s *LoaderTestSuite) TestCompileAndLoadDefaultEndpoint(c *C) {
+	s.testCompileAndLoad(c, &ep)
+}
+
+// TestCompileAndLoadHostEndpoint is the same as
+// TestCompileAndLoadDefaultEndpoint, but for the host endpoint.
+func (s *LoaderTestSuite) TestCompileAndLoadHostEndpoint(c *C) {
+	s.testCompileAndLoad(c, &hostEp)
 }
 
 // TestReload compiles and attaches the datapath multiple times.
@@ -177,25 +187,22 @@ func (s *LoaderTestSuite) TestReload(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	err := compileDatapath(ctx, dirInfo, true, log)
+	err := compileDatapath(ctx, dirInfo, false, log)
 	c.Assert(err, IsNil)
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
-	l := &Loader{}
-	err = l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress)
+	err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
 	c.Assert(err, IsNil)
 
-	err = l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress)
+	err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
 	c.Assert(err, IsNil)
 }
 
-// TestCompileFailure attempts to compile then cancels the context and ensures
-// that the failure paths may be hit.
-func (s *LoaderTestSuite) TestCompileFailure(c *C) {
+func (s *LoaderTestSuite) testCompileFailure(c *C, ep *testutils.TestEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	exit := make(chan bool)
+	exit := make(chan struct{})
 	defer close(exit)
 	go func() {
 		select {
@@ -211,9 +218,21 @@ func (s *LoaderTestSuite) TestCompileFailure(c *C) {
 	var err error
 	stats := &metrics.SpanStat{}
 	for err == nil && time.Now().Before(timeout) {
-		err = l.compileAndLoad(ctx, &ep, dirInfo, stats)
+		err = l.compileAndLoad(ctx, ep, dirInfo, stats)
 	}
 	c.Assert(err, NotNil)
+}
+
+// TestCompileFailureDefaultEndpoint attempts to compile then cancels the
+// context and ensures that the failure paths may be hit.
+func (s *LoaderTestSuite) TestCompileFailureDefaultEndpoint(c *C) {
+	s.testCompileFailure(c, &ep)
+}
+
+// TestCompileFailureHostEndpoint is the same as
+// TestCompileFailureDefaultEndpoint, but for the host endpoint.
+func (s *LoaderTestSuite) TestCompileFailureHostEndpoint(c *C) {
+	s.testCompileFailure(c, &hostEp)
 }
 
 // BenchmarkCompileOnly benchmarks the just the entire compilation process.
@@ -223,8 +242,7 @@ func BenchmarkCompileOnly(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		debug := false // Otherwise we compile lots more.
-		if err := compileDatapath(ctx, dirInfo, debug, log); err != nil {
+		if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -256,11 +274,10 @@ func BenchmarkReplaceDatapath(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	l := &Loader{}
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress); err != nil {
+		if err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, ""); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -285,7 +302,7 @@ func BenchmarkCompileOrLoad(b *testing.B) {
 
 	elfMapPrefixes = []string{
 		fmt.Sprintf("test_%s", policymap.MapName),
-		fmt.Sprintf("test_%s", CallsMapName),
+		fmt.Sprintf("test_%s", callsmap.MapName),
 	}
 
 	sourceFile := filepath.Join(bpfDir, endpointProg)
@@ -297,7 +314,7 @@ func BenchmarkCompileOrLoad(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
 	defer cancel()
 
-	tmpDir, err := ioutil.TempDir("", "cilium_test")
+	tmpDir, err := os.MkdirTemp("", "cilium_test")
 	if err != nil {
 		b.Fatal(err)
 	}

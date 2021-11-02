@@ -1,65 +1,70 @@
-// Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package watchers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/egressgateway"
 	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/k8s"
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
+	"github.com/cilium/cilium/pkg/k8s/synced"
+	k8sTypes "github.com/cilium/cilium/pkg/k8s/types"
+	"github.com/cilium/cilium/pkg/k8s/utils"
+	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
-	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/cilium/cilium/pkg/serializer"
+	"github.com/cilium/cilium/pkg/redirectpolicy"
 
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	k8s_metrics "k8s.io/client-go/tools/metrics"
 )
 
 const (
-	k8sAPIGroupCRD                              = "CustomResourceDefinition"
 	k8sAPIGroupNodeV1Core                       = "core/v1::Node"
 	k8sAPIGroupNamespaceV1Core                  = "core/v1::Namespace"
 	K8sAPIGroupServiceV1Core                    = "core/v1::Service"
 	K8sAPIGroupEndpointV1Core                   = "core/v1::Endpoint"
-	k8sAPIGroupPodV1Core                        = "core/v1::Pods"
+	K8sAPIGroupPodV1Core                        = "core/v1::Pods"
 	k8sAPIGroupNetworkingV1Core                 = "networking.k8s.io/v1::NetworkPolicy"
 	k8sAPIGroupCiliumNetworkPolicyV2            = "cilium/v2::CiliumNetworkPolicy"
 	k8sAPIGroupCiliumClusterwideNetworkPolicyV2 = "cilium/v2::CiliumClusterwideNetworkPolicy"
 	k8sAPIGroupCiliumNodeV2                     = "cilium/v2::CiliumNode"
 	k8sAPIGroupCiliumEndpointV2                 = "cilium/v2::CiliumEndpoint"
-	cacheSyncTimeout                            = 3 * time.Minute
+	k8sAPIGroupCiliumLocalRedirectPolicyV2      = "cilium/v2::CiliumLocalRedirectPolicy"
+	k8sAPIGroupCiliumEgressNATPolicyV2          = "cilium/v2::CiliumEgressNATPolicy"
 	K8sAPIGroupEndpointSliceV1Beta1Discovery    = "discovery/v1beta1::EndpointSlice"
+	K8sAPIGroupEndpointSliceV1Discovery         = "discovery/v1::EndpointSlice"
 
 	metricCNP            = "CiliumNetworkPolicy"
 	metricCCNP           = "CiliumClusterwideNetworkPolicy"
@@ -69,7 +74,10 @@ const (
 	metricNS             = "Namespace"
 	metricCiliumNode     = "CiliumNode"
 	metricCiliumEndpoint = "CiliumEndpoint"
+	metricCLRP           = "CiliumLocalRedirectPolicy"
+	metricCENP           = "CiliumEgressNATPolicy"
 	metricPod            = "Pod"
+	metricNode           = "Node"
 	metricService        = "Service"
 	metricCreate         = "create"
 	metricDelete         = "delete"
@@ -82,8 +90,13 @@ func init() {
 		k8s.K8sErrorHandler,
 	}
 
-	k8sMetric := &k8sMetrics{}
-	k8s_metrics.Register(k8sMetric, k8sMetric)
+	k8s_metrics.Register(k8s_metrics.RegisterOpts{
+		ClientCertExpiry:      nil,
+		ClientCertRotationAge: nil,
+		RequestLatency:        &k8sMetrics{},
+		RateLimiterLatency:    nil,
+		RequestResult:         &k8sMetrics{},
+	})
 }
 
 var (
@@ -94,19 +107,18 @@ var (
 	importMetadataCache = ruleImportMetadataCache{
 		ruleImportMetadataMap: make(map[string]policyImportMetadata),
 	}
-
-	errIPCacheOwnedByNonK8s = fmt.Errorf("ipcache entry owned by kvstore or agent")
 )
 
 type endpointManager interface {
 	GetEndpoints() []*endpoint.Endpoint
+	GetHostEndpoint() *endpoint.Endpoint
 	LookupPodName(string) *endpoint.Endpoint
 	WaitForEndpointsAtPolicyRev(ctx context.Context, rev uint64) error
 }
 
 type nodeDiscoverManager interface {
-	NodeDeleted(n node.Node)
-	NodeUpdated(n node.Node)
+	NodeDeleted(n nodeTypes.Node)
+	NodeUpdated(n nodeTypes.Node)
 	ClusterSizeDependantInterval(baseInterval time.Duration) time.Duration
 }
 
@@ -122,37 +134,64 @@ type policyRepository interface {
 
 type svcManager interface {
 	DeleteService(frontend loadbalancer.L3n4Addr) (bool, error)
-	UpsertService(frontend loadbalancer.L3n4AddrID, backends []loadbalancer.Backend,
-		svcType loadbalancer.SVCType, svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-		svcHealthCheckNodePort uint16, svcName, svcNamespace string) (bool, loadbalancer.ID, error)
+	UpsertService(*loadbalancer.SVC) (bool, loadbalancer.ID, error)
+}
+
+type redirectPolicyManager interface {
+	AddRedirectPolicy(config redirectpolicy.LRPConfig) (bool, error)
+	DeleteRedirectPolicy(config redirectpolicy.LRPConfig) error
+	OnAddService(svcID k8s.ServiceID)
+	OnDeleteService(svcID k8s.ServiceID)
+	OnUpdatePod(pod *slim_corev1.Pod, needsReassign bool, ready bool)
+	OnDeletePod(pod *slim_corev1.Pod)
+	OnAddPod(pod *slim_corev1.Pod)
+}
+
+type bgpSpeakerManager interface {
+	OnUpdateService(svc *slim_corev1.Service) error
+	OnDeleteService(svc *slim_corev1.Service) error
+
+	OnUpdateEndpoints(eps *slim_corev1.Endpoints) error
+	OnUpdateEndpointSliceV1(eps *slim_discover_v1.EndpointSlice) error
+	OnUpdateEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice) error
+}
+type egressGatewayManager interface {
+	AddEgressPolicy(config egressgateway.PolicyConfig) (bool, error)
+	DeleteEgressPolicy(configID types.NamespacedName) error
+	OnUpdateEndpoint(endpoint *k8sTypes.CiliumEndpoint)
+	OnDeleteEndpoint(endpoint *k8sTypes.CiliumEndpoint)
 }
 
 type K8sWatcher struct {
-	// k8sResourceSyncedMu protects the k8sResourceSynced map.
-	k8sResourceSyncedMu lock.RWMutex
-
 	// k8sResourceSynced maps a resource name to a channel. Once the given
 	// resource name is synchronized with k8s, the channel for which that
 	// resource name maps to is closed.
-	k8sResourceSynced map[string]<-chan struct{}
-	// k8sResourceSyncedStopWait contains the result of
-	k8sResourceSyncedStopWait map[string]bool
+	k8sResourceSynced synced.Resources
 
-	// k8sAPIs is a set of k8s API in use. They are setup in EnableK8sWatcher,
+	// k8sAPIGroups is a set of k8s API in use. They are setup in EnableK8sWatcher,
 	// and may be disabled while the agent runs.
 	// This is on this object, instead of a global, because EnableK8sWatcher is
 	// on Daemon.
-	k8sAPIGroups k8sAPIGroupsUsed
+	k8sAPIGroups synced.APIGroups
 
 	// K8sSvcCache is a cache of all Kubernetes services and endpoints
 	K8sSvcCache k8s.ServiceCache
 
+	// NodeChain is the root of a notification chain for k8s Node events.
+	// This NodeChain allows registration of subscriber.Node implementations.
+	// On k8s Node events all registered subscriber.Node implementations will
+	// have their event handling methods called in order of registration.
+	NodeChain *subscriber.NodeChain
+
 	endpointManager endpointManager
 
-	nodeDiscoverManager nodeDiscoverManager
-	policyManager       policyManager
-	policyRepository    policyRepository
-	svcManager          svcManager
+	nodeDiscoverManager   nodeDiscoverManager
+	policyManager         policyManager
+	policyRepository      policyRepository
+	svcManager            svcManager
+	redirectPolicyManager redirectPolicyManager
+	bgpSpeakerManager     bgpSpeakerManager
+	egressGatewayManager  egressGatewayManager
 
 	// controllersStarted is a channel that is closed when all controllers, i.e.,
 	// k8s watchers have started listening for k8s events.
@@ -165,8 +204,14 @@ type K8sWatcher struct {
 	podStoreSet  chan struct{}
 	podStoreOnce sync.Once
 
+	nodeStore cache.Store
+
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
+
+	networkpolicyStore cache.Store
+
+	cfg WatcherConfiguration
 }
 
 func NewK8sWatcher(
@@ -176,290 +221,240 @@ func NewK8sWatcher(
 	policyRepository policyRepository,
 	svcManager svcManager,
 	datapath datapath.Datapath,
+	redirectPolicyManager redirectPolicyManager,
+	bgpSpeakerManager bgpSpeakerManager,
+	egressGatewayManager egressGatewayManager,
+	cfg WatcherConfiguration,
 ) *K8sWatcher {
 	return &K8sWatcher{
-		k8sResourceSynced:         map[string]<-chan struct{}{},
-		k8sResourceSyncedStopWait: map[string]bool{},
-		K8sSvcCache:               k8s.NewServiceCache(datapath.LocalNodeAddressing()),
-		endpointManager:           endpointManager,
-		nodeDiscoverManager:       nodeDiscoverManager,
-		policyManager:             policyManager,
-		policyRepository:          policyRepository,
-		svcManager:                svcManager,
-		controllersStarted:        make(chan struct{}),
-		podStoreSet:               make(chan struct{}),
-		datapath:                  datapath,
+		K8sSvcCache:           k8s.NewServiceCache(datapath.LocalNodeAddressing()),
+		endpointManager:       endpointManager,
+		nodeDiscoverManager:   nodeDiscoverManager,
+		policyManager:         policyManager,
+		policyRepository:      policyRepository,
+		svcManager:            svcManager,
+		controllersStarted:    make(chan struct{}),
+		podStoreSet:           make(chan struct{}),
+		datapath:              datapath,
+		redirectPolicyManager: redirectPolicyManager,
+		bgpSpeakerManager:     bgpSpeakerManager,
+		egressGatewayManager:  egressGatewayManager,
+		NodeChain:             subscriber.NewNodeChain(),
+		cfg:                   cfg,
 	}
-}
-
-// k8sAPIGroupsUsed is a lockable map to hold which k8s API Groups we have
-// enabled/in-use
-// Note: We can replace it with a Go 1.9 map once we require that version
-type k8sAPIGroupsUsed struct {
-	lock.RWMutex
-	apis map[string]bool
-}
-
-func (m *k8sAPIGroupsUsed) addAPI(api string) {
-	m.Lock()
-	defer m.Unlock()
-	if m.apis == nil {
-		m.apis = make(map[string]bool)
-	}
-	m.apis[api] = true
-}
-
-func (m *k8sAPIGroupsUsed) removeAPI(api string) {
-	m.Lock()
-	defer m.Unlock()
-	delete(m.apis, api)
-}
-
-func (m *k8sAPIGroupsUsed) getGroups() []string {
-	m.RLock()
-	defer m.RUnlock()
-	groups := make([]string, 0, len(m.apis))
-	for k := range m.apis {
-		groups = append(groups, k)
-	}
-	return groups
 }
 
 // k8sMetrics implements the LatencyMetric and ResultMetric interface from
 // k8s client-go package
 type k8sMetrics struct{}
 
-func (*k8sMetrics) Observe(verb string, u url.URL, latency time.Duration) {
+func (*k8sMetrics) Observe(_ context.Context, verb string, u url.URL, latency time.Duration) {
 	metrics.KubernetesAPIInteractions.WithLabelValues(u.Path, verb).Observe(latency.Seconds())
 }
 
-func (*k8sMetrics) Increment(code string, method string, host string) {
-	metrics.KubernetesAPICalls.WithLabelValues(host, method, code).Inc()
+func (*k8sMetrics) Increment(_ context.Context, code string, method string, host string) {
+	metrics.KubernetesAPICallsTotal.WithLabelValues(host, method, code).Inc()
+	// The 'code' is set to '<error>' in case an error is returned from k8s
+	// more info:
+	// https://github.com/kubernetes/client-go/blob/v0.18.0-rc.1/rest/request.go#L700-L703
+	if code != "<error>" {
+		// Consider success if status code is 2xx or 4xx
+		if strings.HasPrefix(code, "2") ||
+			strings.HasPrefix(code, "4") {
+			k8smetrics.LastSuccessInteraction.Reset()
+		}
+	}
 	k8smetrics.LastInteraction.Reset()
 }
 
-func (k *K8sWatcher) GetAPIGroups() []string {
-	return k.k8sAPIGroups.getGroups()
+func (k *K8sWatcher) WaitForCacheSync(resourceNames ...string) {
+	k.k8sResourceSynced.WaitForCacheSync(resourceNames...)
 }
 
 func (k *K8sWatcher) cancelWaitGroupToSyncResources(resourceName string) {
-	k.k8sResourceSyncedMu.Lock()
-	delete(k.k8sResourceSynced, resourceName)
-	k.k8sResourceSyncedMu.Unlock()
+	k.k8sResourceSynced.CancelWaitGroupToSyncResources(resourceName)
 }
 
-// blockWaitGroupToSyncResources ensures that anything which waits on waitGroup
-// waits until all objects of the specified resource stored in Kubernetes are
-// received by the informer and processed by controller.
-// Fatally exits if syncing these initial objects fails.
-// If the given stop channel is closed, it does not fatal.
-// Once the k8s caches are synced against k8s, k8sCacheSynced is also closed.
 func (k *K8sWatcher) blockWaitGroupToSyncResources(
 	stop <-chan struct{},
 	swg *lock.StoppableWaitGroup,
-	informer cache.Controller,
+	hasSyncedFunc cache.InformerSynced,
 	resourceName string,
 ) {
-
-	ch := make(chan struct{})
-	k.k8sResourceSyncedMu.Lock()
-	k.k8sResourceSynced[resourceName] = ch
-	k.k8sResourceSyncedMu.Unlock()
-	go func() {
-		scopedLog := log.WithField("kubernetesResource", resourceName)
-		scopedLog.Debug("waiting for cache to synchronize")
-		if ok := cache.WaitForCacheSync(stop, informer.HasSynced); !ok {
-			select {
-			case <-stop:
-				// do not fatal if the channel was stopped
-				scopedLog.Debug("canceled cache synchronization")
-				k.k8sResourceSyncedMu.Lock()
-				// Since the wait for cache sync was canceled we need
-				// to mark that k8sResourceSyncedStopWait was canceled and it
-				// should not stop waiting for this resource to be synchronized.
-				k.k8sResourceSyncedStopWait[resourceName] = false
-				k.k8sResourceSyncedMu.Unlock()
-			default:
-				// Fatally exit it resource fails to sync
-				scopedLog.Fatalf("failed to wait for cache to sync")
-			}
-		} else {
-			scopedLog.Debug("cache synced")
-			k.k8sResourceSyncedMu.Lock()
-			// Since the wait for cache sync was not canceled we need
-			// to mark that k8sResourceSyncedStopWait not canceled and it
-			// should stop waiting for this resource to be synchronized.
-			k.k8sResourceSyncedStopWait[resourceName] = true
-			k.k8sResourceSyncedMu.Unlock()
-		}
-		swg.Stop()
-		swg.Wait()
-		close(ch)
-	}()
+	k.k8sResourceSynced.BlockWaitGroupToSyncResources(stop, swg, hasSyncedFunc, resourceName)
 }
 
-// WaitForCacheSync waits for k8s caches to be synchronized for the given
-// resource. Returns once all resourcesNames are synchronized with cilium-agent.
-func (k *K8sWatcher) WaitForCacheSync(resourceNames ...string) {
-	for _, resourceName := range resourceNames {
-		k.k8sResourceSyncedMu.RLock()
-		c, ok := k.k8sResourceSynced[resourceName]
-		k.k8sResourceSyncedMu.RUnlock()
+func (k *K8sWatcher) GetAPIGroups() []string {
+	return k.k8sAPIGroups.GetGroups()
+}
+
+// WaitForCRDsToRegister will wait for the Cilium Operator to register the CRDs
+// with the apiserver. This step is required before launching the full K8s
+// watcher, as those resource controllers need the resources to be registered
+// with K8s first.
+func (k *K8sWatcher) WaitForCRDsToRegister(ctx context.Context) error {
+	return synced.SyncCRDs(ctx, synced.AgentCRDResourceNames(), &k.k8sResourceSynced, &k.k8sAPIGroups)
+}
+
+// resourceGroups are all of the core Kubernetes and Cilium resource groups
+// which the Cilium agent watches to implement CNI functionality.
+func (k *K8sWatcher) resourceGroups() []string {
+	k8sGroups := []string{
+		// To perform the service translation and have the BPF LB datapath
+		// with the right service -> backend (k8s endpoints) translation.
+		K8sAPIGroupServiceV1Core,
+
+		// We need all network policies in place before restoring to
+		// make sure we are enforcing the correct policies for each
+		// endpoint before restarting.
+		k8sAPIGroupNetworkingV1Core,
+		// Namespaces can contain labels which are essential for
+		// endpoints being restored to have the right identity.
+		k8sAPIGroupNamespaceV1Core,
+		// Pods can contain labels which are essential for endpoints
+		// being restored to have the right identity.
+		K8sAPIGroupPodV1Core,
+		// We need to know the node labels to populate the host
+		// endpoint labels.
+		k8sAPIGroupNodeV1Core,
+	}
+
+	// To perform the service translation and have the BPF LB datapath
+	// with the right service -> backend (k8s endpoints) translation.
+	if k8s.SupportsEndpointSlice() {
+		k8sGroups = append(k8sGroups, K8sAPIGroupEndpointSliceV1Beta1Discovery)
+	}
+	k8sGroups = append(k8sGroups, K8sAPIGroupEndpointV1Core)
+
+	resourceToGroupMapping := map[string]string{
+		synced.CRDResourceName(v2.CNPName):        k8sAPIGroupCiliumNetworkPolicyV2,
+		synced.CRDResourceName(v2.CCNPName):       k8sAPIGroupCiliumClusterwideNetworkPolicyV2,
+		synced.CRDResourceName(v2.CEPName):        k8sAPIGroupCiliumEndpointV2, // ipcache
+		synced.CRDResourceName(v2.CNName):         k8sAPIGroupCiliumNodeV2,
+		synced.CRDResourceName(v2.CIDName):        "SKIP", // Handled in pkg/k8s/identitybackend/
+		synced.CRDResourceName(v2.CLRPName):       k8sAPIGroupCiliumLocalRedirectPolicyV2,
+		synced.CRDResourceName(v2.CEWName):        "SKIP", // Handled in clustermesh-apiserver/
+		synced.CRDResourceName(v2alpha1.CENPName): k8sAPIGroupCiliumEgressNATPolicyV2,
+	}
+	ciliumResources := synced.AgentCRDResourceNames()
+	ciliumGroups := make([]string, 0, len(ciliumResources))
+	for _, r := range ciliumResources {
+		group, ok := resourceToGroupMapping[r]
 		if !ok {
+			log.Fatalf("Unknown resource %s. Please update pkg/k8s/watchers to understand this type.", r)
+		}
+		if group == "SKIP" ||
+			group == k8sAPIGroupCiliumEndpointV2 && option.Config.DisableCiliumEndpointCRD {
 			continue
 		}
-		for {
-			scopedLog := log.WithField("kubernetesResource", resourceName)
-			<-c
-			k.k8sResourceSyncedMu.RLock()
-			stopWait := k.k8sResourceSyncedStopWait[resourceName]
-			k.k8sResourceSyncedMu.RUnlock()
-			if stopWait {
-				scopedLog.Debug("stopped waiting for caches to be synced")
-				break
-			}
-			scopedLog.Debug("original cache sync operation was aborted, waiting for caches to be synced with a new channel...")
-			time.Sleep(100 * time.Millisecond)
-			k.k8sResourceSyncedMu.RLock()
-			c, ok = k.k8sResourceSynced[resourceName]
-			k.k8sResourceSyncedMu.RUnlock()
-			if !ok {
-				break
-			}
-		}
+		ciliumGroups = append(ciliumGroups, group)
 	}
+
+	return append(k8sGroups, ciliumGroups...)
 }
 
 // InitK8sSubsystem returns a channel for which it will be closed when all
 // caches essential for daemon are synchronized.
-func (k *K8sWatcher) InitK8sSubsystem() <-chan struct{} {
-	if err := k.EnableK8sWatcher(option.Config.K8sWatcherQueueSize); err != nil {
-		log.WithError(err).Fatal("Unable to establish connection to Kubernetes apiserver")
-	}
-
+// To be called after WaitForCRDsToRegister() so that all needed CRDs have
+// already been registered.
+func (k *K8sWatcher) InitK8sSubsystem(ctx context.Context) <-chan struct{} {
 	cachesSynced := make(chan struct{})
 
-	go func() {
-		log.Info("Waiting until all pre-existing resources related to policy have been received")
-		// Wait only for certain caches, but not all!
-		// We don't wait for nodes synchronization.
-		k.WaitForCacheSync(
-			// To perform the service translation and have the BPF LB datapath
-			// with the right service -> backend (k8s endpoints) translation.
-			K8sAPIGroupServiceV1Core,
-			// To perform the service translation and have the BPF LB datapath
-			// with the right service -> backend (k8s endpoints) translation.
-			K8sAPIGroupEndpointV1Core,
-			// We need all network policies in place before restoring to make sure
-			// we are enforcing the correct policies for each endpoint before
-			// restarting.
-			k8sAPIGroupCiliumNetworkPolicyV2,
-
-			k8sAPIGroupCiliumClusterwideNetworkPolicyV2,
-			// We we need to know about all other nodes
-			k8sAPIGroupCiliumNodeV2,
-			// We need all network policies in place before restoring to make sure
-			// we are enforcing the correct policies for each endpoint before
-			// restarting.
-			k8sAPIGroupNetworkingV1Core,
-			// Namespaces can contain labels which are essential for endpoints
-			// being restored to have the right identity.
-			k8sAPIGroupNamespaceV1Core,
-			// Pods can contain labels which are essential for endpoints
-			// being restored to have the right identity.
-			k8sAPIGroupPodV1Core,
-		)
-		// CiliumEndpoint is used to synchronize the ipcache, wait for
-		// it unless it is disabled
-		if !option.Config.DisableCiliumEndpointCRD {
-			k.WaitForCacheSync(k8sAPIGroupCiliumEndpointV2)
+	resources := k.resourceGroups()
+	if err := k.EnableK8sWatcher(ctx, resources); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			log.WithError(err).Fatal("Unable to start K8s watchers for Cilium")
 		}
+		// If the context was canceled it means the daemon is being stopped
+		// so we can return a non-closed channel.
+		return cachesSynced
+	}
+
+	go func() {
+		log.Info("Waiting until all pre-existing resources have been received")
+		k.WaitForCacheSync(resources...)
 		close(cachesSynced)
 	}()
 
 	go func() {
 		select {
 		case <-cachesSynced:
-			log.Info("All pre-existing resources related to policy have been received; continuing")
-		case <-time.After(cacheSyncTimeout):
-			log.Fatalf("Timed out waiting for pre-existing resources related to policy to be received; exiting")
+			log.Info("All pre-existing resources have been received; continuing")
+		case <-time.After(option.Config.K8sSyncTimeout):
+			log.Fatal("Timed out waiting for pre-existing resources to be received; exiting")
 		}
 	}()
 
 	return cachesSynced
 }
 
-// EnableK8sWatcher watches for policy, services and endpoint changes on the Kubernetes
-// api server defined in the receiver's daemon k8sClient.
-// queueSize specifies the queue length used to serialize k8s events.
-func (k *K8sWatcher) EnableK8sWatcher(queueSize uint) error {
+// WatcherConfiguration is the required configuration for EnableK8sWatcher
+type WatcherConfiguration interface {
+	utils.ServiceConfiguration
+}
+
+// EnableK8sWatcher watches for policy, services and endpoint changes on the
+// Kubernetes api server defined in the receiver's daemon k8sClient.
+func (k *K8sWatcher) EnableK8sWatcher(ctx context.Context, resources []string) error {
 	if !k8s.IsEnabled() {
 		log.Debug("Not enabling k8s event listener because k8s is not enabled")
 		return nil
 	}
 	log.Info("Enabling k8s event listener")
 
-	k.k8sAPIGroups.addAPI(k8sAPIGroupCRD)
-
 	ciliumNPClient := k8s.CiliumClient()
 	asyncControllers := &sync.WaitGroup{}
 
-	// kubernetes network policies
-	serKNPs := serializer.NewFunctionQueue(queueSize)
-	swgKNP := lock.NewStoppableWaitGroup()
-	k.networkPoliciesInit(k8s.Client(), serKNPs, swgKNP)
-
-	// kubernetes services
-	serSvcs := serializer.NewFunctionQueue(queueSize)
-	swgSvcs := lock.NewStoppableWaitGroup()
-	k.servicesInit(k8s.Client(), serSvcs, swgSvcs)
-
-	// kubernetes endpoints
-	serEps := serializer.NewFunctionQueue(queueSize)
-	swgEps := lock.NewStoppableWaitGroup()
-
-	// We only enable either "Endpoints" or "EndpointSlice"
-	switch {
-	case k8s.SupportsEndpointSlice():
-		connected := k.endpointSlicesInit(k8s.Client(), serEps, swgEps)
-		// the cluster has endpoint slices so we should not check for v1.Endpoints
-		if connected {
-			break
-		}
-		fallthrough
-	default:
-		k.endpointsInit(k8s.Client(), serEps, swgEps)
+	serviceOptModifier, err := utils.GetServiceListOptionsModifier(k.cfg)
+	if err != nil {
+		return fmt.Errorf("error creating service list option modifier: %w", err)
 	}
 
-	// cilium network policies
-	serCNPs := serializer.NewFunctionQueue(queueSize)
-	swgCNPs := lock.NewStoppableWaitGroup()
-	k.ciliumNetworkPoliciesInit(ciliumNPClient, serCNPs, swgCNPs)
-
-	// cilium clusterwide network policy
-	serCCNPs := serializer.NewFunctionQueue(queueSize)
-	swgCCNPs := lock.NewStoppableWaitGroup()
-	k.ciliumClusterwideNetworkPoliciesInit(ciliumNPClient, serCCNPs, swgCCNPs)
-
-	// cilium nodes
-	asyncControllers.Add(1)
-	serNodes := serializer.NewFunctionQueue(queueSize)
-	go k.ciliumNodeInit(ciliumNPClient, serNodes, asyncControllers)
-
-	// cilium endpoints
-	asyncControllers.Add(1)
-	serCiliumEndpoints := serializer.NewFunctionQueue(queueSize)
-	go k.ciliumEndpointsInit(ciliumNPClient, serCiliumEndpoints, asyncControllers)
-
-	// kubernetes pods
-	asyncControllers.Add(1)
-	serPods := serializer.NewFunctionQueue(queueSize)
-	go k.podsInit(k8s.Client(), serPods, asyncControllers)
-
-	// kubernetes namespaces
-	asyncControllers.Add(1)
-	serNamespaces := serializer.NewFunctionQueue(queueSize)
-	go k.namespacesInit(k8s.Client(), serNamespaces, asyncControllers)
+	for _, r := range resources {
+		switch r {
+		// Core Cilium
+		case K8sAPIGroupPodV1Core:
+			asyncControllers.Add(1)
+			go k.podsInit(k8s.WatcherClient(), asyncControllers)
+		case k8sAPIGroupNodeV1Core:
+			k.NodesInit(k8s.Client())
+		case k8sAPIGroupNamespaceV1Core:
+			asyncControllers.Add(1)
+			go k.namespacesInit(k8s.WatcherClient(), asyncControllers)
+		case k8sAPIGroupCiliumNodeV2:
+			asyncControllers.Add(1)
+			go k.ciliumNodeInit(ciliumNPClient, asyncControllers)
+		// Kubernetes built-in resources
+		case k8sAPIGroupNetworkingV1Core:
+			swgKNP := lock.NewStoppableWaitGroup()
+			k.networkPoliciesInit(k8s.WatcherClient(), swgKNP)
+		case K8sAPIGroupServiceV1Core:
+			swgSvcs := lock.NewStoppableWaitGroup()
+			k.servicesInit(k8s.WatcherClient(), swgSvcs, serviceOptModifier)
+		case K8sAPIGroupEndpointSliceV1Beta1Discovery:
+			// no-op; handled in K8sAPIGroupEndpointV1Core.
+		case K8sAPIGroupEndpointSliceV1Discovery:
+			// no-op; handled in K8sAPIGroupEndpointV1Core.
+		case K8sAPIGroupEndpointV1Core:
+			k.initEndpointsOrSlices(k8s.WatcherClient(), serviceOptModifier)
+		// Custom resource definitions
+		case k8sAPIGroupCiliumNetworkPolicyV2:
+			k.ciliumNetworkPoliciesInit(ciliumNPClient)
+		case k8sAPIGroupCiliumClusterwideNetworkPolicyV2:
+			k.ciliumClusterwideNetworkPoliciesInit(ciliumNPClient)
+		case k8sAPIGroupCiliumEndpointV2:
+			asyncControllers.Add(1)
+			go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)
+		case k8sAPIGroupCiliumLocalRedirectPolicyV2:
+			k.ciliumLocalRedirectPolicyInit(ciliumNPClient)
+		case k8sAPIGroupCiliumEgressNATPolicyV2:
+			k.ciliumEgressNATPolicyInit(ciliumNPClient)
+		default:
+			log.WithFields(logrus.Fields{
+				logfields.Resource: r,
+			}).Fatal("Not listening for Kubernetes resource updates for unhandled type")
+		}
+	}
 
 	asyncControllers.Wait()
 	close(k.controllersStarted)
@@ -498,7 +493,7 @@ func (k *K8sWatcher) k8sServiceHandler() {
 			translator := k8s.NewK8sTranslator(event.ID, *event.Endpoints, false, svc.Labels, true)
 			result, err := k.policyRepository.TranslateRules(translator)
 			if err != nil {
-				log.Errorf("Unable to repopulate egress policies from ToService rules: %v", err)
+				log.WithError(err).Error("Unable to repopulate egress policies from ToService rules")
 				break
 			} else if result.NumToServicesRules > 0 {
 				// Only trigger policy updates if ToServices rules are in effect
@@ -517,7 +512,7 @@ func (k *K8sWatcher) k8sServiceHandler() {
 			translator := k8s.NewK8sTranslator(event.ID, *event.Endpoints, true, svc.Labels, true)
 			result, err := k.policyRepository.TranslateRules(translator)
 			if err != nil {
-				log.Errorf("Unable to depopulate egress policies from ToService rules: %v", err)
+				log.WithError(err).Error("Unable to depopulate egress policies from ToService rules")
 				break
 			} else if result.NumToServicesRules > 0 {
 				// Only trigger policy updates if ToServices rules are in effect
@@ -539,12 +534,6 @@ func (k *K8sWatcher) RunK8sServiceHandler() {
 }
 
 func (k *K8sWatcher) delK8sSVCs(svc k8s.ServiceID, svcInfo *k8s.Service, se *k8s.Endpoints) error {
-	// If east-west load balancing is disabled, we should not sync(add or delete)
-	// K8s service to a cilium service.
-	if option.Config.DisableK8sServices {
-		return nil
-	}
-
 	// Headless services do not need any datapath implementation
 	if svcInfo.IsHeadless {
 		return nil
@@ -565,19 +554,29 @@ func (k *K8sWatcher) delK8sSVCs(svc k8s.ServiceID, svcInfo *k8s.Service, se *k8s
 		}
 		repPorts[svcPort.Port] = false
 
-		fe := loadbalancer.NewL3n4Addr(svcPort.Protocol, svcInfo.FrontendIP, svcPort.Port)
-		frontends = append(frontends, fe)
+		for _, feIP := range svcInfo.FrontendIPs {
+			fe := loadbalancer.NewL3n4Addr(svcPort.Protocol, feIP, svcPort.Port, loadbalancer.ScopeExternal)
+			frontends = append(frontends, fe)
+		}
 
 		for _, nodePortFE := range svcInfo.NodePorts[portName] {
 			frontends = append(frontends, &nodePortFE.L3n4Addr)
+			if svcInfo.TrafficPolicy == loadbalancer.SVCTrafficPolicyLocal {
+				cpFE := nodePortFE.L3n4Addr.DeepCopy()
+				cpFE.Scope = loadbalancer.ScopeInternal
+				frontends = append(frontends, cpFE)
+			}
 		}
 
 		for _, k8sExternalIP := range svcInfo.K8sExternalIPs {
-			frontends = append(frontends, loadbalancer.NewL3n4Addr(svcPort.Protocol, k8sExternalIP, svcPort.Port))
+			frontends = append(frontends, loadbalancer.NewL3n4Addr(svcPort.Protocol, k8sExternalIP, svcPort.Port, loadbalancer.ScopeExternal))
 		}
 
 		for _, ip := range svcInfo.LoadBalancerIPs {
-			frontends = append(frontends, loadbalancer.NewL3n4Addr(svcPort.Protocol, ip, svcPort.Port))
+			frontends = append(frontends, loadbalancer.NewL3n4Addr(svcPort.Protocol, ip, svcPort.Port, loadbalancer.ScopeExternal))
+			if svcInfo.TrafficPolicy == loadbalancer.SVCTrafficPolicyLocal {
+				frontends = append(frontends, loadbalancer.NewL3n4Addr(svcPort.Protocol, ip, svcPort.Port, loadbalancer.ScopeInternal))
+			}
 		}
 	}
 
@@ -596,26 +595,42 @@ func (k *K8sWatcher) delK8sSVCs(svc k8s.ServiceID, svcInfo *k8s.Service, se *k8s
 
 func genCartesianProduct(
 	fe net.IP,
+	svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
 	svcType loadbalancer.SVCType,
 	ports map[loadbalancer.FEPortName]*loadbalancer.L4Addr,
 	bes *k8s.Endpoints,
 ) []loadbalancer.SVC {
+	var svcSize int
 
-	var svcs []loadbalancer.SVC
+	// For externalTrafficPolicy=Local we add both external and internal
+	// scoped frontends, hence twice the size for only this case.
+	if svcTrafficPolicy == loadbalancer.SVCTrafficPolicyLocal &&
+		(svcType == loadbalancer.SVCTypeLoadBalancer || svcType == loadbalancer.SVCTypeNodePort) {
+		svcSize = len(ports) * 2
+	} else {
+		svcSize = len(ports)
+	}
+
+	svcs := make([]loadbalancer.SVC, 0, svcSize)
+	feFamilyIPv6 := ip.IsIPv6(fe)
 
 	for fePortName, fePort := range ports {
 		var besValues []loadbalancer.Backend
-		for ip, backend := range bes.Backends {
-			if backendPort := backend.Ports[string(fePortName)]; backendPort != nil {
+		for netIP, backend := range bes.Backends {
+			parsedIP := net.ParseIP(netIP)
+
+			if backendPort := backend.Ports[string(fePortName)]; backendPort != nil && feFamilyIPv6 == ip.IsIPv6(parsedIP) {
 				besValues = append(besValues, loadbalancer.Backend{
 					NodeName: backend.NodeName,
 					L3n4Addr: loadbalancer.L3n4Addr{
-						IP: net.ParseIP(ip), L4Addr: *backendPort,
+						IP:     parsedIP,
+						L4Addr: *backendPort,
 					},
 				})
 			}
 		}
 
+		// External scoped entry.
 		svcs = append(svcs,
 			loadbalancer.SVC{
 				Frontend: loadbalancer.L3n4AddrID{
@@ -625,12 +640,33 @@ func genCartesianProduct(
 							Protocol: fePort.Protocol,
 							Port:     fePort.Port,
 						},
+						Scope: loadbalancer.ScopeExternal,
 					},
 					ID: loadbalancer.ID(0),
 				},
 				Backends: besValues,
 				Type:     svcType,
 			})
+
+		// Internal scoped entry only for Local traffic policy.
+		if svcSize > len(ports) {
+			svcs = append(svcs,
+				loadbalancer.SVC{
+					Frontend: loadbalancer.L3n4AddrID{
+						L3n4Addr: loadbalancer.L3n4Addr{
+							IP: fe,
+							L4Addr: loadbalancer.L4Addr{
+								Protocol: fePort.Protocol,
+								Port:     fePort.Port,
+							},
+							Scope: loadbalancer.ScopeInternal,
+						},
+						ID: loadbalancer.ID(0),
+					},
+					Backends: besValues,
+					Type:     svcType,
+				})
+		}
 	}
 	return svcs
 }
@@ -647,17 +683,19 @@ func datapathSVCs(svc *k8s.Service, endpoints *k8s.Endpoints) (svcs []loadbalanc
 		uniqPorts[fePort.Port] = false
 		clusterIPPorts[fePortName] = fePort
 	}
-	if svc.FrontendIP != nil {
-		dpSVC := genCartesianProduct(svc.FrontendIP, loadbalancer.SVCTypeClusterIP, clusterIPPorts, endpoints)
+
+	for _, frontendIP := range svc.FrontendIPs {
+		dpSVC := genCartesianProduct(frontendIP, svc.TrafficPolicy, loadbalancer.SVCTypeClusterIP, clusterIPPorts, endpoints)
 		svcs = append(svcs, dpSVC...)
 	}
+
 	for _, ip := range svc.LoadBalancerIPs {
-		dpSVC := genCartesianProduct(ip, loadbalancer.SVCTypeLoadBalancer, clusterIPPorts, endpoints)
+		dpSVC := genCartesianProduct(ip, svc.TrafficPolicy, loadbalancer.SVCTypeLoadBalancer, clusterIPPorts, endpoints)
 		svcs = append(svcs, dpSVC...)
 	}
 
 	for _, k8sExternalIP := range svc.K8sExternalIPs {
-		dpSVC := genCartesianProduct(k8sExternalIP, loadbalancer.SVCTypeExternalIPs, clusterIPPorts, endpoints)
+		dpSVC := genCartesianProduct(k8sExternalIP, svc.TrafficPolicy, loadbalancer.SVCTypeExternalIPs, clusterIPPorts, endpoints)
 		svcs = append(svcs, dpSVC...)
 	}
 
@@ -666,15 +704,25 @@ func datapathSVCs(svc *k8s.Service, endpoints *k8s.Endpoints) (svcs []loadbalanc
 			nodePortPorts := map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
 				fePortName: &nodePortFE.L4Addr,
 			}
-			dpSVC := genCartesianProduct(nodePortFE.IP, loadbalancer.SVCTypeNodePort, nodePortPorts, endpoints)
+			dpSVC := genCartesianProduct(nodePortFE.IP, svc.TrafficPolicy, loadbalancer.SVCTypeNodePort, nodePortPorts, endpoints)
 			svcs = append(svcs, dpSVC...)
 		}
+	}
+
+	lbSrcRanges := make([]*cidr.CIDR, 0, len(svc.LoadBalancerSourceRanges))
+	for _, cidr := range svc.LoadBalancerSourceRanges {
+		lbSrcRanges = append(lbSrcRanges, cidr)
 	}
 
 	// apply common service properties
 	for i := range svcs {
 		svcs[i].TrafficPolicy = svc.TrafficPolicy
 		svcs[i].HealthCheckNodePort = svc.HealthCheckNodePort
+		svcs[i].SessionAffinity = svc.SessionAffinity
+		svcs[i].SessionAffinityTimeoutSec = svc.SessionAffinityTimeoutSec
+		if svcs[i].Type == loadbalancer.SVCTypeLoadBalancer {
+			svcs[i].LoadBalancerSourceRanges = lbSrcRanges
+		}
 	}
 
 	return svcs
@@ -691,12 +739,6 @@ func hashSVCMap(svcs []loadbalancer.SVC) map[string]loadbalancer.L3n4Addr {
 }
 
 func (k *K8sWatcher) addK8sSVCs(svcID k8s.ServiceID, oldSvc, svc *k8s.Service, endpoints *k8s.Endpoints) error {
-	// If east-west load balancing is disabled, we should not sync(add or delete)
-	// K8s service to a cilium service.
-	if option.Config.DisableK8sServices {
-		return nil
-	}
-
 	// Headless services do not need any datapath implementation
 	if svc.IsHeadless {
 		return nil
@@ -732,8 +774,19 @@ func (k *K8sWatcher) addK8sSVCs(svcID k8s.ServiceID, oldSvc, svc *k8s.Service, e
 	}
 
 	for _, dpSvc := range svcs {
-		if _, _, err := k.svcManager.UpsertService(dpSvc.Frontend, dpSvc.Backends, dpSvc.Type,
-			dpSvc.TrafficPolicy, dpSvc.HealthCheckNodePort, svcID.Name, svcID.Namespace); err != nil {
+		p := &loadbalancer.SVC{
+			Frontend:                  dpSvc.Frontend,
+			Backends:                  dpSvc.Backends,
+			Type:                      dpSvc.Type,
+			TrafficPolicy:             dpSvc.TrafficPolicy,
+			SessionAffinity:           dpSvc.SessionAffinity,
+			SessionAffinityTimeoutSec: dpSvc.SessionAffinityTimeoutSec,
+			HealthCheckNodePort:       dpSvc.HealthCheckNodePort,
+			LoadBalancerSourceRanges:  dpSvc.LoadBalancerSourceRanges,
+			Name:                      svcID.Name,
+			Namespace:                 svcID.Namespace,
+		}
+		if _, _, err := k.svcManager.UpsertService(p); err != nil {
 			scopedLog.WithError(err).Error("Error while inserting service in LB map")
 		}
 	}
@@ -757,4 +810,23 @@ func (k *K8sWatcher) K8sEventReceived(scope string, action string, valid, equal 
 	k8smetrics.LastInteraction.Reset()
 
 	metrics.KubernetesEventReceived.WithLabelValues(scope, action, strconv.FormatBool(valid), strconv.FormatBool(equal)).Inc()
+}
+
+// GetStore returns the k8s cache store for the given resource name.
+func (k *K8sWatcher) GetStore(name string) cache.Store {
+	switch name {
+	case "networkpolicy":
+		return k.networkpolicyStore
+	case "namespace":
+		return k.namespaceStore
+	case "pod":
+		// Wait for podStore to get initialized.
+		<-k.podStoreSet
+		// Access to podStore is protected by podStoreMU.
+		k.podStoreMU.RLock()
+		defer k.podStoreMU.RUnlock()
+		return k.podStore
+	default:
+		return nil
+	}
 }

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package helpers
 
@@ -20,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +25,7 @@ var (
 
 // Executor executes commands
 type Executor interface {
+	IsLocal() bool
 	CloseSSHClient()
 	Exec(cmd string, options ...ExecOptions) *CmdRes
 	ExecContext(ctx context.Context, cmd string, options ...ExecOptions) *CmdRes
@@ -48,6 +37,7 @@ type Executor interface {
 	ExecuteContext(ctx context.Context, cmd string, stdout io.Writer, stderr io.Writer) error
 	String() string
 	BasePath() string
+	RenderTemplateToFile(filename string, tmplt string, perm os.FileMode) error
 	setBasePath()
 
 	Logger() *logrus.Entry
@@ -65,6 +55,11 @@ func CreateLocalExecutor(env []string) *LocalExecutor {
 	return &LocalExecutor{env: env}
 }
 
+// IsLocal returns true if commands are executed on the Ginkgo host
+func (s *LocalExecutor) IsLocal() bool {
+	return true
+}
+
 // Logger returns logger for executor
 func (s *LocalExecutor) Logger() *logrus.Entry {
 	return s.logger
@@ -77,24 +72,16 @@ func (s *LocalExecutor) String() string {
 
 // CloseSSHClient is a no-op
 func (s *LocalExecutor) CloseSSHClient() {
-	return
 }
 
-// setBasePath is a no-op
 func (s *LocalExecutor) setBasePath() {
-	gopath := os.Getenv("GOPATH")
-	if gopath != "" {
-		s.basePath = filepath.Join(gopath, CiliumPath)
+	wd, err := os.Getwd()
+	if err != nil {
+		ginkgoext.Fail(fmt.Sprintf("Cannot set base path: %s", err.Error()), 1)
 		return
 	}
+	s.basePath = wd
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		return
-	}
-
-	s.basePath = filepath.Join(home, "go", CiliumPath)
-	return
 }
 
 func (s LocalExecutor) getLocalCmd(ctx context.Context, command string, stdout io.Writer, stderr io.Writer) *exec.Cmd {
@@ -176,6 +163,7 @@ func (s *LocalExecutor) ExecContext(ctx context.Context, cmd string, options ...
 	}
 
 	log.Debugf("running command: %s", cmd)
+	fmt.Fprintln(SSHMetaLogs, cmd)
 	stdout := new(Buffer)
 	stderr := new(Buffer)
 	start := time.Now()
@@ -257,4 +245,16 @@ func (s *LocalExecutor) ExecInBackground(ctx context.Context, cmd string, option
 
 func (s *LocalExecutor) BasePath() string {
 	return s.basePath
+}
+
+// RenderTemplateToFile renders a text/template string into a target filename
+// with specific persmisions. Returns an error if the template cannot be
+// validated or the file cannot be created.
+func (s *LocalExecutor) RenderTemplateToFile(filename string, tmplt string, perm os.FileMode) error {
+	content, err := RenderTemplate(tmplt)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filename, content.Bytes(), perm)
 }

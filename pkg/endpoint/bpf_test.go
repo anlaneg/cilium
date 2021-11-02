@@ -1,25 +1,15 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package endpoint
 
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/cilium/cilium/pkg/datapath/linux"
@@ -39,7 +29,7 @@ type writeFunc func(io.Writer) error
 
 func BenchmarkWriteHeaderfile(b *testing.B) {
 	e := NewEndpointWithState(&suite, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
-	dp := linux.NewDatapath(linux.DatapathConfiguration{}, nil)
+	dp := linux.NewDatapath(linux.DatapathConfiguration{}, nil, nil)
 
 	targetComments := func(w io.Writer) error {
 		return e.writeInformationalComments(w)
@@ -49,7 +39,7 @@ func BenchmarkWriteHeaderfile(b *testing.B) {
 	}
 
 	var buf bytes.Buffer
-	file, err := ioutil.TempFile("", "cilium_ep_bench_")
+	file, err := os.CreateTemp("", "cilium_ep_bench_")
 	if err != nil {
 		b.Fatal(err)
 	}

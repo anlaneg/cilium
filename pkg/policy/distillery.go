@@ -1,16 +1,5 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 
 package policy
 
@@ -29,7 +18,7 @@ import (
 // to compute datapath-level policy configuration.
 type SelectorPolicy interface {
 	// Consume returns the policy in terms of connectivity to peer
-	// Identities. The callee MUST NOT modify the returned pointer.
+	// Identities.
 	Consume(owner PolicyOwner) *EndpointPolicy
 }
 
@@ -62,9 +51,8 @@ func (cache *PolicyCache) GetSelectorCache() *SelectorCache {
 }
 
 // lookupOrCreate adds the specified Identity to the policy cache, with a reference
-// from the specified Endpoint, then returns the threadsafe copy of the policy
-// and whether policy has been computed for this identity.
-func (cache *PolicyCache) lookupOrCreate(identity *identityPkg.Identity, create bool) (SelectorPolicy, bool) {
+// from the specified Endpoint, then returns the threadsafe copy of the policy.
+func (cache *PolicyCache) lookupOrCreate(identity *identityPkg.Identity, create bool) SelectorPolicy {
 	cache.Lock()
 	defer cache.Unlock()
 	cip, ok := cache.policies[identity.ID]
@@ -72,16 +60,12 @@ func (cache *PolicyCache) lookupOrCreate(identity *identityPkg.Identity, create 
 		cip = newCachedSelectorPolicy(identity, cache.repo.GetSelectorCache())
 		cache.policies[identity.ID] = cip
 	}
-	if cip != nil {
-		return cip, cip.getPolicy().Revision > 0
-	}
-	return nil, false
+	return cip
 }
 
 // insert adds the specified Identity to the policy cache, with a reference
-// from the specified Endpoint, then returns the threadsafe copy of the policy
-// and whether policy has been computed for this identity.
-func (cache *PolicyCache) insert(identity *identityPkg.Identity) (SelectorPolicy, bool) {
+// from the specified Endpoint, then returns the threadsafe copy of the policy.
+func (cache *PolicyCache) insert(identity *identityPkg.Identity) SelectorPolicy {
 	return cache.lookupOrCreate(identity, true)
 }
 
@@ -157,8 +141,7 @@ func (cache *PolicyCache) LocalEndpointIdentityRemoved(identity *identityPkg.Ide
 // Lookup attempts to locate the SelectorPolicy corresponding to the specified
 // identity. If policy is not cached for the identity, it returns nil.
 func (cache *PolicyCache) Lookup(identity *identityPkg.Identity) SelectorPolicy {
-	cip, _ := cache.lookupOrCreate(identity, false)
-	return cip
+	return cache.lookupOrCreate(identity, false)
 }
 
 // UpdatePolicy resolves the policy for the security identity of the specified
@@ -215,5 +198,6 @@ func (cip *cachedSelectorPolicy) Consume(owner PolicyOwner) *EndpointPolicy {
 	// TODO: This currently computes the EndpointPolicy from SelectorPolicy
 	// on-demand, however in future the cip is intended to cache the
 	// EndpointPolicy for this Identity and emit datapath deltas instead.
-	return cip.getPolicy().DistillPolicy(owner)
+	isHost := cip.identity.ID == identityPkg.ReservedIdentityHost
+	return cip.getPolicy().DistillPolicy(owner, isHost)
 }

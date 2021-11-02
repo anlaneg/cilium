@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package source
 
@@ -27,7 +16,7 @@ const (
 	Local Source = "local"
 
 	// KVStore is the source used for state derived from a key value store.
-	// State in the key value stored takes precendence over orchestration
+	// State in the key value stored takes precedence over orchestration
 	// system state such as Kubernetes.
 	KVStore Source = "kvstore"
 
@@ -48,25 +37,25 @@ const (
 func AllowOverwrite(existing, new Source) bool {
 	switch existing {
 
-	// Kubernetes state can be overwritten by everything except generated
-	// and unspecified state
-	case Kubernetes:
-		return new != Generated && new != Unspec
-
-	// Custom-resource state can be overwritten everything except
-	// generated, unspecified and Kuberntes (non-CRD) state
-	case CustomResource:
-		return new != Generated && new != Unspec && new != Kubernetes
+	// Local state can only be overwritten by other local state
+	case Local:
+		return new == Local
 
 	// KVStore can be overwritten by other kvstore or local state
 	case KVStore:
 		return new == KVStore || new == Local
 
-	// local state can only be overwritten by other local state
-	case Local:
-		return new == Local
+	// Custom-resource state can be overwritten by everything except
+	// generated, unspecified and Kubernetes (non-CRD) state
+	case CustomResource:
+		return new != Generated && new != Unspec && new != Kubernetes
 
-	// Generated and unspecified state can be overwritten by everything
+	// Kubernetes state can be overwritten by everything except generated
+	// and unspecified state
+	case Kubernetes:
+		return new != Generated && new != Unspec
+
+	// Generated can be overwritten by everything except by Unspecified
 	case Generated:
 		return new != Unspec
 

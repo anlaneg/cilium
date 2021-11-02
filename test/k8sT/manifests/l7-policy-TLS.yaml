@@ -1,9 +1,9 @@
 apiVersion: "cilium.io/v2"
 kind: CiliumNetworkPolicy
-description: "L7 policy with TLS"
 metadata:
   name: "l7-policy-tls"
 spec:
+  description: "L7 policy with TLS"
   endpointSelector:
     matchLabels:
       id: app2
@@ -16,7 +16,7 @@ spec:
         dns:
           - matchPattern: "*"
   - toFQDNs:
-    - matchPattern: "swapi.co"
+    - matchPattern: "artii.herokuapp.com"
     toPorts:
     - ports:
       - port: "443"
@@ -24,7 +24,7 @@ spec:
       terminatingTLS:
         secret:
           namespace: "default"
-          name: "swapi-server"
+          name: "artii-server"
       originatingTLS:
         secret:
           namespace: "default"
@@ -32,14 +32,13 @@ spec:
       rules:
         http:
         - method: "GET"
-          path: "/api/planets/1/"
+          path: "^/make(\\?.*)?$"
           headerMatches:
           - mismatch: REPLACE
             name: "User-Agent"
             secret:
               namespace: "default"
               name: "user-agent"
-              value: "user-agent"
   - toFQDNs:
     - matchPattern: "www.lyft.com"
     toPorts:
@@ -64,4 +63,3 @@ spec:
             secret:
               namespace: "default"
               name: "user-agent"
-              value: "user-agent"

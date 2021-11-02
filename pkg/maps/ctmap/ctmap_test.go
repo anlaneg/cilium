@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package ctmap
@@ -35,12 +25,16 @@ type CTMapTestSuite struct{}
 
 var _ = Suite(&CTMapTestSuite{})
 
+func init() {
+	InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
+}
+
 func Test(t *testing.T) {
 	TestingT(t)
 }
 
 func (t *CTMapTestSuite) TestInit(c *C) {
-	InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true)
+	InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
 	for mapType := mapType(0); mapType < mapTypeMax; mapType++ {
 		info := mapInfo[mapType]
 		if mapType.isIPv6() {
@@ -85,4 +79,26 @@ func (t *CTMapTestSuite) TestCalculateInterval(c *C) {
 
 	c.Assert(calculateInterval(bpf.MapTypeLRUHash, 24*time.Hour, 0.01), Equals, defaults.ConntrackGCMaxLRUInterval)
 	c.Assert(calculateInterval(bpf.MapTypeHash, 24*time.Hour, 0.01), Equals, defaults.ConntrackGCMaxInterval)
+}
+
+func (t *CTMapTestSuite) TestFilterMapsByProto(c *C) {
+	maps := []*Map{
+		newMap("tcp4", mapTypeIPv4TCPGlobal),
+		newMap("any4", mapTypeIPv4AnyGlobal),
+		newMap("tcp6", mapTypeIPv6TCPGlobal),
+		newMap("any6", mapTypeIPv6AnyGlobal),
+	}
+
+	ctMapTCP, ctMapAny := FilterMapsByProto(maps, CTMapIPv4)
+	c.Assert(ctMapTCP.mapType, Equals, mapTypeIPv4TCPGlobal)
+	c.Assert(ctMapAny.mapType, Equals, mapTypeIPv4AnyGlobal)
+
+	ctMapTCP, ctMapAny = FilterMapsByProto(maps, CTMapIPv6)
+	c.Assert(ctMapTCP.mapType, Equals, mapTypeIPv6TCPGlobal)
+	c.Assert(ctMapAny.mapType, Equals, mapTypeIPv6AnyGlobal)
+
+	maps = maps[0:2] // remove ipv6 maps
+	ctMapTCP, ctMapAny = FilterMapsByProto(maps, CTMapIPv6)
+	c.Assert(ctMapTCP, IsNil)
+	c.Assert(ctMapAny, IsNil)
 }

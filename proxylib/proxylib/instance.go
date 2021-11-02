@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package proxylib
 
@@ -20,8 +9,8 @@ import (
 
 	"github.com/cilium/cilium/pkg/lock"
 
-	"github.com/cilium/proxy/go/cilium/api"
-	envoy_api_v2 "github.com/cilium/proxy/go/envoy/api/v2"
+	cilium "github.com/cilium/proxy/go/cilium/api"
+	envoy_service_disacovery "github.com/cilium/proxy/go/envoy/service/discovery/v3"
 	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
 )
@@ -38,7 +27,7 @@ type AccessLogger interface {
 }
 
 type PolicyUpdater interface {
-	PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) error
+	PolicyUpdate(resp *envoy_service_disacovery.DiscoveryResponse) error
 }
 
 type Instance struct {
@@ -130,7 +119,7 @@ func CloseInstance(id uint64) uint64 {
 	if ins, ok := instances[id]; ok {
 		ins.openCount--
 		count = ins.openCount
-		if count <= 0 {
+		if count == 0 {
 			if ins.policyClient != nil {
 				ins.policyClient.Close()
 			}
@@ -165,7 +154,7 @@ func (ins *Instance) PolicyMatches(endpointPolicyName string, ingress bool, port
 }
 
 // Update the PolicyMap from a protobuf. PolicyMap is only ever changed if the whole update is successful.
-func (ins *Instance) PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) (err error) {
+func (ins *Instance) PolicyUpdate(resp *envoy_service_disacovery.DiscoveryResponse) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			var ok bool
@@ -195,7 +184,7 @@ func (ins *Instance) PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) (err err
 		oldPolicy, found := oldMap[policyName]
 		if found {
 			// Check if the new policy is the same as the old one
-			if proto.Equal(&config, &oldPolicy.protobuf) {
+			if proto.Equal(&config, oldPolicy.protobuf) {
 				log.Debugf("NPDS: New policy for %s is equal to the old one, no need to change", policyName)
 				newMap[policyName] = oldPolicy
 				continue
@@ -207,7 +196,7 @@ func (ins *Instance) PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) (err err
 			return fmt.Errorf("NPDS: Policy validation error for %s: %v", policyName, err)
 		}
 
-		// Create new PolicyInstance, may panic
+		// Create new PolicyInstance, may panic. Takes ownership of 'config'.
 		newMap[policyName] = newPolicyInstance(&config)
 	}
 

@@ -1,22 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package proxylib
 
 import (
 	"github.com/cilium/proxy/go/cilium/api"
-	envoy_api_v2 "github.com/cilium/proxy/go/envoy/api/v2"
+	envoy_service_disacovery "github.com/cilium/proxy/go/envoy/service/discovery/v3"
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes/any"
 	log "github.com/sirupsen/logrus"
@@ -30,7 +19,7 @@ func (ins *Instance) CheckInsertPolicyText(c *C, version string, policies []stri
 
 func (ins *Instance) InsertPolicyText(version string, policies []string, expectFail string) error {
 	typeUrl := "type.googleapis.com/cilium.NetworkPolicy"
-	var resources []*any.Any
+	resources := make([]*any.Any, 0, len(policies))
 
 	for _, policy := range policies {
 		pb := new(cilium.NetworkPolicy)
@@ -56,7 +45,7 @@ func (ins *Instance) InsertPolicyText(version string, policies []string, expectF
 		})
 	}
 
-	msg := &envoy_api_v2.DiscoveryResponse{
+	msg := &envoy_service_disacovery.DiscoveryResponse{
 		VersionInfo: version,
 		Canary:      false,
 		TypeUrl:     typeUrl,

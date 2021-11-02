@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package eventqueue
@@ -212,4 +202,28 @@ func (s *EventQueueSuite) TestEnqueueTwice(c *C) {
 
 	q.Stop()
 	q.WaitToBeDrained()
+}
+
+func (s *EventQueueSuite) TestForcefulDraining(c *C) {
+	// This will test enqueuing an event when the queue was never run and was
+	// stopped and drained. The behavior expected is that the event will
+	// successfully be enqueued (channel returned is non-nil & no error), and
+	// after the event is stopped and drained, the returned channel will
+	// unblock.
+
+	q := NewEventQueue()
+
+	ev := NewEvent(&DummyEvent{})
+	res, err := q.Enqueue(ev)
+	c.Assert(res, Not(IsNil))
+	c.Assert(err, IsNil)
+
+	q.Stop()
+	q.WaitToBeDrained()
+
+	select {
+	case <-res:
+	case <-time.After(5 * time.Second):
+		c.Fail()
+	}
 }

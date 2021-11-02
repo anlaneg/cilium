@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package xds
@@ -98,7 +88,7 @@ var IsCompleted Checker = &IsCompletedChecker{
 func (s *AckSuite) TestUpsertSingleNode(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -140,7 +130,7 @@ func (s *AckSuite) TestUpsertSingleNode(c *C) {
 func (s *AckSuite) TestUseCurrent(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -192,7 +182,7 @@ func (s *AckSuite) TestUseCurrent(c *C) {
 func (s *AckSuite) TestUpsertMultipleNodes(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -237,7 +227,7 @@ func (s *AckSuite) TestUpsertMultipleNodes(c *C) {
 func (s *AckSuite) TestUpsertMoreRecentVersion(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -261,7 +251,7 @@ func (s *AckSuite) TestUpsertMoreRecentVersion(c *C) {
 func (s *AckSuite) TestUpsertMoreRecentVersionNack(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -288,7 +278,7 @@ func (s *AckSuite) TestUpsertMoreRecentVersionNack(c *C) {
 func (s *AckSuite) TestDeleteSingleNode(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -322,7 +312,7 @@ func (s *AckSuite) TestDeleteSingleNode(c *C) {
 func (s *AckSuite) TestDeleteMultipleNodes(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	// Empty cache is the version 1
@@ -356,7 +346,7 @@ func (s *AckSuite) TestDeleteMultipleNodes(c *C) {
 func (s *AckSuite) TestRevertInsert(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	cache := NewCache()
@@ -393,7 +383,7 @@ func (s *AckSuite) TestRevertInsert(c *C) {
 func (s *AckSuite) TestRevertUpdate(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	cache := NewCache()
@@ -437,7 +427,7 @@ func (s *AckSuite) TestRevertUpdate(c *C) {
 func (s *AckSuite) TestRevertDelete(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typeURL := "type.googleapis.com/envoy.api.v2.DummyConfiguration"
+	typeURL := "type.googleapis.com/envoy.config.v3.DummyConfiguration"
 	wg := completion.NewWaitGroup(ctx)
 
 	cache := NewCache()

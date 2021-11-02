@@ -34,7 +34,7 @@ Key                                                          Value
 ``cilium/state/nodes/v1/<cluster>/<node>``                   node.Node_
 ============================================================ ====================
 
-.. _node.Node: https://godoc.org/github.com/cilium/cilium/pkg/node#Node
+.. _node.Node: https://pkg.go.dev/github.com/cilium/cilium/pkg/node/types#Node
 
 All node keys are attached to a lease owned by the agent of the respective
 node.
@@ -49,10 +49,10 @@ required to implement multi cluster service discovery.
 ============================================================= ====================
 Key                                                           Value
 ============================================================= ====================
-``cilium/state/services/v1/<cluster>/<namespace>/<service>``  service.ClusterService_
+``cilium/state/services/v1/<cluster>/<namespace>/<service>``  serviceStore.ClusterService_
 ============================================================= ====================
 
-.. _service.ClusterService: https://godoc.org/github.com/cilium/cilium/pkg/service#ClusterService
+.. _serviceStore.ClusterService: https://pkg.go.dev/github.com/cilium/cilium/pkg/service/store#ClusterService
 
 Identities
 ----------
@@ -68,8 +68,8 @@ Key                                                           Value
 ``cilium/state/identities/v1/value/<labels>/<node>``          identity.NumericIdentity_
 ============================================================= ====================
 
-.. _identity.NumericIdentity: https://godoc.org/github.com/cilium/cilium/pkg/identity#NumericIdentity
-.. _labels.LabelArray: https://godoc.org/github.com/cilium/cilium/pkg/labels#LabelArray
+.. _identity.NumericIdentity: https://pkg.go.dev/github.com/cilium/cilium/pkg/identity#NumericIdentity
+.. _labels.LabelArray: https://pkg.go.dev/github.com/cilium/cilium/pkg/labels#LabelArray
 
 Endpoints
 ---------
@@ -84,7 +84,7 @@ Key                                                           Value
 ``cilium/state/ip/v1/<cluster>/<ip>``                         identity.IPIdentityPair_
 ============================================================= ====================
 
-.. _identity.IPIdentityPair: https://godoc.org/github.com/cilium/cilium/pkg/identity#IPIdentityPair
+.. _identity.IPIdentityPair: https://pkg.go.dev/github.com/cilium/cilium/pkg/identity#IPIdentityPair
 
 CiliumNetworkPolicyNodeStatus
 -----------------------------
@@ -101,7 +101,21 @@ Key                                                              Value
 ``cilium/state/cnpstatuses/v2/<UID>/<namespace>/<name>/<node>``  k8s.CNPNSWithMeta_
 ================================================================ ====================
 
-.. _k8s.CNPNSWithMeta: https://godoc.org/github.com/cilium/cilium/pkg/k8s#CNPNSWithMeta
+.. _k8s.CNPNSWithMeta: https://pkg.go.dev/github.com/cilium/cilium/pkg/k8s#CNPNSWithMeta
+
+Heartbeat
+---------
+
+The heartbeat key is periodically updated by the operator to contain the
+current time and date. It is used by agents to validate that kvstore updates
+can be received.
+
+====================== ======================
+Key                    Value
+====================== ======================
+``cilium/.heartbeat``  Current time and date
+====================== ======================
+
 
 Leases
 ======
@@ -114,7 +128,27 @@ store in the event that an agent dies on a particular and never reappears.
 
 The lease lifetime is set to 15 minutes. The exact expiration behavior is
 dependent on the kvstore implementation but the expiration typically occurs
-after double the lifetime
+after double the lease lifetime.
+
+In addition to regular entry leases, all locks in the key-value store are
+owned by a particular agent running on the node with a separate "lock lease"
+attached. The lock lease has a default lifetime of 25 seconds.
+
+=============================================================== ================ ========================================
+Key                                                             Lease Timeout    Default expiry
+=============================================================== ================ ========================================
+``cilium/.initlock/<random>/<lease-ID>``                        LockLeaseTTL_    25 seconds
+``cilium/.heartbeat``                                           KVstoreLeaseTTL  15 minutes
+``cilium/state/cnpstatuses/v2/<UID>/<namespace>/<name>/<node>`` KVstoreLeaseTTL_ 15 minutes
+``cilium/state/identities/v1/id/<identity>``                    None             Garbage collected by ``cilium-operator``
+``cilium/state/identities/v1/value/<labels>/<node>``            KVstoreLeaseTTL_ 15 minutes
+``cilium/state/ip/v1/<cluster>/<ip>``                           KVstoreLeaseTTL_ 15 minutes
+``cilium/state/nodes/v1/<cluster>/<node>``                      KVstoreLeaseTTL_ 15 minutes
+``cilium/state/services/v1/<cluster>/<namespace>/<service>``    KVstoreLeaseTTL_ 15 minutes
+=============================================================== ================ ========================================
+
+.. _LockLeaseTTL: https://pkg.go.dev/github.com/cilium/cilium/pkg/defaults?tab=doc#LockLeaseTTL
+.. _KVstoreLeaseTTL: https://pkg.go.dev/github.com/cilium/cilium/pkg/defaults?tab=doc#KVstoreLeaseTTL
 
 Debugging
 =========
@@ -124,7 +158,7 @@ The contents stored in the kvstore can be queued and manipulate using the
 
 Example:
 
-.. code:: bash
+.. code-block:: shell-session
 
-        $ cilium kvstore get --recursive cilium/state/nodes/
-        cilium/state/nodes/v1/default/runtime1 => {"Name":"runtime1","IPAddresses":[{"AddressType":"InternalIP","IP":"10.0.2.15"}],"IPv4AllocCIDR":{"IP":"10.11.0.0","Mask":"//8AAA=="},"IPv6AllocCIDR":{"IP":"f00d::a0f:0:0:0","Mask":"//////////////////8AAA=="},"IPv4HealthIP":"","IPv6HealthIP":""}
+    $ cilium kvstore get --recursive cilium/state/nodes/
+    cilium/state/nodes/v1/default/runtime1 => {"Name":"runtime1","IPAddresses":[{"AddressType":"InternalIP","IP":"10.0.2.15"}],"IPv4AllocCIDR":{"IP":"10.11.0.0","Mask":"//8AAA=="},"IPv6AllocCIDR":{"IP":"f00d::a0f:0:0:0","Mask":"//////////////////8AAA=="},"IPv4HealthIP":"","IPv6HealthIP":""}

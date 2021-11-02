@@ -1,81 +1,42 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package main
 
 import (
-	"flag"
 	"fmt"
 	"time"
 
+	operatorOption "github.com/cilium/cilium/operator/option"
+	"github.com/cilium/cilium/pkg/defaults"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/option"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"k8s.io/klog"
-
-	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/option"
 )
 
 func init() {
-	cobra.OnInitialize(initConfig)
+	cobra.OnInitialize(option.InitConfig(rootCmd, "Cilium-Operator", "cilium-operators"))
 
 	flags := rootCmd.Flags()
 
-	flags.Int(option.AWSClientBurstDeprecated, defaults.IPAMAPIBurst, "")
-	flags.MarkDeprecated(option.AWSClientBurstDeprecated, fmt.Sprintf("please use --%s", option.IPAMAPIBurst))
+	flags.Int(operatorOption.IPAMAPIBurst, defaults.IPAMAPIBurst, "Upper burst limit when accessing external APIs")
+	option.BindEnv(operatorOption.IPAMAPIBurst)
 
-	flags.Int(option.IPAMAPIBurst, defaults.IPAMAPIBurst, "Upper burst limit when accessing external APIs")
-	option.BindEnv(option.IPAMAPIBurst)
+	flags.Float64(operatorOption.IPAMAPIQPSLimit, defaults.IPAMAPIQPSLimit, "Queries per second limit when accessing external IPAM APIs")
+	option.BindEnv(operatorOption.IPAMAPIQPSLimit)
 
-	flags.Float64(option.AWSClientQPSLimitDeprecated, defaults.IPAMAPIQPSLimit, "")
-	flags.MarkDeprecated(option.AWSClientQPSLimitDeprecated, fmt.Sprintf("please use --%s", option.IPAMAPIQPSLimit))
+	flags.StringToStringVar(&operatorOption.Config.IPAMSubnetsTags, operatorOption.IPAMSubnetsTags, operatorOption.Config.IPAMSubnetsTags,
+		"Subnets tags in the form of k1=v1,k2=v2 (multiple k/v pairs can also be passed by repeating the CLI flag")
+	option.BindEnv(operatorOption.IPAMSubnetsTags)
 
-	flags.Float64(option.IPAMAPIQPSLimit, defaults.IPAMAPIQPSLimit, "Queries per second limit when accessing external IPAM APIs")
-	option.BindEnv(option.IPAMAPIQPSLimit)
+	flags.StringSliceVar(&operatorOption.Config.IPAMSubnetsIDs, operatorOption.IPAMSubnetsIDs, operatorOption.Config.IPAMSubnetsIDs,
+		"Subnets IDs (separated by commas)")
+	option.BindEnv(operatorOption.IPAMSubnetsIDs)
 
-	flags.String(option.AzureSubscriptionID, "", "Subscription ID to access Azure API")
-	option.BindEnvWithLegacyEnvFallback(option.AzureSubscriptionID, "AZURE_SUBSCRIPTION_ID")
-
-	flags.String(option.AzureResourceGroup, "", "Resource group to use for Azure IPAM")
-	option.BindEnvWithLegacyEnvFallback(option.AzureResourceGroup, "AZURE_RESOURCE_GROUP")
-
-	flags.Var(option.NewNamedMapOptions(option.AwsInstanceLimitMapping, &option.Config.AwsInstanceLimitMapping, nil),
-		option.AwsInstanceLimitMapping,
-		`Add or overwrite mappings of AWS instance limit in the form of `+
-			`{"AWS instance type": "Maximum Network Interfaces","IPv4 Addresses `+
-			`per Interface","IPv6 Addresses per Interface"}. cli example: `+
-			`--aws-instance-limit-mapping=a1.medium=2,4,4 `+
-			`--aws-instance-limit-mapping=a2.somecustomflavor=4,5,6 `+
-			`configmap example: {"a1.medium": "2,4,4", "a2.somecustomflavor": "4,5,6"}`)
-	option.BindEnv(option.AwsInstanceLimitMapping)
-
-	flags.Bool(option.AwsReleaseExcessIps, false, "Enable releasing excess free IP addresses from AWS ENI.")
-	option.BindEnv(option.AwsReleaseExcessIps)
-
-	flags.Var(option.NewNamedMapOptions(option.ENITags, &option.Config.ENITags, nil),
-		option.ENITags, "ENI tags in the form of k1=v1 (multiple k/v pairs can be passed by repeating the CLI flag)")
-	option.BindEnv(option.ENITags)
-
-	flags.Int64(option.ENIParallelWorkersDeprecated, defaults.ParallelAllocWorkers, "")
-	flags.MarkDeprecated(option.ENIParallelWorkersDeprecated, fmt.Sprintf("please use --%s", option.ParallelAllocWorkers))
-	option.BindEnv(option.ENIParallelWorkersDeprecated)
-
-	flags.Int64(option.ParallelAllocWorkers, defaults.ParallelAllocWorkers, "Maximum number of parallel IPAM workers")
-	option.BindEnv(option.ParallelAllocWorkers)
-
-	flags.Bool(option.UpdateEC2AdapterLimitViaAPI, false, "Use the EC2 API to update the instance type to adapter limits")
-	option.BindEnv(option.UpdateEC2AdapterLimitViaAPI)
+	flags.Int64(operatorOption.ParallelAllocWorkers, defaults.ParallelAllocWorkers, "Maximum number of parallel IPAM workers")
+	option.BindEnv(operatorOption.ParallelAllocWorkers)
 
 	// Clustermesh dedicated flags
 	flags.Int(option.ClusterIDName, 0, "Unique identifier of the cluster")
@@ -91,21 +52,18 @@ func init() {
 	flags.String(option.ConfigDir, "", `Configuration directory that contains a file for each option`)
 	option.BindEnv(option.ConfigDir)
 
-	// Deprecated, remove in 1.9
-	flags.Bool(option.EnableCCNPNodeStatusGC, true, "Enable CiliumClusterwideNetworkPolicy Status garbage collection for nodes which have been removed from the cluster")
-	option.BindEnv(option.EnableCCNPNodeStatusGC)
-	flags.MarkDeprecated(option.EnableCCNPNodeStatusGC, fmt.Sprintf("Please use %s=0 to disable CCNP Status GC", option.CNPNodeStatusGCInterval))
+	flags.Bool(option.DisableCNPStatusUpdates, false, `Do not send CNP NodeStatus updates to the Kubernetes api-server (recommended to run with "cnp-node-status-gc-interval=0" in cilium-operator)`)
+	flags.MarkHidden(option.DisableCNPStatusUpdates)
+	option.BindEnv(option.DisableCNPStatusUpdates)
 
-	// Deprecated, remove in 1.9
-	flags.Bool(option.EnableCNPNodeStatusGC, true, "Enable CiliumNetworkPolicy Status garbage collection for nodes which have been removed from the cluster")
-	option.BindEnv(option.EnableCNPNodeStatusGC)
-	flags.MarkDeprecated(option.EnableCNPNodeStatusGC, fmt.Sprintf("Please use %s=0 to disable CNP Status GC", option.CNPNodeStatusGCInterval))
+	flags.Bool(option.K8sEventHandover, defaults.K8sEventHandover, "Enable k8s event handover to kvstore for improved scalability")
+	option.BindEnv(option.K8sEventHandover)
 
-	flags.Duration(option.CNPNodeStatusGCInterval, 2*time.Minute, "GC interval for nodes which have been removed from the cluster in CiliumNetworkPolicy Status")
-	option.BindEnv(option.CNPNodeStatusGCInterval)
+	flags.Duration(operatorOption.CNPNodeStatusGCInterval, 2*time.Minute, "GC interval for nodes which have been removed from the cluster in CiliumNetworkPolicy Status")
+	option.BindEnv(operatorOption.CNPNodeStatusGCInterval)
 
-	flags.Duration(option.CNPStatusUpdateInterval, 1*time.Second, "Interval between CNP status updates sent to the k8s-apiserver per-CNP")
-	option.BindEnv(option.CNPStatusUpdateInterval)
+	flags.Duration(operatorOption.CNPStatusUpdateInterval, 1*time.Second, "Interval between CNP status updates sent to the k8s-apiserver per-CNP")
+	option.BindEnv(operatorOption.CNPStatusUpdateInterval)
 
 	flags.BoolP(option.DebugArg, "D", false, "Enable debugging mode")
 	option.BindEnv(option.DebugArg)
@@ -118,28 +76,141 @@ func init() {
 	flags.MarkHidden(option.DisableCiliumEndpointCRDName)
 	option.BindEnv(option.DisableCiliumEndpointCRDName)
 
-	// Deprecated, remove in 1.9
-	flags.Bool(option.EnableCEPGC, true, "Enable CiliumEndpoint garbage collector")
-	option.BindEnv(option.EnableCEPGC)
-	flags.MarkDeprecated(option.EnableCEPGC, fmt.Sprintf("Please use %s=0 to disable CEP GC", option.EndpointGCInterval))
+	flags.Duration(operatorOption.EndpointGCInterval, operatorOption.EndpointGCIntervalDefault, "GC interval for cilium endpoints")
+	option.BindEnv(operatorOption.EndpointGCInterval)
 
-	flags.Duration(option.EndpointGCInterval, 30*time.Minute, "GC interval for cilium endpoints")
-	option.BindEnv(option.EndpointGCInterval)
+	flags.Bool(operatorOption.EnableMetrics, false, "Enable Prometheus metrics")
+	option.BindEnv(operatorOption.EnableMetrics)
 
-	flags.Bool(option.EnableMetrics, false, "Enable Prometheus metrics")
-	option.BindEnv(option.EnableMetrics)
+	// Logging flags
+	flags.StringSlice(option.LogDriver, []string{}, "Logging endpoints to use for example syslog")
+	option.BindEnv(option.LogDriver)
 
-	flags.String(option.IPAM, option.IPAMHostScopeLegacy, "Backend to use for IPAM")
+	flags.Var(option.NewNamedMapOptions(option.LogOpt, &option.Config.LogOpt, nil),
+		option.LogOpt, `Log driver options for cilium-operator, `+
+			`configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local4"}`)
+	option.BindEnv(option.LogOpt)
+
+	var defaultIPAM string
+	switch binaryName {
+	case "cilium-operator":
+		defaultIPAM = ipamOption.IPAMClusterPool
+	case "cilium-operator-aws":
+		defaultIPAM = ipamOption.IPAMENI
+	case "cilium-operator-azure":
+		defaultIPAM = ipamOption.IPAMAzure
+	case "cilium-operator-alibabacloud":
+		defaultIPAM = ipamOption.IPAMAlibabaCloud
+	case "cilium-operator-generic":
+		defaultIPAM = ipamOption.IPAMClusterPool
+	}
+
+	flags.String(option.IPAM, defaultIPAM, "Backend to use for IPAM")
 	option.BindEnv(option.IPAM)
 
-	flags.Duration(option.IdentityHeartbeatTimeout, 15*time.Minute, "Timeout after which identity expires on lack of heartbeat")
-	option.BindEnv(option.IdentityHeartbeatTimeout)
+	rootCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		ipamFlag := cmd.Flag(option.IPAM)
+		if !ipamFlag.Changed {
+			return nil
+		}
+		ipamFlagValue := ipamFlag.Value.String()
+
+		recommendInstead := func() string {
+			switch ipamFlagValue {
+			case ipamOption.IPAMENI:
+				return "cilium-operator-aws"
+			case ipamOption.IPAMAzure:
+				return "cilium-operator-azure"
+			case ipamOption.IPAMAlibabaCloud:
+				return "cilium-operator-alibabacloud"
+			case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool, ipamOption.IPAMCRD:
+				return "cilium-operator-generic"
+			default:
+				return ""
+			}
+		}
+
+		unsupporterErr := func() error {
+			errMsg := fmt.Sprintf("%s doesn't support --%s=%s", binaryName, option.IPAM, ipamFlagValue)
+			if recommendation := recommendInstead(); recommendation != "" {
+				return fmt.Errorf("%s (use %s)", errMsg, recommendation)
+			}
+			return fmt.Errorf(errMsg)
+		}
+
+		switch binaryName {
+		case "cilium-operator":
+			if recommendation := recommendInstead(); recommendation != "" {
+				log.Warnf("cilium-operator will be deprecated in the future, for --%s=%s use %s as it has lower memory footprint", option.IPAM, ipamFlagValue, recommendation)
+			}
+		case "cilium-operator-aws":
+			if ipamFlagValue != ipamOption.IPAMENI {
+				return unsupporterErr()
+			}
+		case "cilium-operator-azure":
+			if ipamFlagValue != ipamOption.IPAMAzure {
+				return unsupporterErr()
+			}
+		case "cilium-operator-alibabacloud":
+			if ipamFlagValue != ipamOption.IPAMAlibabaCloud {
+				return unsupporterErr()
+			}
+		case "cilium-operator-generic":
+			switch ipamFlagValue {
+			case ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
+				return unsupporterErr()
+			}
+		}
+
+		return nil
+	}
+
+	flags.Duration(operatorOption.IdentityHeartbeatTimeout, 2*defaults.KVstoreLeaseTTL, "Timeout after which identity expires on lack of heartbeat")
+	option.BindEnv(operatorOption.IdentityHeartbeatTimeout)
+
+	flags.Bool(option.EnableIPv4Name, defaults.EnableIPv4, "Enable IPv4 support")
+	option.BindEnv(option.EnableIPv4Name)
+
+	flags.String(operatorOption.ClusterPoolIPv4CIDR, "",
+		fmt.Sprintf("IPv4 CIDR Range for Pods in cluster. Requires '%s=%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool,
+			option.EnableIPv4Name, "true"))
+	option.BindEnv(operatorOption.ClusterPoolIPv4CIDR)
+
+	flags.Int(operatorOption.NodeCIDRMaskSizeIPv4, 24,
+		fmt.Sprintf("Mask size for each IPv4 podCIDR per node. Requires '%s=%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool,
+			option.EnableIPv4Name, "true"))
+	option.BindEnv(operatorOption.NodeCIDRMaskSizeIPv4)
+
+	flags.Bool(option.EnableIPv6Name, defaults.EnableIPv6, "Enable IPv6 support")
+	option.BindEnv(option.EnableIPv6Name)
+
+	flags.String(operatorOption.ClusterPoolIPv6CIDR, "",
+		fmt.Sprintf("IPv6 CIDR Range for Pods in cluster. Requires '%s=%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool,
+			option.EnableIPv6Name, "true"))
+	option.BindEnv(operatorOption.ClusterPoolIPv6CIDR)
+
+	flags.Int(operatorOption.NodeCIDRMaskSizeIPv6, 112,
+		fmt.Sprintf("Mask size for each IPv6 podCIDR per node. Requires '%s=%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool,
+			option.EnableIPv6Name, "true"))
+	option.BindEnv(operatorOption.NodeCIDRMaskSizeIPv6)
 
 	flags.String(option.IdentityAllocationMode, option.IdentityAllocationModeKVstore, "Method to use for identity allocation")
 	option.BindEnv(option.IdentityAllocationMode)
 
-	flags.Duration(option.IdentityGCInterval, defaults.KVstoreLeaseTTL, "GC interval for security identities")
-	option.BindEnv(option.IdentityGCInterval)
+	flags.Duration(operatorOption.IdentityGCInterval, defaults.KVstoreLeaseTTL, "GC interval for security identities")
+	option.BindEnv(operatorOption.IdentityGCInterval)
+
+	flags.Duration(operatorOption.IdentityGCRateInterval, time.Minute,
+		"Interval used for rate limiting the GC of security identities")
+	option.BindEnv(operatorOption.IdentityGCRateInterval)
+
+	flags.Int(operatorOption.IdentityGCRateLimit, 2500,
+		fmt.Sprintf("Maximum number of security identities that will be deleted within the %s", operatorOption.IdentityGCRateInterval))
+	option.BindEnv(operatorOption.IdentityGCRateLimit)
 
 	flags.String(option.KVStore, "", "Key-value store type")
 	option.BindEnv(option.KVStore)
@@ -154,8 +225,11 @@ func init() {
 	flags.Float32(option.K8sClientQPSLimit, defaults.K8sClientQPSLimit, "Queries per second limit for the K8s client")
 	flags.Int(option.K8sClientBurst, defaults.K8sClientBurst, "Burst value allowed for the K8s client")
 
-	flags.Bool(option.K8sEnableEndpointSlice, defaults.K8sEnableEndpointSlice, fmt.Sprintf("Enables k8s EndpointSlice feature into Cilium-Operator if the k8s cluster supports it"))
+	flags.Bool(option.K8sEnableEndpointSlice, defaults.K8sEnableEndpointSlice, "Enables k8s EndpointSlice feature into Cilium-Operator if the k8s cluster supports it")
 	option.BindEnv(option.K8sEnableEndpointSlice)
+
+	flags.Bool(option.K8sEnableAPIDiscovery, defaults.K8sEnableAPIDiscovery, "Enable discovery of Kubernetes API groups and resources with the discovery API")
+	option.BindEnv(option.K8sEnableAPIDiscovery)
 
 	flags.String(option.K8sNamespaceName, "", "Name of the Kubernetes namespace in which Cilium Operator is deployed in")
 	option.BindEnv(option.K8sNamespaceName)
@@ -163,47 +237,66 @@ func init() {
 	flags.String(option.K8sKubeConfigPath, "", "Absolute path of the kubernetes kubeconfig file")
 	option.BindEnv(option.K8sKubeConfigPath)
 
-	flags.Duration(option.NodesGCInterval, 2*time.Minute, "GC interval for nodes store in the kvstore")
-	option.BindEnv(option.NodesGCInterval)
+	flags.Duration(operatorOption.NodesGCInterval, 2*time.Minute, "GC interval for nodes store in the kvstore")
+	option.BindEnv(operatorOption.NodesGCInterval)
 
-	flags.String(option.OperatorPrometheusServeAddr, ":6942", "Address to serve Prometheus metrics")
-	option.BindEnv(option.OperatorPrometheusServeAddr)
+	flags.String(operatorOption.OperatorPrometheusServeAddr, operatorOption.PrometheusServeAddr, "Address to serve Prometheus metrics")
+	option.BindEnv(operatorOption.OperatorPrometheusServeAddr)
 
-	flags.String(option.OperatorAPIServeAddr, "localhost:9234", "Address to serve API requests")
-	option.BindEnv(option.OperatorAPIServeAddr)
+	flags.String(operatorOption.OperatorAPIServeAddr, "localhost:9234", "Address to serve API requests")
+	option.BindEnv(operatorOption.OperatorAPIServeAddr)
 
-	flags.Bool(option.SyncK8sServices, true, "Synchronize Kubernetes services to kvstore")
-	option.BindEnv(option.SyncK8sServices)
+	flags.Bool(operatorOption.PProf, false, "Enable pprof debugging endpoint")
+	option.BindEnv(operatorOption.PProf)
 
-	flags.Bool(option.SyncK8sNodes, true, "Synchronize Kubernetes nodes to kvstore and perform CNP GC")
-	option.BindEnv(option.SyncK8sNodes)
+	flags.Int(operatorOption.PProfPort, 6061, "Port that the pprof listens on")
+	option.BindEnv(operatorOption.PProfPort)
 
-	flags.Int(option.UnmanagedPodWatcherInterval, 15, "Interval to check for unmanaged kube-dns pods (0 to disable)")
-	option.BindEnv(option.UnmanagedPodWatcherInterval)
+	flags.Bool(operatorOption.SyncK8sServices, true, "Synchronize Kubernetes services to kvstore")
+	option.BindEnv(operatorOption.SyncK8sServices)
+
+	flags.Bool(operatorOption.SyncK8sNodes, true, "Synchronize Kubernetes nodes to kvstore and perform CNP GC")
+	option.BindEnv(operatorOption.SyncK8sNodes)
+
+	flags.Int(operatorOption.UnmanagedPodWatcherInterval, 15, "Interval to check for unmanaged kube-dns pods (0 to disable)")
+	option.BindEnv(operatorOption.UnmanagedPodWatcherInterval)
 
 	flags.Bool(option.Version, false, "Print version information")
 	option.BindEnv(option.Version)
-
-	// Deprecated, remove in 1.9
-	flags.Uint16Var(&apiServerPort, "api-server-port", 9234, "Port on which the operator should serve API requests")
-	flags.MarkDeprecated("api-server-port", fmt.Sprintf("Please use %s instead", option.OperatorAPIServeAddr))
-
-	// Deprecated, remove in 1.9
-	flags.StringVar(&metricsAddress, "metrics-address", ":6942", "Address to serve Prometheus metrics")
-	flags.MarkDeprecated("metrics-address", fmt.Sprintf("Please use %s instead", option.OperatorPrometheusServeAddr))
 
 	flags.String(option.CMDRef, "", "Path to cmdref output directory")
 	flags.MarkHidden(option.CMDRef)
 	option.BindEnv(option.CMDRef)
 
+	flags.Int(option.GopsPort, defaults.GopsPortOperator, "Port for gops server to listen on")
+	option.BindEnv(option.GopsPort)
+
+	flags.Duration(option.K8sHeartbeatTimeout, 30*time.Second, "Configures the timeout for api-server heartbeat, set to 0 to disable")
+	option.BindEnv(option.K8sHeartbeatTimeout)
+
+	flags.Duration(operatorOption.LeaderElectionLeaseDuration, 15*time.Second,
+		"Duration that non-leader operator candidates will wait before forcing to acquire leadership")
+	option.BindEnv(operatorOption.LeaderElectionLeaseDuration)
+
+	flags.Duration(operatorOption.LeaderElectionRenewDeadline, 10*time.Second,
+		"Duration that current acting master will retry refreshing leadership in before giving up the lock")
+	option.BindEnv(operatorOption.LeaderElectionRenewDeadline)
+
+	flags.Duration(operatorOption.LeaderElectionRetryPeriod, 2*time.Second,
+		"Duration that LeaderElector clients should wait between retries of the actions")
+	option.BindEnv(operatorOption.LeaderElectionRetryPeriod)
+
+	flags.String(option.K8sServiceProxyName, "", "Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)")
+	option.BindEnv(option.K8sServiceProxyName)
+
+	flags.Bool(option.BGPAnnounceLBIP, false, "Announces service IPs of type LoadBalancer via BGP")
+	option.BindEnv(option.BGPAnnounceLBIP)
+
+	flags.String(option.BGPConfigPath, "/var/lib/cilium/bgp/config.yaml", "Path to file containing the BGP configuration")
+	option.BindEnv(option.BGPConfigPath)
+
+	flags.Bool(option.SkipCRDCreation, false, "When true, Kubernetes Custom Resource Definitions will not be created")
+	option.BindEnv(option.SkipCRDCreation)
+
 	viper.BindPFlags(flags)
-
-	// Make sure that klog logging variables are initialized so that we can
-	// update them from this file.
-	klog.InitFlags(nil)
-
-	// Make sure klog (used by the client-go dependency) logs to stderr, as it
-	// will try to log to directories that may not exist in the cilium-operator
-	// container (/tmp) and cause the cilium-operator to exit.
-	flag.Set("logtostderr", "true")
 }

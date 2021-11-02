@@ -1,25 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package datapath
 
 import (
+	"context"
 	"net"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/mtu"
-	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 )
 
 // LocalNodeConfiguration represents the configuration of the local node
@@ -116,21 +106,31 @@ type LocalNodeConfiguration struct {
 // calling node.IsLocal().
 type NodeHandler interface {
 	// NodeAdd is called when a node is discovered for the first time.
-	NodeAdd(newNode node.Node) error
+	NodeAdd(newNode nodeTypes.Node) error
 
 	// NodeUpdate is called when a node definition changes. Both the old
 	// and new node definition is provided. NodeUpdate() is never called
 	// before NodeAdd() is called for a particular node.
-	NodeUpdate(oldNode, newNode node.Node) error
+	NodeUpdate(oldNode, newNode nodeTypes.Node) error
 
 	// NodeDelete is called after a node has been deleted
-	NodeDelete(node node.Node) error
+	NodeDelete(node nodeTypes.Node) error
 
 	// NodeValidateImplementation is called to validate the implementation
 	// of the node in the datapath
-	NodeValidateImplementation(node node.Node) error
+	NodeValidateImplementation(node nodeTypes.Node) error
 
 	// NodeConfigurationChanged is called when the local node configuration
 	// has changed
 	NodeConfigurationChanged(config LocalNodeConfiguration) error
+
+	// NodeNeighDiscoveryEnabled returns whether node neighbor discovery is enabled
+	NodeNeighDiscoveryEnabled() bool
+
+	// NodeNeighborRefresh is called to refresh node neighbor table
+	NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node)
+
+	// NodeCleanNeighbors cleans all neighbor entries for the direct routing device
+	// and the encrypt interface.
+	NodeCleanNeighbors()
 }

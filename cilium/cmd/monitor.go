@@ -1,21 +1,11 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2020 Authors of Cilium
 
 package cmd
 
 import (
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -56,6 +46,7 @@ programs attached to endpoints and devices. This includes:
 	}
 	printer    = format.NewMonitorFormatter(format.INFO)
 	socketPath = ""
+	verbosity  = []bool{}
 )
 
 func init() {
@@ -65,8 +56,10 @@ func init() {
 	monitorCmd.Flags().Var(&printer.FromSource, "from", "Filter by source endpoint id")
 	monitorCmd.Flags().Var(&printer.ToDst, "to", "Filter by destination endpoint id")
 	monitorCmd.Flags().Var(&printer.Related, "related-to", "Filter by either source or destination endpoint id")
-	monitorCmd.Flags().BoolVarP(&printer.Verbose, "verbose", "v", false, "Enable verbose output")
+	monitorCmd.Flags().BoolSliceVarP(&verbosity, "verbose", "v", nil, "Enable verbose output (-v, -vv)")
+	monitorCmd.Flags().Lookup("verbose").NoOptDefVal = "false"
 	monitorCmd.Flags().BoolVarP(&printer.JSONOutput, "json", "j", false, "Enable json output. Shadows -v flag")
+	monitorCmd.Flags().BoolVarP(&printer.Numeric, "numeric", "n", false, "Display all security identities as numeric values")
 	monitorCmd.Flags().StringVar(&socketPath, "monitor-socket", "", "Configure monitor socket path")
 	viper.BindEnv("monitor-socket", "CILIUM_MONITOR_SOCK")
 	viper.BindPFlags(monitorCmd.Flags())
@@ -75,10 +68,15 @@ func init() {
 func setVerbosity() {
 	if printer.JSONOutput {
 		printer.Verbosity = format.JSON
-	} else if printer.Verbose {
-		printer.Verbosity = format.DEBUG
 	} else {
-		printer.Verbosity = format.INFO
+		switch len(verbosity) {
+		case 1:
+			printer.Verbosity = format.DEBUG
+		case 2:
+			printer.Verbosity = format.VERBOSE
+		default:
+			printer.Verbosity = format.INFO
+		}
 	}
 }
 
@@ -172,7 +170,6 @@ func getMonitorParser(conn net.Conn, version listener.Version) (parser eventPars
 }
 
 func endpointsExist(endpoints format.Uint16Flags, existingEndpoints []*models.Endpoint) bool {
-
 	endpointsFound := format.Uint16Flags{}
 	for _, ep := range existingEndpoints {
 		if endpoints.Has(uint16(ep.ID)) {
@@ -188,11 +185,7 @@ func endpointsExist(endpoints format.Uint16Flags, existingEndpoints []*models.En
 		}
 	}
 
-	if len(endpointsFound) == 0 {
-		return false
-	}
-
-	return true
+	return len(endpointsFound) > 0
 }
 
 func validateEndpointsFilters() {
@@ -263,7 +256,7 @@ func runMonitor(args []string) {
 		case err == nil:
 		// no-op
 
-		case err == io.EOF, err == io.ErrUnexpectedEOF:
+		case err == io.EOF, errors.Is(err, io.ErrUnexpectedEOF):
 			log.WithError(err).Warn("connection closed")
 			continue
 

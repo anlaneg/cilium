@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package mtu
+
+import (
+	"net"
+)
 
 const (
 	// MaxMTU is the highest MTU that can be used for devices and routes
@@ -58,6 +51,17 @@ const (
 	// size for GCM(AES*) in RFC4106. Users may input other lengths via
 	// key secrets.
 	EncryptionDefaultAuthKeyLength = 16
+
+	// WireguardOverhead is an approximation for the overhead of wireguard
+	// encapsulation.
+	//
+	// https://github.com/torvalds/linux/blob/v5.12/drivers/net/wireguard/device.c#L262:
+	//      MESSAGE_MINIMUM_LENGTH:    32B
+	//      Outer IPv4 or IPv6 header: 40B
+	//      Outer UDP header:           8B
+	//                                 ---
+	//      Total extra bytes:         80B
+	WireguardOverhead = 80
 )
 
 // Configuration is an MTU configuration as returned by NewConfiguration
@@ -77,26 +81,37 @@ type Configuration struct {
 	// Similar to StandardMTU, this is a singleton for the process.
 	tunnelMTU int
 
-	// encryptMTU is the MTU used for configurations a encryption route
-	// without tunneling. If tunneling is enabled the tunnelMTU is used
-	// which will include additional encryption overhead if needed.
-	encryptMTU int
+	// preEncrypMTU is the MTU used for configurations of a encryption route.
+	// If tunneling is enabled the tunnelMTU is used which will include
+	// additional encryption overhead if needed.
+	preEncryptMTU int
 
-	encapEnabled   bool
-	encryptEnabled bool
+	// postEncryptMTU is the MTU used for configurations of a encryption
+	// route _after_ encryption tags have been addded. These will be used
+	// in the encryption routing table. The MTU accounts for the tunnel
+	// overhead, if any, but assumes packets are already encrypted.
+	postEncryptMTU int
+
+	encapEnabled     bool
+	encryptEnabled   bool
+	wireguardEnabled bool
 }
 
 // NewConfiguration returns a new MTU configuration. The MTU can be manually
 // specified, otherwise it will be automatically detected. if encapEnabled is
 // true, the MTU is adjusted to account for encapsulation overhead for all
 // routes involved in node to node communication.
-func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, mtu int) Configuration {
+func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, wireguardEnabled bool, mtu int, mtuDetectIP net.IP) Configuration {
 	encryptOverhead := 0
 
 	if mtu == 0 {
 		var err error
 
-		mtu, err = autoDetect()
+		if mtuDetectIP != nil {
+			mtu, err = getMTUFromIf(mtuDetectIP)
+		} else {
+			mtu, err = autoDetect()
+		}
 		if err != nil {
 			log.WithError(err).Warning("Unable to automatically detect MTU")
 			mtu = EthernetMTU
@@ -110,11 +125,13 @@ func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, m
 	}
 
 	conf := Configuration{
-		standardMTU:    mtu,
-		tunnelMTU:      mtu - (TunnelOverhead + encryptOverhead),
-		encryptMTU:     mtu - encryptOverhead,
-		encapEnabled:   encapEnabled,
-		encryptEnabled: encryptEnabled,
+		standardMTU:      mtu,
+		tunnelMTU:        mtu - (TunnelOverhead + encryptOverhead),
+		postEncryptMTU:   mtu - TunnelOverhead,
+		preEncryptMTU:    mtu - encryptOverhead,
+		encapEnabled:     encapEnabled,
+		encryptEnabled:   encryptEnabled,
+		wireguardEnabled: wireguardEnabled,
 	}
 
 	if conf.tunnelMTU < 0 {
@@ -124,28 +141,37 @@ func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, m
 	return conf
 }
 
-// GetRouteTunnelMTU return the MTU to be used on the encryption routing
-// table. This is the MTU without encryption overhead.
-func (c *Configuration) GetRouteTunnelMTU() int {
-	if c.encryptEnabled && c.encapEnabled {
-		return EthernetMTU - TunnelOverhead
+// GetRoutePostEncryptMTU return the MTU to be used on the encryption routing
+// table. This is the MTU without encryption overhead and in the tunnel
+// case accounts for the tunnel overhead.
+func (c *Configuration) GetRoutePostEncryptMTU() int {
+	if c.encapEnabled {
+		if c.postEncryptMTU == 0 {
+			return EthernetMTU - TunnelOverhead
+		}
+		return c.postEncryptMTU
+
 	}
-	return c.GetRouteMTU()
+	return c.GetDeviceMTU()
 }
 
 // GetRouteMTU returns the MTU to be used on the network. When running in
 // tunneling mode and/or with encryption enabled, this will have tunnel and
 // encryption overhead accounted for.
 func (c *Configuration) GetRouteMTU() int {
+	if c.wireguardEnabled {
+		return c.GetDeviceMTU() - WireguardOverhead
+	}
+
 	if !c.encapEnabled && !c.encryptEnabled {
 		return c.GetDeviceMTU()
 	}
 
 	if c.encryptEnabled && !c.encapEnabled {
-		if c.encryptMTU == 0 {
+		if c.preEncryptMTU == 0 {
 			return EthernetMTU - EncryptionIPsecOverhead
 		}
-		return c.encryptMTU
+		return c.preEncryptMTU
 	}
 
 	if c.tunnelMTU == 0 {

@@ -1,17 +1,7 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2020 Authors of Cilium
 
+//go:build privileged_tests
 // +build privileged_tests
 
 package policymap
@@ -48,7 +38,7 @@ var (
 )
 
 func runTests(m *testing.M) (int, error) {
-	bpf.CheckOrMountFS("", false)
+	bpf.CheckOrMountFS("")
 	if err := bpf.ConfigureResourceLimits(); err != nil {
 		return 1, fmt.Errorf("Failed to configure rlimit")
 	}
@@ -73,6 +63,10 @@ func TestMain(m *testing.M) {
 		log.Fatal(err)
 	}
 	os.Exit(exitCode)
+}
+
+func (pm *PolicyMapTestSuite) TearDownTest(c *C) {
+	testMap.DeleteAll()
 }
 
 func (pm *PolicyMapTestSuite) TestPolicyMapDumpToSlice(c *C) {
@@ -108,4 +102,32 @@ func (pm *PolicyMapTestSuite) TestDeleteNonexistentKey(c *C) {
 	var errno unix.Errno
 	c.Assert(errors.As(err, &errno), Equals, true)
 	c.Assert(errno, Equals, unix.ENOENT)
+}
+
+func (pm *PolicyMapTestSuite) TestDenyPolicyMapDumpToSlice(c *C) {
+	c.Assert(testMap, NotNil)
+
+	fooEntry := newKey(1, 1, 1, 1)
+	fooValue := newEntry(0, NewPolicyEntryFlag(&PolicyEntryFlagParam{IsDeny: true}))
+	err := testMap.DenyKey(fooEntry)
+	c.Assert(err, IsNil)
+
+	dump, err := testMap.DumpToSlice()
+	c.Assert(err, IsNil)
+	c.Assert(len(dump), Equals, 1)
+
+	// FIXME: It's weird that AllowKey() does the implicit byteorder
+	//        conversion above. But not really a bug, so work around it.
+	fooEntry = fooEntry.ToNetwork()
+	c.Assert(dump[0].Key, checker.DeepEquals, fooEntry)
+	c.Assert(dump[0].PolicyEntry, checker.DeepEquals, fooValue)
+
+	// Special case: deny-all entry
+	barEntry := newKey(0, 0, 0, 0)
+	err = testMap.DenyKey(barEntry)
+	c.Assert(err, IsNil)
+
+	dump, err = testMap.DumpToSlice()
+	c.Assert(err, IsNil)
+	c.Assert(len(dump), Equals, 2)
 }

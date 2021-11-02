@@ -1,17 +1,7 @@
-// Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2020 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -54,16 +44,20 @@ func (ds *PolicyTestSuite) TestGetCIDRPrefixes(c *C) {
 			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 			Ingress: []api.IngressRule{
 				{
-					FromCIDR: []api.CIDR{
-						"192.0.2.0/24",
+					IngressCommonRule: api.IngressCommonRule{
+						FromCIDR: []api.CIDR{
+							"192.0.2.0/24",
+						},
 					},
 				},
 			},
 			Egress: []api.EgressRule{
 				{
-					ToCIDR: []api.CIDR{
-						"192.0.2.0/24",
-						"192.0.3.0/24",
+					EgressCommonRule: api.EgressCommonRule{
+						ToCIDR: []api.CIDR{
+							"192.0.2.0/24",
+							"192.0.3.0/24",
+						},
 					},
 				},
 			},
@@ -90,20 +84,24 @@ func (ds *PolicyTestSuite) TestGetCIDRPrefixes(c *C) {
 			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 			Ingress: []api.IngressRule{
 				{
-					FromCIDRSet: []api.CIDRRule{
-						{
-							Cidr:        "192.0.2.0/24",
-							ExceptCIDRs: []api.CIDR{"192.0.2.128/25"},
+					IngressCommonRule: api.IngressCommonRule{
+						FromCIDRSet: []api.CIDRRule{
+							{
+								Cidr:        "192.0.2.0/24",
+								ExceptCIDRs: []api.CIDR{"192.0.2.128/25"},
+							},
 						},
 					},
 				},
 			},
 			Egress: []api.EgressRule{
 				{
-					ToCIDRSet: []api.CIDRRule{
-						{
-							Cidr:        "10.0.0.0/8",
-							ExceptCIDRs: []api.CIDR{"10.0.0.0/16"},
+					EgressCommonRule: api.EgressCommonRule{
+						ToCIDRSet: []api.CIDRRule{
+							{
+								Cidr:        "10.0.0.0/8",
+								ExceptCIDRs: []api.CIDR{"10.0.0.0/16"},
+							},
 						},
 					},
 				},

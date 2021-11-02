@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package fqdn
 
@@ -25,6 +14,9 @@ import (
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+
+	"github.com/sirupsen/logrus"
 )
 
 // cacheEntry objects hold data passed in via DNSCache.Update, nominally
@@ -168,6 +160,12 @@ func NewDNSCacheWithLimit(minTTL int, limit int) *DNSCache {
 	return c
 }
 
+func (c *DNSCache) DisableCleanupTrack() {
+	c.Lock()
+	defer c.Unlock()
+	c.cleanup = nil
+}
+
 // Update inserts a new entry into the cache.
 // After insertion cache entries for name are expired and redundant entries
 // evicted. This is O(number of new IPs) for eviction, and O(number of IPs for
@@ -221,6 +219,9 @@ func (c *DNSCache) updateWithEntry(entry *cacheEntry) bool {
 // delete the entry from the policy when it expires.
 // Need to be called with a write lock
 func (c *DNSCache) addNameToCleanup(entry *cacheEntry) {
+	if c.cleanup == nil {
+		return
+	}
 	if c.lastCleanup.IsZero() || entry.ExpirationTime.Before(c.lastCleanup) {
 		c.lastCleanup = entry.ExpirationTime
 	}
@@ -257,13 +258,12 @@ func (c *DNSCache) cleanupExpiredEntries(expires time.Time) (affectedNames []str
 		if entries, exists := c.forward[name]; exists {
 			affectedNames = append(affectedNames, name)
 			for ip, entry := range c.removeExpired(entries, c.lastCleanup, time.Time{}) {
-				affectedNames = append(affectedNames, name)
 				removed[ip] = append(removed[ip], entry)
 			}
 		}
 	}
 
-	return KeepUniqueNames(affectedNames), removed
+	return affectedNames, removed
 }
 
 // cleanupOverLimitEntries returns the names that has reached the max number of
@@ -574,15 +574,6 @@ func (c *DNSCache) ForceExpire(expireLookupsBefore time.Time, nameMatch *regexp.
 	return KeepUniqueNames(namesAffected)
 }
 
-// ForceExpireByNames is the same function as ForceExpire but uses the exact
-// names to delete the entries.
-func (c *DNSCache) ForceExpireByNames(expireLookupsBefore time.Time, names []string) (namesAffected []string) {
-	c.Lock()
-	defer c.Unlock()
-
-	return c.forceExpireByNames(expireLookupsBefore, names)
-}
-
 func (c *DNSCache) forceExpireByNames(expireLookupsBefore time.Time, names []string) (namesAffected []string) {
 	for _, name := range names {
 		entries, exists := c.forward[name]
@@ -737,30 +728,74 @@ func NewDNSZombieMappings(max int) *DNSZombieMappings {
 
 // Upsert enqueues the ip -> qname as a possible deletion
 // updatedExisting is true when an earlier enqueue existed and was updated
-func (zombies *DNSZombieMappings) Upsert(now time.Time, ipStr string, qname ...string) (updatedExisting bool) {
+// If an existing entry is updated, the later expiryTime is applied to the existing entry.
+func (zombies *DNSZombieMappings) Upsert(expiryTime time.Time, ipStr string, qname ...string) (updatedExisting bool) {
 	zombies.Lock()
 	defer zombies.Unlock()
 
 	zombie, updatedExisting := zombies.deletes[ipStr]
 	if !updatedExisting {
-		zombie = &DNSZombieMapping{}
+		zombie = &DNSZombieMapping{
+			Names:           KeepUniqueNames(qname),
+			IP:              net.ParseIP(ipStr),
+			DeletePendingAt: expiryTime,
+		}
 		zombies.deletes[ipStr] = zombie
+	} else {
+		zombie.Names = KeepUniqueNames(append(zombie.Names, qname...))
+		// Keep the latest expiry time
+		if expiryTime.After(zombie.DeletePendingAt) {
+			zombie.DeletePendingAt = expiryTime
+		}
 	}
-
-	zombie.Names = KeepUniqueNames(append(zombie.Names, qname...))
-	zombie.IP = net.ParseIP(ipStr)
-	zombie.DeletePendingAt = now
-
 	return updatedExisting
 }
 
-// isAlive returns true when a CT GC has completed without marking this zombie
-// alive. This occurs when:
-//  DeletePendingAt <= lastCTGCUpdate (i.e. CT GC has not happened yet), or
-//  AliveAt is not 0 and AliveAt >= lastCTGCUpdate (i.e it is marked by the CT GC run)
-func (zombies *DNSZombieMappings) isAlive(zombie *DNSZombieMapping) bool {
-	// These are opposite because there is no BeforeEquals with time.Time :/
+// isConnectionAlive returns true if 'zombie' is considered alive.
+// Zombie is considered dead if both of these conditions apply:
+// 1. CT GC has run after the DNS Expiry time and grace period (lastCTGCUpdate > DeletePendingAt + GracePeriod), and
+// 2. The CG GC run did not mark the Zombie alive (lastCTGCUpdate > AliveAt)
+// otherwise the Zombie is alive.
+func (zombies *DNSZombieMappings) isConnectionAlive(zombie *DNSZombieMapping) bool {
 	return !(zombies.lastCTGCUpdate.After(zombie.DeletePendingAt) && zombies.lastCTGCUpdate.After(zombie.AliveAt))
+}
+
+// getAliveNames returns all the names that are alive
+//   a name is alive if at least one of the IPs that resolve to it is alive
+func (zombies *DNSZombieMappings) getAliveNames() map[string]struct{} {
+	var aliveNames map[string]struct{} = map[string]struct{}{}
+	for _, z := range zombies.deletes {
+		if zombies.isConnectionAlive(z) {
+			for _, name := range z.Names {
+				aliveNames[name] = struct{}{}
+			}
+		}
+	}
+
+	return aliveNames
+}
+
+// isZombieAlive returns true if zombie is alive
+//
+// A zombie is alive if its connection is alive or if one of its names is
+// alive. The function takes an argument that contains the aliveNames (can be
+// obtained via getAliveNames())
+func (zombies *DNSZombieMappings) isZombieAlive(zombie *DNSZombieMapping, aliveNames map[string]struct{}) bool {
+	if zombies.isConnectionAlive(zombie) {
+		return true
+	}
+
+	for _, name := range zombie.Names {
+		if _, ok := aliveNames[name]; ok {
+			log.WithFields(logrus.Fields{
+				logfields.DNSName: name,
+				logfields.IPAddr:  zombie.IP,
+			}).Debug("FQDN has multiple IPs. One IP has an expired TTL.")
+			return true
+		}
+	}
+
+	return false
 }
 
 // GC returns alive and dead DNSZombieMapping entries. This removes dead
@@ -775,9 +810,11 @@ func (zombies *DNSZombieMappings) GC() (alive, dead []*DNSZombieMapping) {
 	zombies.Lock()
 	defer zombies.Unlock()
 
+	var aliveNames map[string]struct{} = zombies.getAliveNames()
+
 	// Collect zombies we can delete
 	for _, zombie := range zombies.deletes {
-		if zombies.isAlive(zombie) {
+		if zombies.isZombieAlive(zombie, aliveNames) {
 			alive = append(alive, zombie.DeepCopy())
 		} else {
 			// Emit the actual object here since we will no longer update it
@@ -827,11 +864,13 @@ func (zombies *DNSZombieMappings) MarkAlive(now time.Time, ip net.IP) {
 // collector and the CT GC. This would occur when a DNS zombie that has not
 // been visited by the CT GC run is seen by a concurrent DNS garbage collector
 // run, and then deleted.
-// When now is later than an alive timestamp, set with MarkAlive, the zombie is
+// When 'ctGCStart' is later than an alive timestamp, set with MarkAlive, the zombie is
 // no longer alive. Thus, this call acts as a gating function for what data is
 // returned by GC.
-func (zombies *DNSZombieMappings) SetCTGCTime(now time.Time) {
-	zombies.lastCTGCUpdate = now
+func (zombies *DNSZombieMappings) SetCTGCTime(ctGCStart time.Time) {
+	zombies.Lock()
+	zombies.lastCTGCUpdate = ctGCStart
+	zombies.Unlock()
 }
 
 // ForceExpire is used to clear zombies irrespective of their alive status.
@@ -918,13 +957,22 @@ func (zombies *DNSZombieMappings) ForceExpireByNameIP(expireLookupsBefore time.T
 	return nil
 }
 
-// DumpAlive returns copies of still-alive zombies
-func (zombies *DNSZombieMappings) DumpAlive() (alive []*DNSZombieMapping) {
+// CIDRMatcherFunc is a function passed to (*DNSZombieMappings).DumpAlive,
+// called on each zombie to determine whether it should be returned.
+type CIDRMatcherFunc func(ip net.IP) bool
+
+// DumpAlive returns copies of still-alive zombies matching cidrMatcher.
+func (zombies *DNSZombieMappings) DumpAlive(cidrMatcher CIDRMatcherFunc) (alive []*DNSZombieMapping) {
 	zombies.Lock()
 	defer zombies.Unlock()
 
+	aliveNames := zombies.getAliveNames()
 	for _, zombie := range zombies.deletes {
-		if !zombies.isAlive(zombie) {
+		if !zombies.isZombieAlive(zombie, aliveNames) {
+			continue
+		}
+		// only proceed if zombie is alive and the IP matches the CIDR selector
+		if cidrMatcher != nil && !cidrMatcher(zombie.IP) {
 			continue
 		}
 
@@ -937,6 +985,9 @@ func (zombies *DNSZombieMappings) DumpAlive() (alive []*DNSZombieMapping) {
 // MarshalJSON encodes DNSZombieMappings into JSON. Only the DNSZombieMapping
 // entries are encoded.
 func (zombies *DNSZombieMappings) MarshalJSON() ([]byte, error) {
+	zombies.Lock()
+	defer zombies.Unlock()
+
 	// This hackery avoids exposing DNSZombieMappings.deletes as a public field.
 	// The JSON package cannot serialize private fields so we have to make a
 	// proxy type here.

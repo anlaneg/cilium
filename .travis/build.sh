@@ -2,12 +2,10 @@
 
 set -o errexit
 
-llc --version
-
 export CFLAGS="-Werror"
-export CGO_CFLAGS="-DCI_BUILD"
 
-make unit-tests
+make -j 2
+make integration-tests
 
 $HOME/gopath/bin/goveralls -coverprofile=coverage-all.out -service=travis-ci || true
 

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package launch
 
@@ -21,18 +10,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/endpoint"
-	"github.com/cilium/cilium/pkg/endpoint/connector"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
-	healthDefaults "github.com/cilium/cilium/pkg/health/defaults"
 	"github.com/cilium/cilium/pkg/health/probe"
 	"github.com/cilium/cilium/pkg/identity/cache"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/launcher"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -40,13 +31,13 @@ import (
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/pidfile"
 	"github.com/cilium/cilium/pkg/sysctl"
 
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -198,7 +189,7 @@ func CleanupEndpoint() {
 	// deletion of associated interfaces immediately (e.g. when a process in the
 	// namespace marked for deletion has not yet been terminated).
 	switch option.Config.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		for _, iface := range []string{legacyVethName, vethName} {
 			scopedLog := log.WithField(logfields.Veth, iface)
 			if link, err := netlink.LinkByName(iface); err == nil {
@@ -210,7 +201,7 @@ func CleanupEndpoint() {
 				scopedLog.WithError(err).Debug("Didn't find existing device")
 			}
 		}
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		if err := netns.RemoveIfFromNetNSWithNameIfBothExist(netNSName, epIfaceName); err != nil {
 			log.WithError(err).WithField(logfields.Ipvlan, epIfaceName).
 				Info("Couldn't delete cilium-health ipvlan slave device")
@@ -228,12 +219,20 @@ type EndpointAdder interface {
 }
 
 // LaunchAsEndpoint launches the cilium-health agent in a nested network
-// namespace and attaches it to Cilium the same way as any other endpoint,
-// but with special reserved labels.
+// namespace and attaches it to Cilium the same way as any other endpoint, but
+// with special reserved labels.
 //
 // CleanupEndpoint() must be called before calling LaunchAsEndpoint() to ensure
 // cleanup of prior cilium-health endpoint instances.
-func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node.Node, mtuConfig mtu.Configuration, epMgr EndpointAdder, proxy endpoint.EndpointProxy, allocator cache.IdentityAllocator) (*Client, error) {
+func LaunchAsEndpoint(baseCtx context.Context,
+	owner regeneration.Owner,
+	n *nodeTypes.Node,
+	mtuConfig mtu.Configuration,
+	epMgr EndpointAdder,
+	proxy endpoint.EndpointProxy,
+	allocator cache.IdentityAllocator,
+	routingConfig routingConfigurer) (*Client, error) {
+
 	var (
 		cmd  = launcher.Launcher{}
 		info = &models.EndpointChangeRequest{
@@ -257,9 +256,11 @@ func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node
 	}
 
 	if option.Config.EnableEndpointRoutes {
+		disabled := false
 		dpConfig := &models.EndpointDatapathConfiguration{
 			InstallEndpointRoute: true,
 			RequireEgressProg:    true,
+			RequireRouting:       &disabled,
 		}
 		info.DatapathConfiguration = dpConfig
 	}
@@ -270,7 +271,7 @@ func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node
 	}
 
 	switch option.Config.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		_, epLink, err := connector.SetupVethWithNames(vethName, epIfaceName, mtuConfig.GetDeviceMTU(), info)
 		if err != nil {
 			return nil, fmt.Errorf("Error while creating veth: %s", err)
@@ -280,8 +281,8 @@ func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node
 			return nil, fmt.Errorf("failed to move device %q to health namespace: %s", epIfaceName, err)
 		}
 
-	case option.DatapathModeIpvlan:
-		mapFD, err := connector.CreateAndSetupIpvlanSlave("",
+	case datapathOption.DatapathModeIpvlan:
+		m, err := connector.CreateAndSetupIpvlanSlave("",
 			epIfaceName, netNS, mtuConfig.GetDeviceMTU(),
 			option.Config.Ipvlan.MasterDeviceIndex,
 			option.Config.Ipvlan.OperationMode, info)
@@ -292,8 +293,7 @@ func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node
 			}
 			return nil, err
 		}
-		defer unix.Close(mapFD)
-
+		defer m.Close()
 	}
 
 	if err = configureHealthInterface(netNS, epIfaceName, ip4Address, ip6Address); err != nil {
@@ -329,10 +329,21 @@ func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node
 		}
 	}
 
-	// Set up the endpoint routes
-	hostAddressing := node.GetNodeAddressing()
-	if err = configureHealthRouting(info.ContainerName, epIfaceName, hostAddressing, mtuConfig); err != nil {
+	// Set up the endpoint routes.
+	if err = configureHealthRouting(info.ContainerName, epIfaceName, node.GetNodeAddressing(), mtuConfig); err != nil {
 		return nil, fmt.Errorf("Error while configuring routes: %s", err)
+	}
+
+	if option.Config.IPAM == ipamOption.IPAMENI || option.Config.IPAM == ipamOption.IPAMAlibabaCloud {
+		// ENI mode does not support IPv6.
+		if err := routingConfig.Configure(
+			healthIP,
+			mtuConfig.GetDeviceMTU(),
+			option.Config.EgressMultiHomeIPRuleCompat,
+		); err != nil {
+
+			return nil, fmt.Errorf("Error while configuring health endpoint rules and routes: %s", err)
+		}
 	}
 
 	if err := epMgr.AddEndpoint(owner, ep, "Create cilium-health endpoint"); err != nil {
@@ -349,8 +360,12 @@ func LaunchAsEndpoint(baseCtx context.Context, owner regeneration.Owner, n *node
 	ep.UpdateLabels(ctx, labels.LabelHealth, nil, true)
 
 	// Initialize the health client to talk to this instance.
-	client := &Client{host: "http://" + net.JoinHostPort(healthIP.String(), fmt.Sprintf("%d", healthDefaults.HTTPPathPort))}
+	client := &Client{host: "http://" + net.JoinHostPort(healthIP.String(), strconv.Itoa(option.Config.ClusterHealthPort))}
 	metrics.SubprocessStart.WithLabelValues(ciliumHealth).Inc()
 
 	return client, nil
+}
+
+type routingConfigurer interface {
+	Configure(ip net.IP, mtu int, compat bool) error
 }

@@ -1,29 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 
 	"github.com/spf13/cobra"
 )
@@ -49,7 +38,7 @@ func init() {
 
 func dumpSha(sha string) {
 	headerPath := filepath.Join(templatesDir, sha, common.CHeaderFileName)
-	text, err := ioutil.ReadFile(headerPath)
+	text, err := os.ReadFile(headerPath)
 	if err != nil {
 		Fatalf("Failed to describe SHA: %s", err)
 	}

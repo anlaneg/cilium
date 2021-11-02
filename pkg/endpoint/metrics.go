@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package endpoint
 
@@ -20,7 +9,6 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	loaderMetrics "github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/spanstat"
 
@@ -74,11 +62,11 @@ func (s *regenerationStatistics) SendMetrics() {
 
 	if !s.success {
 		// Endpoint regeneration failed, increase on failed metrics
-		metrics.EndpointRegenerationCount.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
+		metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
 		return
 	}
 
-	metrics.EndpointRegenerationCount.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
+	metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
 
 	sendMetrics(s, metrics.EndpointRegenerationTimeStats)
 }
@@ -94,7 +82,7 @@ func (s *regenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
 		"proxyWaitForAck":        &s.proxyWaitForAck,
 		"mapSync":                &s.mapSync,
 		"prepareBuild":           &s.prepareBuild,
-		logfields.BuildDuration:  &s.totalTime,
+		"total":                  &s.totalTime,
 	}
 	for k, v := range s.datapathRealization.GetMap() {
 		result[k] = v
@@ -121,7 +109,7 @@ func (ps *policyRegenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
 		"waitingForIdentityCache":    &ps.waitingForIdentityCache,
 		"waitingForPolicyRepository": &ps.waitingForPolicyRepository,
 		"policyCalculation":          &ps.policyCalculation,
-		logfields.BuildDuration:      &ps.totalTime,
+		"total":                      &ps.totalTime,
 	}
 }
 
@@ -156,10 +144,13 @@ func (epPolicyMaps *endpointPolicyStatusMap) Remove(endpointID uint16) {
 // UpdateMetrics update the policy enforcement metrics statistics for the endpoints.
 func (epPolicyMaps *endpointPolicyStatusMap) UpdateMetrics() {
 	policyStatus := map[models.EndpointPolicyEnabled]float64{
-		models.EndpointPolicyEnabledNone:    0,
-		models.EndpointPolicyEnabledEgress:  0,
-		models.EndpointPolicyEnabledIngress: 0,
-		models.EndpointPolicyEnabledBoth:    0,
+		models.EndpointPolicyEnabledNone:         0,
+		models.EndpointPolicyEnabledEgress:       0,
+		models.EndpointPolicyEnabledIngress:      0,
+		models.EndpointPolicyEnabledBoth:         0,
+		models.EndpointPolicyEnabledAuditEgress:  0,
+		models.EndpointPolicyEnabledAuditIngress: 0,
+		models.EndpointPolicyEnabledAuditBoth:    0,
 	}
 
 	epPolicyMaps.mutex.Lock()

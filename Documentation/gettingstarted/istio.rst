@@ -2,188 +2,102 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 ***************************
 Getting Started Using Istio
 ***************************
 
-This document serves as an introduction to using Cilium to enforce
-security policies in Kubernetes micro-services managed with Istio.  It
-is a detailed walk-through of getting a single-node Cilium + Istio
-environment running on your machine.
+This document serves as an introduction to using Cilium Istio
+integration to enforce security policies in Kubernetes micro-services
+managed with Istio.  It is a detailed walk-through of getting a
+single-node Cilium + Istio environment running on your machine.
+
+Cilium's Istio integration allows Cilium to enforce HTTP L7 network
+policies for mTLS protected traffic within the Istio sidecar
+proxies. Note that Istio can also be deployed without Cilium
+integration by running a standard version of ``istioctl``.  In that
+case Cilium will enforce HTTP L7 policies outside of the Istio sidecar
+proxy, but that will only work if mTLS is not used.
 
 .. include:: gsg_requirements.rst
 
 .. note::
 
-   If running on minikube, you may need to up the memory and CPUs
-   available to the minikube VM from the defaults and/or the
-   instructions provided here for the other GSGs. 5 GB and 4 CPUs
-   should be enough for this GSG (``--memory=5120 --cpus=4``).
+   If running on minikube, make sure it is using a VM, as Istio
+   ingress gateway may not be reachable from your host otherwise. You
+   may also need to up the memory and CPUs available to the minikube
+   VM from the defaults and/or the instructions provided here for the
+   other GSGs. 5 GB and 4 CPUs should be enough for this GSG
+   (``--vm=true --memory=5120 --cpus=4``).
 
-Step 2: Install Istio
-=====================
+.. note::
+
+   If Cilium is deployed with the kube-proxy replacement, you need to set
+   ``bpf-lb-sock-hostns-only: true`` in the deployment yaml
+   directly or via ``hostServices.hostNamespaceOnly`` option with Helm.
+   Without this option, when Cilium does service resolution via
+   socket load balancing, Istio sidecar will be bypassed, resulting
+   in loss of Istio features including encryption and telemetry.
+
+Step 2: Install cilium-istioctl
+===============================
 
 .. note::
 
    Make sure that Cilium is running in your cluster before proceeding.
 
-Install the `Helm client <https://docs.helm.sh/using_helm/#installing-helm>`_.
+Download the `cilium enhanced istioctl version 1.10.4 <https://github.com/cilium/istio/releases/tag/1.10.4>`_:
 
-Download `Istio version 1.4.6
-<https://github.com/istio/istio/releases/tag/1.4.6>`_:
+.. tabs::
+  .. group-tab:: Linux (amd64)
 
-::
+    .. code-block:: shell-session
 
-   export ISTIO_VERSION=1.4.6
-   curl -L https://git.io/getLatestIstio | sh -
-   export ISTIO_HOME=`pwd`/istio-${ISTIO_VERSION}
-   export PATH="$PATH:${ISTIO_HOME}/bin"
+        curl -L https://github.com/cilium/istio/releases/download/1.10.4/cilium-istioctl-1.10.4-linux-amd64.tar.gz | tar xz
+
+  .. group-tab:: Linux (arm64)
+
+    .. code-block:: shell-session
+
+        curl -L https://github.com/cilium/istio/releases/download/1.10.4/cilium-istioctl-1.10.4-linux-arm64.tar.gz | tar xz
+
+  .. group-tab:: OSX
+
+    .. code-block:: shell-session
+
+        curl -L https://github.com/cilium/istio/releases/download/1.10.4/cilium-istioctl-1.10.4-osx.tar.gz | tar xz
+
+  .. group-tab:: OSX (Apple Silicon)
+
+    .. code-block:: shell-session
+
+        curl -L https://github.com/cilium/istio/releases/download/1.10.4/cilium-istioctl-1.10.4-osx-arm64.tar.gz | tar xz
 
 .. note::
 
    Cilium integration, as presented in this Getting Started Guide, has
-   been tested with Kubernetes releases 1.14, 1.15, 1.16, and
-   1.17. Note that this does *not* work with K8s 1.13, and that Istio
-   1.4 has *not* been officially tested with Kubernetes releases 1.16,
-   1.17.
+   been tested with Kubernetes releases 1.17, 1.18, 1.19, 1.20 and 1.21.
+   This Istio release does not work with Kubernetes 1.16 or older.
 
+Deploy the default Istio configuration profile onto Kubernetes:
 
-Create a copy of Istio's Helm charts in order to customize them:
+.. code-block:: shell-session
 
-::
+    ./cilium-istioctl install -y
 
-    cp -r ${ISTIO_HOME}/install/kubernetes/helm/istio istio-cilium-helm
+Add a namespace label to instruct Istio to automatically inject Envoy sidecar proxies when you deploy your application later:
 
-Configure the Cilium-specific variant of Pilot to inject the
-Cilium network policy filters into each Istio sidecar proxy:
+.. code-block:: shell-session
 
-.. parsed-literal::
-
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/cilium-pilot.awk > cilium-pilot.awk
-
-::
-
-    awk -f cilium-pilot.awk \
-          < ${ISTIO_HOME}/install/kubernetes/helm/istio/charts/pilot/templates/deployment.yaml \
-          > istio-cilium-helm/charts/pilot/templates/deployment.yaml
-
-Configure the Istio's sidecar injection to setup the transparent proxy mode
-(TPROXY) as required by Cilium's proxy filters:
-
-::
-
-    sed -e 's,#interceptionMode: .*,interceptionMode: TPROXY,' \
-        < ${ISTIO_HOME}/install/kubernetes/helm/istio/templates/configmap.yaml \
-        > istio-cilium-helm/templates/configmap.yaml
-
-Modify the Istio sidecar injection template to add an init container
-that waits until DNS works and to mount Cilium's API Unix domain
-sockets into each sidecar to allow Cilium's Envoy filters to query the
-Cilium agent for policy configuration:
-
-.. parsed-literal::
-
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/cilium-kube-inject.awk > cilium-kube-inject.awk
-
-::
-
-    awk -f cilium-kube-inject.awk \
-        < ${ISTIO_HOME}/install/kubernetes/helm/istio/files/injection-template.yaml \
-        > istio-cilium-helm/files/injection-template.yaml
-
-Create an Istio deployment spec, which configures the Cilium-specific variant
-of Pilot, and disables unused services:
-
-.. tabs::
-  .. group-tab:: Helm 2
-
-    .. parsed-literal::
-
-     helm template istio-cilium-helm --name istio --namespace istio-system \
-        --set pilot.image=docker.io/cilium/istio_pilot:${ISTIO_VERSION} \
-        --set sidecarInjectorWebhook.enabled=false \
-        --set global.controlPlaneSecurityEnabled=true \
-        --set global.mtls.enabled=true \
-        --set global.proxy.image=docker.io/cilium/istio_proxy:${ISTIO_VERSION} \
-        --set global.proxy_init.image=docker.io/cilium/istio_proxy:${ISTIO_VERSION} \
-        --set ingress.enabled=false \
-        --set egressgateway.enabled=false \
-        > istio-cilium.yaml
-
-  .. group-tab:: Helm 3
-
-    .. parsed-literal::
-
-     helm template istio istio-cilium-helm --namespace istio-system \
-        --set pilot.image=docker.io/cilium/istio_pilot:${ISTIO_VERSION} \
-        --set sidecarInjectorWebhook.enabled=false \
-        --set global.controlPlaneSecurityEnabled=true \
-        --set global.mtls.enabled=true \
-        --set global.proxy.image=docker.io/cilium/istio_proxy:${ISTIO_VERSION} \
-        --set global.proxy_init.image=docker.io/cilium/istio_proxy:${ISTIO_VERSION} \
-        --set ingress.enabled=false \
-        --set egressgateway.enabled=false \
-        > istio-cilium.yaml
-
-Deploy Istio onto Kubernetes:
-
-.. tabs::
-  .. group-tab:: Helm 2
-
-    .. parsed-literal::
-
-     kubectl create namespace istio-system
-     helm template ${ISTIO_HOME}/install/kubernetes/helm/istio-init --name istio-init --namespace istio-system | kubectl apply -f -
-
-  .. group-tab:: Helm 3
-
-    .. parsed-literal::
-
-     kubectl create namespace istio-system
-     helm template istio-init ${ISTIO_HOME}/install/kubernetes/helm/istio-init --namespace istio-system | kubectl apply -f -
-
-Verify that 23 Istio CRDs have been created:
-
-::
-
-    watch "kubectl get crds | grep 'istio.io\|certmanager.k8s.io' | wc -l"
-
-.. note::
-
-   This will get stuck at 0 if Cilium is not running in your cluster!
-
-When the above returns '23', you can stop it with ``CTRL-c`` and deploy Istio:
-
-::
-
-    kubectl apply -f istio-cilium.yaml
-
-Check the progress of the deployment (every service should have an
-``AVAILABLE`` count of ``1``):
-
-::
-
-    watch "kubectl get deployments -n istio-system"
-    NAME                   READY   UP-TO-DATE   AVAILABLE   AGE
-    istio-citadel          1/1     1            1           3m20s
-    istio-galley           1/1     1            1           3m20s
-    istio-ingressgateway   1/1     1            1           3m20s
-    istio-pilot            1/1     1            1           3m20s
-    istio-policy           1/1     1            1           3m20s
-    istio-telemetry        1/1     1            1           3m20s
-    prometheus             1/1     1            1           3m20s
-
-Once all Istio pods are ready, we are ready to install the demo
-application.
+    kubectl label namespace default istio-injection=enabled
 
 Step 3: Deploy the Bookinfo Application V1
 ==========================================
 
 Now that we have Cilium and Istio deployed, we can deploy version
 ``v1`` of the services of the `Istio Bookinfo sample application
-<https://istio.io/docs/examples/bookinfo.html>`_.
+<https://istio.io/docs/examples/bookinfo/>`_.
 
 While the upstream `Istio Bookinfo Application example for Kubernetes
 <https://istio.io/docs/examples/bookinfo/#if-you-are-running-on-kubernetes>`_
@@ -218,16 +132,14 @@ To deploy the application with manual sidecar injection, run:
 .. parsed-literal::
 
     for service in productpage-service productpage-v1 details-v1 reviews-v1; do \\
-          curl -s \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-${service}.yaml | \\
-          istioctl kube-inject -f - | \\
-          kubectl create --validate=false -f - ; done
+          kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-${service}.yaml ; done
 
 Check the progress of the deployment (every service should have an
 ``AVAILABLE`` count of ``1``):
 
-::
+.. code-block:: shell-session
 
-    watch "kubectl get deployments"
+    $ watch "kubectl get deployments"
     NAME             READY   UP-TO-DATE   AVAILABLE   AGE
     details-v1       1/1     1            1           12s
     productpage-v1   1/1     1            1           13s
@@ -249,13 +161,13 @@ Check the progress of the deployment (every service should have an
 
 Create an Istio ingress gateway for the productpage service:
 
-::
+.. parsed-literal::
 
-    kubectl apply -f ${ISTIO_HOME}/samples/bookinfo/networking/bookinfo-gateway.yaml
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-gateway.yaml
 
 To obtain the URL to the frontend productpage service, run:
 
-::
+.. code-block:: shell-session
 
     export GATEWAY_URL=http://$(minikube ip):$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
     export PRODUCTPAGE_URL=${GATEWAY_URL}/productpage
@@ -292,24 +204,21 @@ Apply this route rule:
 
 .. parsed-literal::
 
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/route-rule-reviews-v1.yaml | \\
-          kubectl apply -f -
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/route-rule-reviews-v1.yaml
 
 Deploy the ``ratings v1`` and ``reviews v2`` services:
 
 .. parsed-literal::
 
     for service in ratings-v1 reviews-v2; do \\
-          curl -s \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-${service}.yaml | \\
-          istioctl kube-inject -f - | \\
-          kubectl create --validate=false -f - ; done
+          kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-${service}.yaml ; done
 
 Check the progress of the deployment (every service should have an
 ``AVAILABLE`` count of ``1``):
 
-::
+.. code-block:: shell-session
 
-    watch "kubectl get deployments"
+    $ watch "kubectl get deployments"
     NAME             READY   UP-TO-DATE   AVAILABLE   AGE
     details-v1       1/1     1            1           17m
     productpage-v1   1/1     1            1           17m
@@ -340,10 +249,10 @@ running ``curl`` from within the pod:
    All traffic from ``reviews v1`` to ``ratings`` is blocked, so the
    connection attempt fails after the connection timeout.
 
-::
+.. code-block:: shell-session
 
-    export POD_REVIEWS_V1=`kubectl get pods -l app=reviews,version=v1 -o jsonpath='{.items[0].metadata.name}'`
-    kubectl exec ${POD_REVIEWS_V1} -c istio-proxy -ti -- curl --connect-timeout 5 --fail http://ratings:9080/ratings/0
+    $ export POD_REVIEWS_V1=`kubectl get pods -l app=reviews,version=v1 -o jsonpath='{.items[0].metadata.name}'`
+    $ kubectl exec ${POD_REVIEWS_V1} -c istio-proxy -ti -- curl --connect-timeout 5 --fail http://ratings:9080/ratings/0
     curl: (28) Connection timed out after 5001 milliseconds
     command terminated with exit code 28
 
@@ -360,8 +269,7 @@ Apply this route rule:
 
 .. parsed-literal::
 
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/route-rule-reviews-v1-v2.yaml | \\
-          kubectl apply -f -
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/route-rule-reviews-v1-v2.yaml
 
 Check in your web browser that stars are appearing in the Book Reviews
 roughly 50% of the time.  This may require refreshing the page for a
@@ -385,8 +293,7 @@ Apply this route rule:
 
 .. parsed-literal::
 
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/route-rule-reviews-v2.yaml | \\
-          kubectl apply -f -
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/route-rule-reviews-v2.yaml
 
 Refresh the product page in your web browser several times to verify
 that stars are now appearing in the Book Reviews on every page
@@ -420,14 +327,12 @@ REST API, under the ``/api/v1`` HTTP URI path:
 Check that the full REST API is currently accessible in ``v1`` and
 returns valid JSON data:
 
-::
+.. code-block:: shell-session
 
     for APIPATH in /api/v1/products /api/v1/products/0 /api/v1/products/0/reviews /api/v1/products/0/ratings; do echo ; curl -s -S "${GATEWAY_URL}${APIPATH}" ; echo ; done
 
 
-The output will be similar to this:
-
-::
+The output will be similar to this::
 
     [{"descriptionHtml": "<a href=\"https://en.wikipedia.org/wiki/The_Comedy_of_Errors\">Wikipedia Summary</a>: The Comedy of Errors is one of <b>William Shakespeare's</b> early plays. It is his shortest and one of his most farcical comedies, with a major part of the humour coming from slapstick and mistaken identity, in addition to puns and word play.", "id": 0, "title": "The Comedy of Errors"}]
 
@@ -451,31 +356,25 @@ deploy a Kafka broker:
 
 .. parsed-literal::
 
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/kafka-v1-destrule.yaml | \\
-          kubectl create -f -
-
-.. TODO: Re-enable sidecar injection after we support Kafka with mTLS.
-    $ curl -s \ |SCM_WEB|\/examples/kubernetes-istio/kafka-v1.yaml | \\
-          istioctl kube-inject -f - | \\
-          kubectl create --validate=false -f -
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/kafka-v1-destrule.yaml
 
 .. parsed-literal::
 
-    kubectl create -f \ |SCM_WEB|\/examples/kubernetes-istio/kafka-v1.yaml
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/kafka-v1.yaml
 
 Wait until the ``kafka-v1-0`` pod is ready, i.e. until it has a
 ``READY`` count of ``1/1``:
 
-::
+.. code-block:: shell-session
 
-    watch "kubectl get pods -l app=kafka"
+    $ watch "kubectl get pods -l app=kafka"
     NAME         READY     STATUS    RESTARTS   AGE
     kafka-v1-0   1/1       Running   0          21m
 
 Create the ``authaudit`` Kafka topic, which will be used by
 ``productpage v2``:
 
-::
+.. code-block:: shell-session
 
     kubectl exec kafka-v1-0 -c kafka -- bash -c '/opt/kafka_2.11-0.10.1.0/bin/kafka-topics.sh --zookeeper localhost:2181/kafka --create --topic authaudit --partitions 1 --replication-factor 1'
 
@@ -486,9 +385,7 @@ CiliumNetworkPolicy and delete ``productpage v1``:
 
 .. parsed-literal::
 
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-productpage-v2.yaml | \\
-        istioctl kube-inject -f - | \\
-        kubectl create --validate=false -f -
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/bookinfo-productpage-v2.yaml
 
 .. parsed-literal::
 
@@ -510,16 +407,14 @@ this service:
 
 .. parsed-literal::
 
-    curl -s \ |SCM_WEB|\/examples/kubernetes-istio/authaudit-logger-v1.yaml | \\
-        istioctl kube-inject -f - | \\
-        kubectl apply --validate=false -f -
+    kubectl apply -f \ |SCM_WEB|\/examples/kubernetes-istio/authaudit-logger-v1.yaml
 
 Check the progress of the deployment (every service should have an
 ``AVAILABLE`` count of ``1``):
 
-::
+.. code-block:: shell-session
 
-    watch "kubectl get deployments"
+    $ watch "kubectl get deployments"
     NAME                  READY   UP-TO-DATE   AVAILABLE   AGE
     authaudit-logger-v1   1/1     1            1           41s
     details-v1            1/1     1            1           37m
@@ -531,13 +426,11 @@ Check the progress of the deployment (every service should have an
 Check that the product REST API is still accessible, and that Cilium
 now denies at Layer-7 any access to the reviews and ratings REST API:
 
-::
+.. code-block:: shell-session
 
     for APIPATH in /api/v1/products /api/v1/products/0 /api/v1/products/0/reviews /api/v1/products/0/ratings; do echo ; curl -s -S "${GATEWAY_URL}${APIPATH}" ; echo ; done
 
-The output will be similar to this:
-
-::
+The output will be similar to this::
 
     [{"descriptionHtml": "<a href=\"https://en.wikipedia.org/wiki/The_Comedy_of_Errors\">Wikipedia Summary</a>: The Comedy of Errors is one of <b>William Shakespeare's</b> early plays. It is his shortest and one of his most farcical comedies, with a major part of the humour coming from slapstick and mistaken identity, in addition to puns and word play.", "id": 0, "title": "The Comedy of Errors"}]
 
@@ -558,13 +451,13 @@ this service's log. Note that you need to log in/out using the ``sign
 in``/``sign out`` element on the bookinfo web page. When you do, you
 can observe these kind of audit logs:
 
-::
+.. code-block:: shell-session
 
     export POD_LOGGER_V1=`kubectl get pods -l app=authaudit-logger,version=v1 -o jsonpath='{.items[0].metadata.name}'`
 
-::
+.. code-block:: shell-session
 
-    kubectl logs ${POD_LOGGER_V1} -c authaudit-logger
+    $ kubectl logs ${POD_LOGGER_V1} -c authaudit-logger
     ...
     {"timestamp": "2017-12-04T09:34:24.341668", "remote_addr": "10.15.28.238", "event": "login", "user": "richard"}
     {"timestamp": "2017-12-04T09:34:40.943772", "remote_addr": "10.15.28.238", "event": "logout", "user": "richard"}
@@ -595,9 +488,9 @@ ENTER, e.g. ``test message``)
 
    You can terminate the command with a single ``<CTRL>-d``.
 
-::
+.. code-block:: shell-session
 
-    kubectl exec ${POD_LOGGER_V1} -c authaudit-logger -ti -- /opt/kafka_2.11-0.10.1.0/bin/kafka-console-producer.sh --broker-list=kafka:9092 --topic=authaudit
+    $ kubectl exec ${POD_LOGGER_V1} -c authaudit-logger -ti -- /opt/kafka_2.11-0.10.1.0/bin/kafka-console-producer.sh --broker-list=kafka:9092 --topic=authaudit
     test message
     [2017-12-07 02:13:47,020] ERROR Error when sending message to topic authaudit with key: null, value: 12 bytes with error: (org.apache.kafka.clients.producer.internals.ErrorLoggingCallback)
     org.apache.kafka.common.errors.TopicAuthorizationException: Not authorized to access topics: [authaudit]
@@ -608,16 +501,16 @@ error for any ``Produce`` request from this service.
 Create another topic named ``credit-card-payments``, meant to transmit
 highly-sensitive credit card payment requests:
 
-::
+.. code-block:: shell-session
 
-    kubectl exec kafka-v1-0 -c kafka -- bash -c '/opt/kafka_2.11-0.10.1.0/bin/kafka-topics.sh --zookeeper localhost:2181/kafka --create --topic credit-card-payments --partitions 1 --replication-factor 1'
+    $ kubectl exec kafka-v1-0 -c kafka -- bash -c '/opt/kafka_2.11-0.10.1.0/bin/kafka-topics.sh --zookeeper localhost:2181/kafka --create --topic credit-card-payments --partitions 1 --replication-factor 1'
 
 Check that Cilium prevents the ``authaudit-logger`` service from
 fetching messages from this topic:
 
-::
+.. code-block:: shell-session
 
-    kubectl exec ${POD_LOGGER_V1} -c authaudit-logger -ti -- /opt/kafka_2.11-0.10.1.0/bin/kafka-console-consumer.sh --bootstrap-server=kafka:9092 --topic=credit-card-payments
+    $ kubectl exec ${POD_LOGGER_V1} -c authaudit-logger -ti -- /opt/kafka_2.11-0.10.1.0/bin/kafka-console-consumer.sh --bootstrap-server=kafka:9092 --topic=credit-card-payments
     [2017-12-07 03:08:54,513] WARN Not authorized to read from topic credit-card-payments. (org.apache.kafka.clients.consumer.internals.Fetcher)
     [2017-12-07 03:08:54,517] ERROR Error processing message, terminating consumer process:  (kafka.tools.ConsoleConsumer$)
     org.apache.kafka.common.errors.TopicAuthorizationException: Not authorized to access topics: [credit-card-payments]
@@ -638,7 +531,7 @@ You have now installed Cilium and Istio, deployed a demo app, and
 tested both Cilium's L3-L7 network security policies and Istio's
 service route rules.  To clean up, run:
 
-::
+.. code-block:: shell-session
 
     minikube delete
 

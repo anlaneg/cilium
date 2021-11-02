@@ -1,30 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
-	"bufio"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
 	"github.com/cilium/cilium/pkg/netns"
@@ -36,10 +22,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// configCmd represents the config command
+// cleanupCmd represents the cleanup command
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
-	Short: "Reset the agent state",
+	Short: "Remove system state installed by Cilium at runtime",
+	Long: `Clean up CNI configurations, CNI binaries, attached BPF programs,
+bpffs, tc filters, routes, links and named network namespaces.
+
+Running this command might be necessary to get the worker node back into
+working condition after uninstalling the Cilium agent.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cleanup")
 		runCleanup()
@@ -50,14 +41,12 @@ var (
 	cleanAll bool
 	cleanBPF bool
 	force    bool
-	runPath  string
 )
 
 const (
-	allFlagName     = "all-state"
-	bpfFlagName     = "bpf-state"
-	forceFlagName   = "force"
-	runPathFlagName = "run-path"
+	allFlagName   = "all-state"
+	bpfFlagName   = "bpf-state"
+	forceFlagName = "force"
 
 	cleanCiliumEnvVar = "CLEAN_CILIUM_STATE"
 	cleanBpfEnvVar    = "CLEAN_CILIUM_BPF_STATE"
@@ -71,9 +60,11 @@ const (
 	ciliumNetNSPrefix = "cilium-"
 	hostLinkPrefix    = "lxc"
 	hostLinkLen       = len(hostLinkPrefix + "XXXXX")
-	cniConfigV1       = "/etc/cni/net.d/10-cilium-cni.conf"
-	cniConfigV2       = "/etc/cni/net.d/00-cilium-cni.conf"
-	cniConfigV3       = "/etc/cni/net.d/05-cilium-cni.conf"
+	cniPath           = "/etc/cni/net.d"
+	cniConfigV1       = cniPath + "/10-cilium-cni.conf"
+	cniConfigV2       = cniPath + "/00-cilium-cni.conf"
+	cniConfigV3       = cniPath + "/05-cilium-cni.conf"
+	cniConfigV4       = cniPath + "/05-cilium.conf"
 )
 
 func init() {
@@ -136,40 +127,57 @@ type ciliumCleanup struct {
 	links     map[int]netlink.Link
 	tcFilters map[string][]*netlink.BpfFilter
 	netNSs    []string
+	bpfOnly   bool
 }
 
-func newCiliumCleanup() ciliumCleanup {
-	routes, links, err := findRoutesAndLinks()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-	}
+func newCiliumCleanup(bpfOnly bool) ciliumCleanup {
+	var routes map[int]netlink.Route
+	var ciliumLinks map[int]netlink.Link
+	var netNSs []string
+	var err error
 
-	netNSs, err := netns.ListNamedNetNSWithPrefix(ciliumNetNSPrefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-	}
-
-	tcFilters := map[string][]*netlink.BpfFilter{}
-	if link, err := getNodePortNativeDev(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-	} else if link != nil {
-		if filters, err := getTCFilters(*link); err != nil {
+	if !bpfOnly {
+		routes, ciliumLinks, err = findRoutesAndLinks()
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-		} else if len(filters) != 0 {
-			tcFilters[(*link).Attrs().Name] = filters
+		}
+
+		netNSs, err = netns.ListNamedNetNSWithPrefix(ciliumNetNSPrefix)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		}
 	}
 
-	return ciliumCleanup{routes, links, tcFilters, netNSs}
+	tcFilters := map[string][]*netlink.BpfFilter{}
+	links, err := netlink.LinkList()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+	} else {
+		for _, link := range links {
+			if filters, err := getTCFilters(link); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			} else if len(filters) != 0 {
+				tcFilters[link.Attrs().Name] = filters
+			}
+		}
+	}
+
+	return ciliumCleanup{routes, ciliumLinks, tcFilters, netNSs, bpfOnly}
 }
 
 func (c ciliumCleanup) whatWillBeRemoved() []string {
-	toBeRemoved := []string{
-		fmt.Sprintf("mounted cgroupv2 at %s", defaults.DefaultCgroupRoot),
-		fmt.Sprintf("library code in %s", defaults.LibraryPath),
-		fmt.Sprintf("endpoint state in %s", defaults.RuntimePath),
-		fmt.Sprintf("CNI configuration at %s, %s, %s",
-			cniConfigV1, cniConfigV2, cniConfigV3),
+	toBeRemoved := []string{}
+
+	if len(c.tcFilters) > 0 {
+		section := "tc filters\n"
+		for linkName, f := range c.tcFilters {
+			section += fmt.Sprintf("%s %v\n", linkName, f)
+		}
+		toBeRemoved = append(toBeRemoved, section)
+	}
+
+	if c.bpfOnly {
+		return toBeRemoved
 	}
 
 	if len(c.routes) > 0 {
@@ -188,14 +196,6 @@ func (c ciliumCleanup) whatWillBeRemoved() []string {
 		toBeRemoved = append(toBeRemoved, section)
 	}
 
-	if len(c.tcFilters) > 0 {
-		section := "tc filters\n"
-		for linkName, f := range c.tcFilters {
-			section += fmt.Sprintf("%s %v\n", linkName, f)
-		}
-		toBeRemoved = append(toBeRemoved, section)
-	}
-
 	if len(c.netNSs) > 0 {
 		section := "network namespaces\n"
 		for _, n := range c.netNSs {
@@ -204,6 +204,14 @@ func (c ciliumCleanup) whatWillBeRemoved() []string {
 		toBeRemoved = append(toBeRemoved, section)
 	}
 
+	toBeRemoved = append(toBeRemoved, fmt.Sprintf("mounted cgroupv2 at %s",
+		defaults.DefaultCgroupRoot))
+	toBeRemoved = append(toBeRemoved, fmt.Sprintf("library code in %s",
+		defaults.LibraryPath))
+	toBeRemoved = append(toBeRemoved, fmt.Sprintf("endpoint state in %s",
+		defaults.RuntimePath))
+	toBeRemoved = append(toBeRemoved, fmt.Sprintf("CNI configuration at %s, %s, %s, %s",
+		cniConfigV1, cniConfigV2, cniConfigV3, cniConfigV4))
 	return toBeRemoved
 }
 
@@ -220,14 +228,18 @@ func (c ciliumCleanup) cleanupFuncs() []cleanupFunc {
 		return removeTCFilters(c.tcFilters)
 	}
 
-	return []cleanupFunc{
-		unmountCgroup,
-		removeDirs,
-		removeCNI,
-		cleanupRoutesAndLinks,
-		cleanupNamedNetNSs,
+	funcs := []cleanupFunc{
 		cleanupTCFilters,
 	}
+	if !c.bpfOnly {
+		funcs = append(funcs, cleanupRoutesAndLinks)
+		funcs = append(funcs, cleanupNamedNetNSs)
+		funcs = append(funcs, unmountCgroup)
+		funcs = append(funcs, removeDirs)
+		funcs = append(funcs, revertCNIBackup)
+		funcs = append(funcs, removeCNI)
+	}
+	return funcs
 }
 
 func runCleanup() {
@@ -241,21 +253,20 @@ func runCleanup() {
 	cleanAll = viper.GetBool(allFlagName) || viper.GetBool(cleanCiliumEnvVar)
 	cleanBPF = viper.GetBool(bpfFlagName) || viper.GetBool(cleanBpfEnvVar)
 
-	// if no flags are specifed then clean all
+	// if no flags are specified then clean all
 	if (cleanAll || cleanBPF) == false {
 		cleanAll = true
 	}
 
 	var cleanups []cleanup
 
+	// tc filter cleanup must come before removing files in BPF fs as
+	// otherwise we remove tail call maps and get drops due to 'missed
+	// tail call' in the datapath.
+	cleanups = append(cleanups, newCiliumCleanup(!cleanAll && cleanBPF))
 	if cleanAll || cleanBPF {
 		cleanups = append(cleanups, bpfCleanup{})
 	}
-
-	if cleanAll {
-		cleanups = append(cleanups, newCiliumCleanup())
-	}
-
 	if len(cleanups) == 0 {
 		return
 	}
@@ -292,7 +303,7 @@ func showWhatWillBeRemoved(cleanups []cleanup) {
 		warning += fmt.Sprintf("- %s\n", warn)
 	}
 
-	fmt.Printf(warning)
+	fmt.Print(warning)
 }
 
 func confirmCleanup() bool {
@@ -305,12 +316,32 @@ func confirmCleanup() bool {
 func removeCNI() error {
 	os.Remove(cniConfigV1)
 	os.Remove(cniConfigV2)
+	os.Remove(cniConfigV3)
 
-	err := os.Remove(cniConfigV3)
+	err := os.Remove(cniConfigV4)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// revertCNIBackup removes the ".cilium_bak" suffix from all files in cniPath,
+// reverting them back to their original filenames.
+func revertCNIBackup() error {
+	return filepath.Walk(cniPath,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			if !strings.HasSuffix(path, ".cilium_bak") {
+				return nil
+			}
+			origFileName := strings.TrimSuffix(path, ".cilium_bak")
+			return os.Rename(path, origFileName)
+		})
 }
 
 func unmountCgroup() error {
@@ -348,7 +379,7 @@ func removeDirs() error {
 
 func removeAllMaps() error {
 	mapDir := bpf.MapPrefixPath()
-	maps, err := ioutil.ReadDir(mapDir)
+	maps, err := os.ReadDir(mapDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -454,66 +485,18 @@ func getTCFilters(link netlink.Link) ([]*netlink.BpfFilter, error) {
 		}
 		for _, f := range filters {
 			if bpfFilter, ok := f.(*netlink.BpfFilter); ok {
-				allFilters = append(allFilters, bpfFilter)
+				if strings.Contains(bpfFilter.Name, "bpf_netdev") ||
+					strings.Contains(bpfFilter.Name, "bpf_network") ||
+					strings.Contains(bpfFilter.Name, "bpf_host") ||
+					strings.Contains(bpfFilter.Name, "bpf_lxc") ||
+					strings.Contains(bpfFilter.Name, "bpf_overlay") {
+					allFilters = append(allFilters, bpfFilter)
+				}
 			}
 		}
 	}
 
 	return allFilters, nil
-}
-
-func getNodePortNativeDev() (*netlink.Link, error) {
-	var nativeDev *netlink.Link
-
-	path := filepath.Join(defaults.RuntimePath, defaults.StateDir, "globals/node_config.h")
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer f.Close()
-
-	nodePortFound := false
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		switch {
-		case line == "#define ENABLE_NODEPORT 1":
-			nodePortFound = true
-		case strings.HasPrefix(line, "#define NATIVE_DEV_IFINDEX"):
-			tmp := strings.Split(line, " ")
-			if len(tmp) < 3 {
-				return nil, fmt.Errorf("Cannot determine ifindex with %q", line)
-			}
-			index, err := strconv.Atoi(tmp[2])
-			if err != nil {
-				return nil, fmt.Errorf("Invalid ifindex %q: %s", tmp[2], err)
-			}
-			link, err := netlink.LinkByIndex(index)
-			if err != nil {
-				if _, ok := err.(netlink.LinkNotFoundError); ok {
-					// Link not found, just ignore as no tc filter to remove here
-					return nil, nil
-				}
-				return nil, err
-			}
-			nativeDev = &link
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	if nodePortFound {
-		return nativeDev, nil
-	}
-
-	return nil, nil
 }
 
 func removeTCFilters(linkAndFilters map[string][]*netlink.BpfFilter) error {

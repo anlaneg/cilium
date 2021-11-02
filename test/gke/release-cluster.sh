@@ -1,17 +1,24 @@
 #!/bin/bash
 
-export KUBECONFIG=gke-kubeconfig
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "deleting terminating namespaces"
-./delete-terminating-namespaces.sh
+project="cilium-ci"
+region="us-west1"
 
-set -e
+if [ ! -f "${script_dir}/cluster-uri"  ]; then
+    echo "Cluster uri file not found, exiting"
+    exit 1
+fi
 
-cluster=$(cat cluster-name)
-echo "scaling $cluster ng to 0"
-yes | gcloud container clusters resize $cluster --node-pool default-pool --num-nodes 0 --zone $GKE_ZONE
+cluster_uri="$(cat "${script_dir}/cluster-uri")"
+cluster_name=${cluster_uri##*/}
 
-echo "releasing cluster lock from $cluster"
-kubectl annotate deployment lock lock-
 
-rm cluster-name
+export KUBECONFIG="${script_dir}/resize-kubeconfig"
+gcloud container clusters get-credentials --project "${project}" --region "europe-west4" management-cluster-0
+
+# Reset Flux-managed CRDs to defaults
+kubectl delete containerclusters.container.cnrm.cloud.google.com -n test-clusters "${cluster_name}"
+kubectl delete containernodepools.container.cnrm.cloud.google.com -n test-clusters "${cluster_name}"
+
+rm -f "${script_dir}/cluster-uri" "${script_dir}/cluster-name" "${script_dir}/cluster-version" "${script_dir}/registry-adder.yaml"

@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package endpointmanager
@@ -22,13 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/endpoint"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/lock"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/option"
@@ -41,6 +32,19 @@ import (
 
 // Hook up gocheck into the "go test" runner.
 func Test(t *testing.T) { TestingT(t) }
+
+func (mgr *EndpointManager) waitEndpointRemoved(ep *endpoint.Endpoint, conf endpoint.DeleteConfig) []error {
+	mgr.unexpose(ep)
+	ep.Stop()
+	return nil
+}
+
+// WaitEndpointRemoved waits until all operations associated with Remove of
+// the endpoint have been completed.
+// Note: only used for unit tests, to avoid ep.Delete()
+func (mgr *EndpointManager) WaitEndpointRemoved(ep *endpoint.Endpoint) {
+	mgr.waitEndpointRemoved(ep, endpoint.DeleteConfig{})
+}
 
 type EndpointManagerSuite struct {
 	repo *policy.Repository
@@ -79,12 +83,23 @@ func (s *EndpointManagerSuite) GetCompilationLock() *lock.RWMutex {
 	return nil
 }
 
-func (s *EndpointManagerSuite) SendNotification(typ monitorAPI.AgentNotification, text string) error {
+func (s *EndpointManagerSuite) GetCIDRPrefixLengths() (s6, s4 []int) {
+	return nil, nil
+}
+
+func (s *EndpointManagerSuite) SendNotification(msg monitorAPI.AgentNotifyMessage) error {
 	return nil
 }
 
 func (s *EndpointManagerSuite) Datapath() datapath.Datapath {
 	return nil
+}
+
+func (s *EndpointManagerSuite) GetDNSRules(epID uint16) restore.DNSRules {
+	return nil
+}
+
+func (s *EndpointManagerSuite) RemoveRestoredDNSRules(epID uint16) {
 }
 
 type DummyRuleCacheOwner struct{}
@@ -95,7 +110,11 @@ func (d *DummyRuleCacheOwner) ClearPolicyConsumers(id uint16) *sync.WaitGroup {
 
 type dummyEpSyncher struct{}
 
-func (epSync *dummyEpSyncher) RunK8sCiliumEndpointSync(e *endpoint.Endpoint) {}
+func (epSync *dummyEpSyncher) RunK8sCiliumEndpointSync(e *endpoint.Endpoint, conf endpoint.EndpointStatusConfiguration) {
+}
+
+func (epSync *dummyEpSyncher) DeleteK8sCiliumEndpointSync(e *endpoint.Endpoint) {
+}
 
 func (s *EndpointManagerSuite) TestLookup(c *C) {
 	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
@@ -136,7 +155,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by cilium local ID",
 			preTestRun: func() {
 				ep.ID = 1234
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -160,7 +179,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by cilium global ID",
 			preTestRun: func() {
 				ep.ID = 1234
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -183,7 +202,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by container ID",
 			preTestRun: func() {
 				ep.SetContainerID("1234")
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -207,7 +226,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by docker endpoint ID",
 			preTestRun: func() {
 				ep.SetDockerEndpointID("1234")
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -231,7 +250,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by container name",
 			preTestRun: func() {
 				ep.SetContainerName("foo")
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -256,7 +275,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			preTestRun: func() {
 				ep.SetK8sNamespace("default")
 				ep.SetK8sPodName("foo")
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -282,7 +301,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				ipv4, err := addressing.NewCiliumIPv4("127.0.0.1")
 				ep.IPv4 = ipv4
 				c.Assert(err, IsNil)
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -372,7 +391,7 @@ func (s *EndpointManagerSuite) TestLookupCiliumID(c *C) {
 			name: "existing cilium ID",
 			preTestRun: func() {
 				ep.ID = 1
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -441,7 +460,7 @@ func (s *EndpointManagerSuite) TestLookupContainerID(c *C) {
 			name: "existing container ID",
 			preTestRun: func() {
 				ep.SetContainerID("foo")
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -510,7 +529,7 @@ func (s *EndpointManagerSuite) TestLookupIPv4(c *C) {
 				ip, err := addressing.NewCiliumIPv4("127.0.0.1")
 				c.Assert(err, IsNil)
 				ep.IPv4 = ip
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -578,7 +597,7 @@ func (s *EndpointManagerSuite) TestLookupPodName(c *C) {
 			preTestRun: func() {
 				ep.SetK8sNamespace("default")
 				ep.SetK8sPodName("foo")
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -645,7 +664,7 @@ func (s *EndpointManagerSuite) TestUpdateReferences(c *C) {
 			name: "Updating all references",
 			preTestRun: func() {
 				ep.ID = 1
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				// Update endpoint before running test
@@ -681,7 +700,7 @@ func (s *EndpointManagerSuite) TestUpdateReferences(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		args.ep.UpdateReferences(mgr)
+		mgr.updateReferencesLocked(args.ep, args.ep.IdentifiersLocked())
 
 		ep = mgr.LookupContainerID(want.ep.GetContainerID())
 		c.Assert(ep, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
@@ -719,7 +738,7 @@ func (s *EndpointManagerSuite) TestRemove(c *C) {
 			name: "Updating all references",
 			preTestRun: func() {
 				ep.ID = 1
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{}
@@ -762,7 +781,7 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.Options = option.NewIntOptions(&endpoint.EndpointMutableOptionLibrary)
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupWant: func() want {
 				return want{
@@ -782,7 +801,7 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 				ep.ID = 1
 				ep.Options = option.NewIntOptions(&endpoint.EndpointMutableOptionLibrary)
 				ep.Options.SetIfUnset(option.ConntrackLocal, option.OptionEnabled)
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupWant: func() want {
 				return want{
@@ -830,7 +849,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.SetPolicyRevision(5)
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				return args{
@@ -854,7 +873,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.SetPolicyRevision(5)
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				ctx, cancel := context.WithTimeout(context.Background(), 0)
@@ -880,7 +899,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.SetPolicyRevision(4)
-				ep.Expose(mgr)
+				mgr.expose(ep)
 			},
 			setupArgs: func() args {
 				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

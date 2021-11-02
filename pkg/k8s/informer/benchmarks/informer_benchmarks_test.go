@@ -1,17 +1,7 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package benchmarks
@@ -19,15 +9,16 @@ package benchmarks
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/cilium/cilium/pkg/annotation"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 
-	"github.com/cilium/cilium/pkg/defaults"
 	. "gopkg.in/check.v1"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -458,16 +449,16 @@ func (k *K8sIntegrationSuite) benchmarkInformer(nCycles int, newInformer bool, c
 			cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj interface{}) {},
 				UpdateFunc: func(oldObj, newObj interface{}) {
-					if oldK8sNP := k8s.CopyObjToV1Node(oldObj); oldK8sNP != nil {
-						if newK8sNP := k8s.CopyObjToV1Node(newObj); newK8sNP != nil {
-							if k8s.EqualV1Node(oldK8sNP, newK8sNP) {
+					if oldK8sNP := k8s.ObjToV1Node(oldObj); oldK8sNP != nil {
+						if newK8sNP := k8s.ObjToV1Node(newObj); newK8sNP != nil {
+							if reflect.DeepEqual(oldK8sNP, newK8sNP) {
 								return
 							}
 						}
 					}
 				},
 				DeleteFunc: func(obj interface{}) {
-					k8sNP := k8s.CopyObjToV1Node(obj)
+					k8sNP := k8s.ObjToV1Node(obj)
 					if k8sNP == nil {
 						deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
 						if !ok {
@@ -476,7 +467,7 @@ func (k *K8sIntegrationSuite) benchmarkInformer(nCycles int, newInformer bool, c
 						// Delete was not observed by the watcher but is
 						// removed from kube-apiserver. This is the last
 						// known state and the object no longer exists.
-						k8sNP = k8s.CopyObjToV1Node(deletedObj.Obj)
+						k8sNP = k8s.ObjToV1Node(deletedObj.Obj)
 						if k8sNP == nil {
 							return
 						}

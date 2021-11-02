@@ -1,16 +1,5 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 
 package alignchecker
 
@@ -19,13 +8,20 @@ import (
 
 	check "github.com/cilium/cilium/pkg/alignchecker"
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/maps/bwmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/maps/egressmap"
 	"github.com/cilium/cilium/pkg/maps/eppolicymap"
+	"github.com/cilium/cilium/pkg/maps/eventsmap"
+	"github.com/cilium/cilium/pkg/maps/fragmap"
 	ipcachemap "github.com/cilium/cilium/pkg/maps/ipcache"
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/metricsmap"
+	"github.com/cilium/cilium/pkg/maps/neighborsmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
+	"github.com/cilium/cilium/pkg/maps/recorder"
+	"github.com/cilium/cilium/pkg/maps/signalmap"
 	"github.com/cilium/cilium/pkg/maps/sockmap"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
 )
@@ -60,7 +56,19 @@ func CheckStructAlignments(path string) error {
 		"policy_key":           {reflect.TypeOf(policymap.PolicyKey{})},
 		"policy_entry":         {reflect.TypeOf(policymap.PolicyEntry{})},
 		"sock_key":             {reflect.TypeOf(sockmap.SockmapKey{})},
+		"ipv4_revnat_tuple":    {reflect.TypeOf(lbmap.SockRevNat4Key{})},
+		"ipv4_revnat_entry":    {reflect.TypeOf(lbmap.SockRevNat4Value{})},
+		"ipv6_revnat_tuple":    {reflect.TypeOf(lbmap.SockRevNat6Key{})},
+		"ipv6_revnat_entry":    {reflect.TypeOf(lbmap.SockRevNat6Value{})},
+		"v6addr":               {reflect.TypeOf(neighborsmap.Key6{})},
+		"macaddr":              {reflect.TypeOf(neighborsmap.Value{})},
+		"ipv4_frag_id":         {reflect.TypeOf(fragmap.FragmentKey{})},
+		"ipv4_frag_l4ports":    {reflect.TypeOf(fragmap.FragmentValue{})},
+		"capture4_wcard":       {reflect.TypeOf(recorder.CaptureWcard4{})},
+		"capture6_wcard":       {reflect.TypeOf(recorder.CaptureWcard6{})},
+		"capture_rule":         {reflect.TypeOf(recorder.CaptureRule4{})},
 		// TODO: alignchecker does not support nested structs yet.
+		// "capture_rule":      {reflect.TypeOf(recorder.CaptureRule6{})},
 		// "ipv4_nat_entry":    {reflect.TypeOf(nat.NatEntry4{})},
 		// "ipv6_nat_entry":    {reflect.TypeOf(nat.NatEntry6{})},
 		"endpoint_key": {
@@ -68,6 +76,42 @@ func CheckStructAlignments(path string) error {
 			reflect.TypeOf(eppolicymap.EndpointKey{}),
 			reflect.TypeOf(tunnel.TunnelEndpoint{}),
 		},
+		"lb4_affinity_key":  {reflect.TypeOf(lbmap.Affinity4Key{})},
+		"lb6_affinity_key":  {reflect.TypeOf(lbmap.Affinity6Key{})},
+		"lb_affinity_match": {reflect.TypeOf(lbmap.AffinityMatchKey{})},
+		"lb_affinity_val":   {reflect.TypeOf(lbmap.AffinityValue{})},
+		"lb4_src_range_key": {reflect.TypeOf(lbmap.SourceRangeKey4{})},
+		"lb6_src_range_key": {reflect.TypeOf(lbmap.SourceRangeKey6{})},
+		"edt_id":            {reflect.TypeOf(bwmap.EdtId{})},
+		"edt_info":          {reflect.TypeOf(bwmap.EdtInfo{})},
+		"egress_key":        {reflect.TypeOf(egressmap.Key4{})},
+		"egress_info":       {reflect.TypeOf(egressmap.EgressInfo4{})},
 	}
-	return check.CheckStructAlignments(path, toCheck)
+	if err := check.CheckStructAlignments(path, toCheck, true); err != nil {
+		return err
+	}
+	toCheckSizes := map[string][]reflect.Type{
+		"__u16": {
+			reflect.TypeOf(lbmap.Backend4Key{}),
+			reflect.TypeOf(lbmap.Backend6Key{}),
+			reflect.TypeOf(lbmap.RevNat4Key{}),
+			reflect.TypeOf(lbmap.RevNat6Key{}),
+		},
+		"__u32": {
+			reflect.TypeOf(lbmap.Backend4KeyV2{}),
+			reflect.TypeOf(lbmap.Backend6KeyV2{}),
+			reflect.TypeOf(signalmap.Key{}),
+			reflect.TypeOf(signalmap.Value{}),
+			reflect.TypeOf(eventsmap.Key{}),
+			reflect.TypeOf(eventsmap.Value{}),
+			reflect.TypeOf(policymap.CallKey{}),
+			reflect.TypeOf(policymap.CallValue{}),
+		},
+		"int": {
+			reflect.TypeOf(sockmap.SockmapValue{}),
+			reflect.TypeOf(eppolicymap.EPPolicyValue{}),
+		},
+		"__be32": {reflect.TypeOf(neighborsmap.Key4{})},
+	}
+	return check.CheckStructAlignments(path, toCheckSizes, false)
 }

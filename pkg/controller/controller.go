@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package controller
 
@@ -21,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
@@ -148,6 +138,7 @@ type Controller struct {
 	uuid              string
 	stop              chan struct{}
 	update            chan struct{}
+	trigger           chan struct{}
 	ctxDoFunc         context.Context
 	cancelDoFunc      context.CancelFunc
 
@@ -179,6 +170,14 @@ func (c *Controller) GetLastError() error {
 	return c.lastError
 }
 
+// Trigger triggers the controller
+func (c *Controller) Trigger() {
+	select {
+	case c.trigger <- struct{}{}:
+	default:
+	}
+}
+
 // GetLastErrorTimestamp returns the last error returned
 func (c *Controller) GetLastErrorTimestamp() time.Time {
 	c.mutex.RLock()
@@ -195,6 +194,8 @@ func (c *Controller) runController() {
 	c.mutex.RUnlock()
 	runFunc := true
 	interval := 10 * time.Minute
+	runTimer, timerDone := inctimer.New()
+	defer timerDone()
 
 	for {
 		var err error
@@ -258,7 +259,6 @@ func (c *Controller) runController() {
 
 			c.mutex.Unlock()
 		}
-
 		select {
 		case <-c.stop:
 			goto shutdown
@@ -280,7 +280,9 @@ func (c *Controller) runController() {
 			c.mutex.RUnlock()
 			runFunc = true
 
-		case <-time.After(interval):
+		case <-runTimer.After(interval):
+		case <-c.trigger:
+			runFunc = true
 		}
 
 	}

@@ -1,22 +1,12 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package policymap
 
 import (
-	"bytes"
 	"fmt"
+	"strconv"
+	"strings"
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
@@ -26,29 +16,67 @@ import (
 )
 
 const (
-	// CallMapName is the name of the map to do tail calls into policy
-	// enforcement programs
-	CallMapName = "cilium_policy"
+	// PolicyCallMapName is the name of the map to do tail calls into policy
+	// enforcement programs.
+	PolicyCallMapName = "cilium_call_policy"
 
 	// MapName is the prefix for endpoint-specific policy maps which map
 	// identity+ports+direction to whether the policy allows communication
 	// with that identity on that port for that direction.
-	MapName = CallMapName + "_"
+	MapName = "cilium_policy_"
 
-	// ProgArrayMaxEntries is the upper limit of entries in the program
+	// PolicyCallMaxEntries is the upper limit of entries in the program
 	// array for the tail calls to jump into the endpoint specific policy
-	// programs. This number *MUST* be identical to the maximum endponit ID.
-	ProgArrayMaxEntries = ^uint16(0)
+	// programs. This number *MUST* be identical to the maximum endpoint ID.
+	PolicyCallMaxEntries = ^uint16(0)
 
 	// AllPorts is used to ignore the L4 ports in PolicyMap lookups; all ports
 	// are allowed. In the datapath, this is represented with the value 0 in the
 	// port field of map elements.
 	AllPorts = uint16(0)
+
+	// PressureMetricThreshold sets the threshold over which map pressure will
+	// be reported for the policy map.
+	PressureMetricThreshold = 0.1
 )
+
+type policyFlag uint8
+
+const (
+	policyFlagDeny = 1 << iota
+)
+
+// PolicyEntryFlags is a new type used to define the flags used in the policy
+// entry.
+type PolicyEntryFlags uint8
+
+// UInt8 returns the UInt8 representation of the PolicyEntryFlags.
+func (pef PolicyEntryFlags) UInt8() uint8 {
+	return uint8(pef)
+}
+
+func (pef PolicyEntryFlags) is(pf policyFlag) bool {
+	return uint8(pef)&uint8(pf) != 0
+}
+
+func (pef PolicyEntryFlags) IsDeny() bool {
+	return pef.is(policyFlagDeny)
+}
+
+// String returns the string implementation of PolicyEntryFlags.
+func (pef PolicyEntryFlags) String() string {
+	if pef.IsDeny() {
+		return "Deny"
+	}
+	return "Allow"
+}
 
 var (
 	// MaxEntries is the upper limit of entries in the per endpoint policy
-	// table
+	// table ie the maximum number of peer identities that the endpoint could
+	// send/receive traffic to/from.. It is set by InitMapInfo(), but unit
+	// tests use the initial value below.
+	// The default value of this upper limit is 16384.
 	MaxEntries = 16384
 )
 
@@ -71,18 +99,90 @@ type PolicyKey struct {
 	TrafficDirection uint8  `align:"egress"`
 }
 
+// SizeofPolicyKey is the size of type PolicyKey.
+const SizeofPolicyKey = int(unsafe.Sizeof(PolicyKey{}))
+
 // PolicyEntry represents an entry in the BPF policy map for an endpoint. It must
 // match the layout of policy_entry in bpf/lib/common.h.
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
 type PolicyEntry struct {
 	ProxyPort uint16 `align:"proxy_port"` // In network byte-order
-	Pad0      uint16 `align:"pad0"`
+	Flags     uint8  `align:"deny"`
+	Pad0      uint8  `align:"pad0"`
 	Pad1      uint16 `align:"pad1"`
 	Pad2      uint16 `align:"pad2"`
 	Packets   uint64 `align:"packets"`
 	Bytes     uint64 `align:"bytes"`
 }
+
+// ToHost returns a copy of entry with fields converted from network byte-order
+// to host-byte-order if necessary.
+func (pe *PolicyEntry) ToHost() PolicyEntry {
+	if pe == nil {
+		return PolicyEntry{}
+	}
+
+	n := *pe
+	n.ProxyPort = byteorder.NetworkToHost16(n.ProxyPort)
+	return n
+}
+
+func (pe *PolicyEntry) SetFlags(flags uint8) {
+	pe.Flags = flags
+}
+
+func (pe *PolicyEntry) GetFlags() uint8 {
+	return pe.Flags
+}
+
+type PolicyEntryFlagParam struct {
+	IsDeny bool
+}
+
+// NewPolicyEntryFlag returns a PolicyEntryFlags from the PolicyEntryFlagParam.
+func NewPolicyEntryFlag(p *PolicyEntryFlagParam) PolicyEntryFlags {
+	var flags PolicyEntryFlags
+
+	if p.IsDeny {
+		flags |= policyFlagDeny
+	}
+
+	return flags
+}
+
+// SizeofPolicyEntry is the size of type PolicyEntry.
+const SizeofPolicyEntry = int(unsafe.Sizeof(PolicyEntry{}))
+
+// CallKey is the index into the prog array map.
+// +k8s:deepcopy-gen=true
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
+type CallKey struct {
+	index uint32
+}
+
+// CallValue is the program ID in the prog array map.
+// +k8s:deepcopy-gen=true
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
+type CallValue struct {
+	progID uint32
+}
+
+// GetKeyPtr returns the unsafe pointer to the BPF key
+func (k *CallKey) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
+
+// GetValuePtr returns the unsafe pointer to the BPF value
+func (v *CallValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
+
+// String converts the key into a human readable string format.
+func (k *CallKey) String() string { return strconv.FormatUint(uint64(k.index), 10) }
+
+// String converts the value into a human readable string format.
+func (v *CallValue) String() string { return strconv.FormatUint(uint64(v.progID), 10) }
+
+// NewValue returns a new empty instance of the structure representing the BPF
+// map value.
+func (k CallKey) NewValue() bpf.MapValue { return &CallValue{} }
 
 func (pe *PolicyEntry) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(pe) }
 func (pe *PolicyEntry) NewValue() bpf.MapValue      { return &PolicyEntry{} }
@@ -100,12 +200,28 @@ type PolicyEntryDump struct {
 // PolicyEntriesDump is a wrapper for a slice of PolicyEntryDump
 type PolicyEntriesDump []PolicyEntryDump
 
-// Less returns true if the element in index `i` has the value of
-// TrafficDirection lower than `j`'s TrafficDirection or if the element in index
-// `i` has the value of TrafficDirection lower and equal than `j`'s
-// TrafficDirection and the identity of element `i` is lower than the Identity
-// of element j.
+// String returns a string representation of PolicyEntriesDump
+func (p PolicyEntriesDump) String() string {
+	var sb strings.Builder
+	for _, entry := range p {
+		sb.WriteString(fmt.Sprintf("%20s: %s\n",
+			entry.Key.String(), entry.PolicyEntry.String()))
+	}
+	return sb.String()
+}
+
+// Less is a function used to sort PolicyEntriesDump by Policy Type
+// (Deny / Allow), TrafficDirection (Ingress / Egress) and Identity
+// (ascending order).
 func (p PolicyEntriesDump) Less(i, j int) bool {
+	iDeny := PolicyEntryFlags(p[i].PolicyEntry.GetFlags()).IsDeny()
+	jDeny := PolicyEntryFlags(p[j].PolicyEntry.GetFlags()).IsDeny()
+	switch {
+	case iDeny && !jDeny:
+		return true
+	case !iDeny && jDeny:
+		return false
+	}
 	if p[i].Key.TrafficDirection < p[j].Key.TrafficDirection {
 		return true
 	}
@@ -120,7 +236,7 @@ func (key *PolicyKey) String() string {
 
 	trafficDirectionString := (trafficdirection.TrafficDirection)(key.TrafficDirection).String()
 	if key.DestPort != 0 {
-		return fmt.Sprintf("%s: %d %d/%d", trafficDirectionString, key.Identity, byteorder.NetworkToHost(key.DestPort), key.Nexthdr)
+		return fmt.Sprintf("%s: %d %d/%d", trafficDirectionString, key.Identity, byteorder.NetworkToHost16(key.DestPort), key.Nexthdr)
 	}
 	return fmt.Sprintf("%s: %d", trafficDirectionString, key.Identity)
 }
@@ -133,7 +249,7 @@ func (key *PolicyKey) ToHost() PolicyKey {
 	}
 
 	n := *key
-	n.DestPort = byteorder.NetworkToHost(n.DestPort).(uint16)
+	n.DestPort = byteorder.NetworkToHost16(n.DestPort)
 	return n
 }
 
@@ -145,7 +261,7 @@ func (key *PolicyKey) ToNetwork() PolicyKey {
 	}
 
 	n := *key
-	n.DestPort = byteorder.HostToNetwork(n.DestPort).(uint16)
+	n.DestPort = byteorder.HostToNetwork16(n.DestPort)
 	return n
 }
 
@@ -154,7 +270,7 @@ func (key *PolicyKey) ToNetwork() PolicyKey {
 func newKey(id uint32, dport uint16, proto u8proto.U8proto, trafficDirection trafficdirection.TrafficDirection) PolicyKey {
 	return PolicyKey{
 		Identity:         id,
-		DestPort:         byteorder.HostToNetwork(dport).(uint16),
+		DestPort:         byteorder.HostToNetwork16(dport),
 		Nexthdr:          uint8(proto),
 		TrafficDirection: trafficDirection.Uint8(),
 	}
@@ -162,9 +278,10 @@ func newKey(id uint32, dport uint16, proto u8proto.U8proto, trafficDirection tra
 
 // newEntry returns a PolicyEntry representing the specified parameters in
 // network byte-order.
-func newEntry(proxyPort uint16) PolicyEntry {
+func newEntry(proxyPort uint16, flags PolicyEntryFlags) PolicyEntry {
 	return PolicyEntry{
-		ProxyPort: byteorder.HostToNetwork(proxyPort).(uint16),
+		ProxyPort: byteorder.HostToNetwork16(proxyPort),
+		Flags:     flags.UInt8(),
 	}
 }
 
@@ -179,7 +296,24 @@ func (pm *PolicyMap) AllowKey(k PolicyKey, proxyPort uint16) error {
 // protocol `proto`. It is assumed that `dport` and `proxyPort` are in host byte-order.
 func (pm *PolicyMap) Allow(id uint32, dport uint16, proto u8proto.U8proto, trafficDirection trafficdirection.TrafficDirection, proxyPort uint16) error {
 	key := newKey(id, dport, proto, trafficDirection)
-	entry := newEntry(proxyPort)
+	pef := NewPolicyEntryFlag(&PolicyEntryFlagParam{})
+	entry := newEntry(proxyPort, pef)
+	return pm.Update(&key, &entry)
+}
+
+// DenyKey pushes an entry into the PolicyMap for the given PolicyKey k.
+// Returns an error if the update of the PolicyMap fails.
+func (pm *PolicyMap) DenyKey(k PolicyKey) error {
+	return pm.Deny(k.Identity, k.DestPort, u8proto.U8proto(k.Nexthdr), trafficdirection.TrafficDirection(k.TrafficDirection))
+}
+
+// Deny pushes an entry into the PolicyMap to deny traffic in the given
+// `trafficDirection` for identity `id` with destination port `dport` over
+// protocol `proto`. It is assumed that `dport` is in host byte-order.
+func (pm *PolicyMap) Deny(id uint32, dport uint16, proto u8proto.U8proto, trafficDirection trafficdirection.TrafficDirection) error {
+	key := newKey(id, dport, proto, trafficDirection)
+	pef := NewPolicyEntryFlag(&PolicyEntryFlagParam{IsDeny: true})
+	entry := newEntry(0, pef)
 	return pm.Update(&key, &entry)
 }
 
@@ -224,16 +358,11 @@ func (pm *PolicyMap) String() string {
 }
 
 func (pm *PolicyMap) Dump() (string, error) {
-	var buffer bytes.Buffer
 	entries, err := pm.DumpToSlice()
 	if err != nil {
 		return "", err
 	}
-	for _, entry := range entries {
-		buffer.WriteString(fmt.Sprintf("%20s: %s\n",
-			entry.Key.String(), entry.PolicyEntry.String()))
-	}
-	return buffer.String(), nil
+	return entries.String(), nil
 }
 
 func (pm *PolicyMap) DumpToSlice() (PolicyEntriesDump, error) {
@@ -259,9 +388,9 @@ func newMap(path string) *PolicyMap {
 			path,
 			mapType,
 			&PolicyKey{},
-			int(unsafe.Sizeof(PolicyKey{})),
+			SizeofPolicyKey,
 			&PolicyEntry{},
-			int(unsafe.Sizeof(PolicyEntry{})),
+			SizeofPolicyEntry,
 			MaxEntries,
 			flags, 0,
 			bpf.ConvertKeyValue,
@@ -278,6 +407,12 @@ func OpenOrCreate(path string) (*PolicyMap, bool, error) {
 	return m, isNewMap, err
 }
 
+// Create creates a policy map at the specified path.
+func Create(path string) (bool, error) {
+	m := newMap(path)
+	return m.Create()
+}
+
 // Open opens the policymap at the specified path.
 func Open(path string) (*PolicyMap, error) {
 	m := newMap(path)
@@ -290,4 +425,21 @@ func Open(path string) (*PolicyMap, error) {
 // InitMapInfo updates the map info defaults for policy maps.
 func InitMapInfo(maxEntries int) {
 	MaxEntries = maxEntries
+}
+
+// InitCallMap creates the policy call map in the kernel.
+func InitCallMap() error {
+	policyCallMap := bpf.NewMap(PolicyCallMapName,
+		bpf.MapTypeProgArray,
+		&CallKey{},
+		int(unsafe.Sizeof(CallKey{})),
+		&CallValue{},
+		int(unsafe.Sizeof(CallValue{})),
+		int(PolicyCallMaxEntries),
+		0,
+		0,
+		bpf.ConvertKeyValue,
+	)
+	_, err := policyCallMap.Create()
+	return err
 }

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8s
 
@@ -19,10 +8,9 @@ import (
 	"net"
 
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
-
-	"k8s.io/apimachinery/pkg/labels"
 )
 
 var _ policy.Translator = RuleTranslator{}
@@ -127,7 +115,12 @@ func generateToCidrFromEndpoint(
 		if err != nil {
 			return err
 		}
-		if _, err := ipcache.AllocateCIDRs(prefixes); err != nil {
+		// TODO: Collect new identities to be upserted to the ipcache only after all
+		// endpoints have been regenerated later. This would make sure that any CIDRs in the
+		// policy would be first pushed to the endpoint policies and then to the ipcache to
+		// avoid traffic mapping to an ID that the endpoint policy maps do not know about
+		// yet.
+		if _, err := ipcache.AllocateCIDRs(prefixes, nil); err != nil {
 			return err
 		}
 	}
@@ -175,8 +168,7 @@ func deleteToCidrFromEndpoint(
 	endpoint Endpoints,
 	releasePrefixes bool) error {
 
-	newToCIDR := make([]api.CIDRRule, 0, len(egress.ToCIDRSet))
-	deleted := make([]api.CIDRRule, 0, len(egress.ToCIDRSet))
+	delCIDRRules := make(map[int]*api.CIDRRule, len(egress.ToCIDRSet))
 
 	for ip := range endpoint.Backends {
 		epIP := net.ParseIP(ip)
@@ -184,26 +176,52 @@ func deleteToCidrFromEndpoint(
 			return fmt.Errorf("unable to parse ip: %s", ip)
 		}
 
-		for _, c := range egress.ToCIDRSet {
+		for i, c := range egress.ToCIDRSet {
+			if _, ok := delCIDRRules[i]; ok {
+				// it's already going to be deleted so we can continue
+				continue
+			}
 			_, cidr, err := net.ParseCIDR(string(c.Cidr))
 			if err != nil {
 				return err
 			}
-			// if endpoint is not in CIDR or it's not
-			// generated it's ok to retain it
-			if !cidr.Contains(epIP) || !c.Generated {
-				newToCIDR = append(newToCIDR, c)
-			} else {
-				deleted = append(deleted, c)
+			// delete all generated CIDRs for a CIDR that match the given
+			// endpoint
+			if c.Generated && cidr.Contains(epIP) {
+				delCIDRRules[i] = &egress.ToCIDRSet[i]
 			}
+		}
+		if len(delCIDRRules) == len(egress.ToCIDRSet) {
+			break
 		}
 	}
 
-	egress.ToCIDRSet = newToCIDR
+	// If no rules were deleted we can do an early return here and avoid doing
+	// the useless operations below.
+	if len(delCIDRRules) == 0 {
+		return nil
+	}
+
 	if releasePrefixes {
-		prefixes := policy.GetPrefixesFromCIDRSet(deleted)
+		delSlice := make([]api.CIDRRule, 0, len(egress.ToCIDRSet))
+		for _, delCIDRRule := range delCIDRRules {
+			delSlice = append(delSlice, *delCIDRRule)
+		}
+		prefixes := policy.GetPrefixesFromCIDRSet(delSlice)
 		ipcache.ReleaseCIDRs(prefixes)
 	}
+
+	// if endpoint is not in CIDR or it's not generated it's ok to retain it
+	newCIDRRules := make([]api.CIDRRule, 0, len(egress.ToCIDRSet)-len(delCIDRRules))
+	for i, c := range egress.ToCIDRSet {
+		// If the rule was deleted then it shouldn't be re-added
+		if _, ok := delCIDRRules[i]; ok {
+			continue
+		}
+		newCIDRRules = append(newCIDRRules, c)
+	}
+
+	egress.ToCIDRSet = newCIDRRules
 
 	return nil
 }
@@ -215,13 +233,20 @@ func PreprocessRules(r api.Rules, cache *ServiceCache) error {
 	defer cache.mutex.Unlock()
 
 	for _, rule := range r {
+		// Translate only handles egress rules
+		if rule.Egress == nil {
+			continue
+		}
 		for ns, ep := range cache.endpoints {
 			svc, ok := cache.services[ns]
 			if ok && svc.IsExternal() {
-				t := NewK8sTranslator(ns, *ep, false, svc.Labels, false)
-				err := t.Translate(rule, &policy.TranslationResult{})
-				if err != nil {
-					return err
+				eps := ep.GetEndpoints()
+				if eps != nil {
+					t := NewK8sTranslator(ns, *eps, false, svc.Labels, false)
+					err := t.Translate(rule, &policy.TranslationResult{})
+					if err != nil {
+						return err
+					}
 				}
 			}
 		}

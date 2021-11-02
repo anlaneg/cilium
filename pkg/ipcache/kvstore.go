@@ -1,16 +1,5 @@
-// Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
 package ipcache
 
@@ -20,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +19,9 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/u8proto"
 
 	"github.com/sirupsen/logrus"
 )
@@ -105,7 +97,20 @@ func newKVReferenceCounter(s store) *kvReferenceCounter {
 // UpsertIPToKVStore updates / inserts the provided IP->Identity mapping into the
 // kvstore, which will subsequently trigger an event in NewIPIdentityWatcher().
 func UpsertIPToKVStore(ctx context.Context, IP, hostIP net.IP, ID identity.NumericIdentity, key uint8,
-	metadata, k8sNamespace, k8sPodName string) error {
+	metadata, k8sNamespace, k8sPodName string, npm policy.NamedPortMap) error {
+	// Sort named ports into a slice
+	namedPorts := make([]identity.NamedPort, 0, len(npm))
+	for name, value := range npm {
+		namedPorts = append(namedPorts, identity.NamedPort{
+			Name:     name,
+			Port:     value.Port,
+			Protocol: u8proto.U8proto(value.Proto).String(),
+		})
+	}
+	sort.Slice(namedPorts, func(i, j int) bool {
+		return namedPorts[i].Name < namedPorts[j].Name
+	})
+
 	ipKey := path.Join(IPIdentitiesPath, AddressSpace, IP.String())
 	ipIDPair := identity.IPIdentityPair{
 		IP:           IP,
@@ -115,6 +120,7 @@ func UpsertIPToKVStore(ctx context.Context, IP, hostIP net.IP, ID identity.Numer
 		Key:          key,
 		K8sNamespace: k8sNamespace,
 		K8sPodName:   k8sPodName,
+		NamedPorts:   namedPorts,
 	}
 
 	marshaledIPIDPair, err := json.Marshal(ipIDPair)
@@ -186,10 +192,11 @@ func DeleteIPFromKVStore(ctx context.Context, ip string) error {
 // IPIdentityWatcher is a watcher that will notify when IP<->identity mappings
 // change in the kvstore
 type IPIdentityWatcher struct {
-	backend  kvstore.BackendOperations
-	stop     chan struct{}
-	synced   chan struct{}
-	stopOnce sync.Once
+	backend    kvstore.BackendOperations
+	stop       chan struct{}
+	synced     chan struct{}
+	stopOnce   sync.Once
+	syncedOnce sync.Once
 }
 
 // NewIPIdentityWatcher creates a new IPIdentityWatcher using the specified
@@ -254,7 +261,7 @@ restart:
 					listener.OnIPIdentityCacheGC()
 				}
 				IPIdentityCache.Unlock()
-				close(iw.synced)
+				iw.closeSynced()
 
 			case kvstore.EventTypeCreate, kvstore.EventTypeModify:
 				var ipIDPair identity.IPIdentityPair
@@ -270,13 +277,27 @@ restart:
 					continue
 				}
 				var k8sMeta *K8sMetadata
-				if ipIDPair.K8sNamespace != "" || ipIDPair.K8sPodName != "" {
+				if ipIDPair.K8sNamespace != "" || ipIDPair.K8sPodName != "" || len(ipIDPair.NamedPorts) > 0 {
 					k8sMeta = &K8sMetadata{
-						Namespace: ipIDPair.K8sNamespace,
-						PodName:   ipIDPair.K8sPodName,
+						Namespace:  ipIDPair.K8sNamespace,
+						PodName:    ipIDPair.K8sPodName,
+						NamedPorts: make(policy.NamedPortMap, len(ipIDPair.NamedPorts)),
+					}
+					for _, np := range ipIDPair.NamedPorts {
+						err = k8sMeta.NamedPorts.AddPort(np.Name, int(np.Port), np.Protocol)
+						if err != nil {
+							log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key}).
+								WithError(err).Error("Parsing named port failed")
+						}
 					}
 				}
 
+				// There is no need to delete the "old" IP addresses from this
+				// ip ID pair. The only places where the ip ID pair are created
+				// is the clustermesh, where it sends a delete to the KVStore,
+				// and the endpoint-runIPIdentitySync where it bounded to a
+				// lease and a controller which is stopped/removed when the
+				// endpoint is gone.
 				IPIdentityCache.Upsert(ip, ipIDPair.HostIP, ipIDPair.Key, k8sMeta, Identity{
 					ID:     ipIDPair.ID,
 					Source: source.KVStore,
@@ -331,6 +352,13 @@ restart:
 func (iw *IPIdentityWatcher) Close() {
 	iw.stopOnce.Do(func() {
 		close(iw.stop)
+	})
+}
+
+//closeSynced the IPIdentityWathcer and case panic
+func (iw *IPIdentityWatcher) closeSynced() {
+	iw.syncedOnce.Do(func() {
+		close(iw.synced)
 	})
 }
 

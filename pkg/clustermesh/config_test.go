@@ -1,23 +1,12 @@
-// Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package clustermesh
 
 import (
-	"io/ioutil"
 	"os"
 	"path"
 	"time"
@@ -30,16 +19,20 @@ import (
 )
 
 func createFile(c *C, name string) {
-	err := ioutil.WriteFile(name, []byte("endpoints:\n- https://cluster1.cilium-etcd.cilium.svc:2379\n"), 0644)
+	err := os.WriteFile(name, []byte("endpoints:\n- https://cluster1.cilium-etcd.cilium.svc:2379\n"), 0644)
 	c.Assert(err, IsNil)
 }
 
 func expectExists(c *C, cm *ClusterMesh, name string) {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
 	c.Assert(cm.clusters[name], Not(IsNil))
 }
 
 func expectChange(c *C, cm *ClusterMesh, name string) {
+	cm.mutex.RLock()
 	cluster := cm.clusters[name]
+	cm.mutex.RUnlock()
 	c.Assert(cluster, Not(IsNil))
 
 	select {
@@ -50,6 +43,8 @@ func expectChange(c *C, cm *ClusterMesh, name string) {
 }
 
 func expectNotExist(c *C, cm *ClusterMesh, name string) {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
 	c.Assert(cm.clusters[name], IsNil)
 }
 
@@ -59,7 +54,7 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 		skipKvstoreConnection = false
 	}()
 
-	dir, err := ioutil.TempDir("", "multicluster")
+	dir, err := os.MkdirTemp("", "multicluster")
 	c.Assert(err, IsNil)
 	defer os.RemoveAll(dir)
 
@@ -85,7 +80,11 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	defer cm.Close()
 
 	// wait for cluster1 and cluster2 to appear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 2 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 2
+	}, time.Second), IsNil)
 	expectExists(c, cm, "cluster1")
 	expectExists(c, cm, "cluster2")
 	expectNotExist(c, cm, "cluster3")
@@ -94,12 +93,20 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	c.Assert(err, IsNil)
 
 	// wait for cluster1 to disappear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 1 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 1
+	}, time.Second), IsNil)
 
 	createFile(c, file3)
 
 	// wait for cluster3 to appear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 2 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 2
+	}, time.Second), IsNil)
 	expectNotExist(c, cm, "cluster1")
 	expectExists(c, cm, "cluster2")
 	expectExists(c, cm, "cluster3")
@@ -109,7 +116,11 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	c.Assert(err, IsNil)
 
 	// wait for cluster1 to appear
-	c.Assert(testutils.WaitUntil(func() bool { return cm.clusters["cluster1"] != nil }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return cm.clusters["cluster1"] != nil
+	}, time.Second), IsNil)
 	expectExists(c, cm, "cluster2")
 	expectNotExist(c, cm, "cluster3")
 
@@ -127,7 +138,11 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	c.Assert(err, IsNil)
 
 	// wait for all clusters to disappear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 0 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 0
+	}, time.Second), IsNil)
 	expectNotExist(c, cm, "cluster1")
 	expectNotExist(c, cm, "cluster2")
 	expectNotExist(c, cm, "cluster3")
@@ -135,17 +150,17 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 }
 
 func (s *ClusterMeshTestSuite) TestIsEtcdConfigFile(c *C) {
-	dir, err := ioutil.TempDir("", "etcdconfig")
+	dir, err := os.MkdirTemp("", "etcdconfig")
 	c.Assert(err, IsNil)
 	defer os.RemoveAll(dir)
 
 	validPath := path.Join(dir, "valid")
-	err = ioutil.WriteFile(validPath, []byte("endpoints:\n- https://cluster1.cilium-etcd.cilium.svc:2379\n"), 0644)
+	err = os.WriteFile(validPath, []byte("endpoints:\n- https://cluster1.cilium-etcd.cilium.svc:2379\n"), 0644)
 	c.Assert(err, IsNil)
 	c.Assert(isEtcdConfigFile(validPath), Equals, true)
 
 	invalidPath := path.Join(dir, "valid")
-	err = ioutil.WriteFile(invalidPath, []byte("sf324kj234lkjsdvl\nwl34kj23l4k\nendpoints"), 0644)
+	err = os.WriteFile(invalidPath, []byte("sf324kj234lkjsdvl\nwl34kj23l4k\nendpoints"), 0644)
 	c.Assert(err, IsNil)
 	c.Assert(isEtcdConfigFile(invalidPath), Equals, false)
 }

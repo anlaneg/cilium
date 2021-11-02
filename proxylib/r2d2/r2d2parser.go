@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package r2d2
 
@@ -88,11 +77,13 @@ func (rule *r2d2Rule) Matches(data interface{}) bool {
 // May panic
 func ruleParser(rule *cilium.PortNetworkPolicyRule) []proxylib.L7NetworkPolicyRule {
 	l7Rules := rule.GetL7Rules()
-	var rules []proxylib.L7NetworkPolicyRule
 	if l7Rules == nil {
-		return rules
+		return nil
 	}
-	for _, l7Rule := range l7Rules.GetL7Rules() {
+
+	allowRules := l7Rules.GetL7AllowRules()
+	rules := make([]proxylib.L7NetworkPolicyRule, 0, len(allowRules))
+	for _, l7Rule := range allowRules {
 		var rr r2d2Rule
 		for k, v := range l7Rule.Rule {
 			switch k {
@@ -136,10 +127,9 @@ func init() {
 
 type parser struct {
 	connection *proxylib.Connection
-	inserted   bool
 }
 
-func (f *factory) Create(connection *proxylib.Connection) proxylib.Parser {
+func (f *factory) Create(connection *proxylib.Connection) interface{} {
 	log.Debugf("R2d2ParserFactory: Create: %v", connection)
 
 	return &parser{connection: connection}

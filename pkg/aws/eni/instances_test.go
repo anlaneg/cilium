@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package eni
@@ -32,7 +22,6 @@ var (
 	subnets = []*ipamTypes.Subnet{
 		{
 			ID:                 "subnet-1",
-			CIDR:               "",
 			AvailableAddresses: 10,
 			VirtualNetworkID:   "vpc-1",
 			AvailabilityZone:   "us-west-1",
@@ -42,7 +31,6 @@ var (
 		},
 		{
 			ID:                 "subnet-2",
-			CIDR:               "",
 			AvailableAddresses: 20,
 			VirtualNetworkID:   "vpc-2",
 			AvailabilityZone:   "us-east-1",
@@ -55,7 +43,6 @@ var (
 	subnets2 = []*ipamTypes.Subnet{
 		{
 			ID:                 "subnet-1",
-			CIDR:               "",
 			AvailableAddresses: 10,
 			VirtualNetworkID:   "vpc-1",
 			AvailabilityZone:   "us-west-1",
@@ -65,7 +52,6 @@ var (
 		},
 		{
 			ID:                 "subnet-2",
-			CIDR:               "",
 			AvailableAddresses: 20,
 			VirtualNetworkID:   "vpc-2",
 			AvailabilityZone:   "us-east-1",
@@ -75,7 +61,6 @@ var (
 		},
 		{
 			ID:                 "subnet-3",
-			CIDR:               "",
 			AvailableAddresses: 0,
 			VirtualNetworkID:   "vpc-1",
 			AvailabilityZone:   "us-west-1",
@@ -208,7 +193,7 @@ func (e *ENISuite) TestGetSubnet(c *check.C) {
 	api := ec2mock.NewAPI(subnets, vpcs, securityGroups)
 	c.Assert(api, check.Not(check.IsNil))
 
-	mngr := NewInstancesManager(api, nil)
+	mngr := NewInstancesManager(api)
 	c.Assert(mngr, check.Not(check.IsNil))
 
 	c.Assert(mngr.GetSubnet("subnet-1"), check.IsNil)
@@ -242,11 +227,50 @@ func (e *ENISuite) TestGetSubnet(c *check.C) {
 	c.Assert(subnet3.ID, check.Equals, "subnet-3")
 }
 
+func (e *ENISuite) TestFindSubnetByIDs(c *check.C) {
+	api := ec2mock.NewAPI(subnets2, vpcs, securityGroups)
+	c.Assert(api, check.Not(check.IsNil))
+
+	mngr := NewInstancesManager(api)
+	c.Assert(mngr, check.Not(check.IsNil))
+
+	iteration1(api, mngr)
+	iteration2(api, mngr)
+
+	// exact match subnet-1
+	s := mngr.FindSubnetByIDs("vpc-1", "us-west-1", []string{"subnet-1"})
+	c.Assert(s.ID, check.Equals, "subnet-1")
+
+	// exact match subnet-2
+	s = mngr.FindSubnetByIDs("vpc-2", "us-east-1", []string{"subnet-2"})
+	c.Assert(s.ID, check.Equals, "subnet-2")
+
+	// exact match subnet-3
+	s = mngr.FindSubnetByIDs("vpc-1", "us-west-1", []string{"subnet-3"})
+	c.Assert(s.ID, check.Equals, "subnet-3")
+
+	// empty list shall return nil
+	c.Assert(mngr.FindSubnetByIDs("vpc-1", "us-west-1", []string{}), check.IsNil)
+
+	// all subnet match, subnet-1 has more addresses
+	s = mngr.FindSubnetByIDs("vpc-1", "us-west-1", []string{"subnet-1", "subnet-3"})
+	c.Assert(s.ID, check.Equals, "subnet-1")
+
+	// invalid vpc, no match
+	c.Assert(mngr.FindSubnetByIDs("vpc-unknown", "us-west-1", []string{"subnet-1"}), check.IsNil)
+
+	// invalid AZ, no match
+	c.Assert(mngr.FindSubnetByIDs("vpc-1", "us-west-unknown", []string{"subnet-1"}), check.IsNil)
+
+	// invalid ids, no match
+	c.Assert(mngr.FindSubnetByIDs("vpc-1", "us-west-1", []string{"subnet-unknown"}), check.IsNil)
+}
+
 func (e *ENISuite) TestFindSubnetByTags(c *check.C) {
 	api := ec2mock.NewAPI(subnets, vpcs, securityGroups)
 	c.Assert(api, check.Not(check.IsNil))
 
-	mngr := NewInstancesManager(api, nil)
+	mngr := NewInstancesManager(api)
 	c.Assert(mngr, check.Not(check.IsNil))
 
 	iteration1(api, mngr)
@@ -282,7 +306,7 @@ func (e *ENISuite) TestGetSecurityGroupByTags(c *check.C) {
 	api := ec2mock.NewAPI(subnets, vpcs, securityGroups)
 	c.Assert(api, check.Not(check.IsNil))
 
-	mngr := NewInstancesManager(api, nil)
+	mngr := NewInstancesManager(api)
 	c.Assert(mngr, check.Not(check.IsNil))
 
 	sgGroups := mngr.FindSecurityGroupByTags("vpc-1", map[string]string{
@@ -315,40 +339,4 @@ func (e *ENISuite) TestGetSecurityGroupByTags(c *check.C) {
 	c.Assert(sgGroups, check.HasLen, 2)
 	c.Assert(sgGroups[0].Tags, checker.DeepEquals, reqTags)
 	c.Assert(sgGroups[1].Tags, checker.DeepEquals, reqTags)
-}
-
-func (e *ENISuite) TestGetENIs(c *check.C) {
-	api := ec2mock.NewAPI(subnets, vpcs, securityGroups)
-	c.Assert(api, check.Not(check.IsNil))
-
-	mngr := NewInstancesManager(api, nil)
-	c.Assert(mngr, check.Not(check.IsNil))
-
-	iteration1(api, mngr)
-	c.Assert(len(mngr.GetENIs("i-1")), check.Equals, 1)
-	c.Assert(len(mngr.GetENIs("i-2")), check.Equals, 1)
-	c.Assert(len(mngr.GetENIs("i-unknown")), check.Equals, 0)
-
-	iteration2(api, mngr)
-	c.Assert(len(mngr.GetENIs("i-1")), check.Equals, 2)
-	c.Assert(len(mngr.GetENIs("i-2")), check.Equals, 1)
-	c.Assert(len(mngr.GetENIs("i-unknown")), check.Equals, 0)
-}
-
-func (e *ENISuite) TestGetENI(c *check.C) {
-	api := ec2mock.NewAPI(subnets, vpcs, securityGroups)
-	c.Assert(api, check.Not(check.IsNil))
-
-	mngr := NewInstancesManager(api, nil)
-	c.Assert(mngr, check.Not(check.IsNil))
-
-	iteration1(api, mngr)
-	c.Assert(mngr.GetENI("i-1", 0), check.Not(check.IsNil))
-	c.Assert(mngr.GetENI("i-1", 1), check.IsNil)
-	c.Assert(mngr.GetENI("i-2", 0), check.Not(check.IsNil))
-
-	iteration2(api, mngr)
-	c.Assert(mngr.GetENI("i-1", 0), check.Not(check.IsNil))
-	c.Assert(mngr.GetENI("i-1", 1), check.Not(check.IsNil))
-	c.Assert(mngr.GetENI("i-2", 0), check.Not(check.IsNil))
 }

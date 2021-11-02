@@ -4,7 +4,7 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: cilium
+  name: cilium-log-gatherer
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -30,15 +30,10 @@ spec:
         - "10000"
         command:
         - sleep
-        image: docker.io/cilium/log-gatherer:v1.0
-        imagePullPolicy: Always
+        image: docker.io/cilium/log-gatherer:v1.1
+        imagePullPolicy: IfNotPresent
         name: log-gatherer
         securityContext:
-          capabilities:
-            add:
-            - NET_ADMIN
-            - SYS_MODULE
-            - SYS_ADMIN
           privileged: true
         volumeMounts:
         - mountPath: /sys/fs/bpf
@@ -49,8 +44,8 @@ spec:
       hostNetwork: true
       hostPID: true
       restartPolicy: Always
-      serviceAccount: cilium
-      serviceAccountName: cilium
+      serviceAccount: cilium-log-gatherer
+      serviceAccountName: cilium-log-gatherer
       terminationGracePeriodSeconds: 1
       tolerations:
       - operator: Exists

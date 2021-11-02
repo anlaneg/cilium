@@ -26,6 +26,9 @@
 #define CTX_ACT_DROP		TC_ACT_SHOT
 #define CTX_ACT_TX		TC_ACT_REDIRECT
 
+/* Discouraged since prologue will unclone full skb. */
+#define CTX_DIRECT_WRITE_OK	0
+
 #define META_PIVOT		field_sizeof(struct __sk_buff, cb)
 
 //skb指定offset位置内容加载
@@ -33,7 +36,7 @@
 //skb指定offset位置内容写
 #define ctx_store_bytes		skb_store_bytes
 
-#define ctx_adjust_room		skb_adjust_room
+#define ctx_adjust_hroom	skb_adjust_room
 
 #define ctx_change_type		skb_change_type
 #define ctx_change_proto	skb_change_proto
@@ -48,16 +51,35 @@
 
 #define ctx_adjust_meta		({ -ENOTSUPP; })
 
+/* Avoid expensive calls into the kernel flow dissector if it's not an L4
+ * hash. We currently only use the hash for debugging. If needed later, we
+ * can map it to BPF_FUNC(get_hash_recalc) to get the L4 hash.
+ */
+#define get_hash(ctx)		ctx->hash
+#define get_hash_recalc(ctx)	get_hash(ctx)
+
 static __always_inline __maybe_unused int
-ctx_redirect(struct __sk_buff *ctx, int ifindex, __u32 flags)
+ctx_redirect(struct __sk_buff *ctx __maybe_unused, int ifindex, __u32 flags)
 {
 	return redirect(ifindex, flags);
 }
 
-static __always_inline __maybe_unused __u32
-ctx_full_len(struct __sk_buff *ctx)
+static __always_inline __maybe_unused int
+ctx_adjust_troom(struct __sk_buff *ctx, const __s32 len_diff)
+{
+	return skb_change_tail(ctx, ctx->len + len_diff, 0);
+}
+
+static __always_inline __maybe_unused __u64
+ctx_full_len(const struct __sk_buff *ctx)
 {
 	return ctx->len;
+}
+
+static __always_inline __maybe_unused __u32
+ctx_wire_len(const struct __sk_buff *ctx)
+{
+	return ctx->wire_len;
 }
 
 static __always_inline __maybe_unused void
@@ -67,20 +89,20 @@ ctx_store_meta(struct __sk_buff *ctx, const __u32 off, __u32 data)
 }
 
 static __always_inline __maybe_unused __u32
-ctx_load_meta(struct __sk_buff *ctx, const __u32 off)
+ctx_load_meta(const struct __sk_buff *ctx, const __u32 off)
 {
 	return ctx->cb[off];
 }
 
 static __always_inline __maybe_unused __u32
-ctx_get_protocol(struct __sk_buff *ctx)
+ctx_get_protocol(const struct __sk_buff *ctx)
 {
 	return ctx->protocol;
 }
 
 //入接口index
 static __always_inline __maybe_unused __u32
-ctx_get_ifindex(struct __sk_buff *ctx)
+ctx_get_ifindex(const struct __sk_buff *ctx)
 {
 	return ctx->ifindex;
 }

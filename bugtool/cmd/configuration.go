@@ -1,29 +1,19 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2017-2021 Authors of Cilium
 
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/defaults"
+	"github.com/cilium/cilium/pkg/mountinfo"
 )
 
 // BugtoolConfiguration creates and loads the configuration file used to run
@@ -37,6 +27,53 @@ type BugtoolConfiguration struct {
 func setupDefaultConfig(path string, k8sPods []string, confDir, cmdDir string) (*BugtoolConfiguration, error) {
 	c := BugtoolConfiguration{defaultCommands(confDir, cmdDir, k8sPods)}
 	return &c, save(&c, path)
+}
+
+func bpffsMountpoint() string {
+	mountInfos, err := mountinfo.GetMountInfo()
+	if err != nil {
+		return ""
+	}
+
+	// To determine the mountpoint of the BPF fs we iterate through the list
+	// of mount info (i.e. /proc/self/mounts entries) and return the first
+	// one which has the "bpf" fs type and the "/" root.
+	//
+	// The root == "/" condition allows us to ignore all BPF fs which are
+	// sub mounts (such as for example /sys/fs/bpf/{xdp, ip, sk, sa}) of the
+	// one with the "/" root.
+	//
+	// Moreover, as Cilium will refuse to start if there are multiple BPF fs
+	// which have "/" as their root, we can assume there will be at most one
+	// mountpoint which matches the conditions and so we return it as soon
+	// as we find it.
+	for _, mountInfo := range mountInfos {
+		if mountInfo.FilesystemType == "bpf" && mountInfo.Root == "/" {
+			return mountInfo.MountPoint
+		}
+	}
+
+	return ""
+}
+
+func cgroup2fsMounts() []string {
+	var mounts []string
+	mnts, err := mountinfo.GetMountInfo()
+	if err != nil {
+		return mounts
+	}
+
+	// Cgroup2 fs can be mounted at multiple mount points. Ideally, we would
+	// like to read the mount point where Cilium attaches BPF cgroup programs
+	// (determined by cgroup-root config option). But since this is debug information,
+	// let's collect all the mount points.
+	for _, mnt := range mnts {
+		if mnt.FilesystemType == "cgroup2" {
+			mounts = append(mounts, mnt.MountPoint)
+		}
+	}
+
+	return mounts
 }
 
 func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
@@ -54,63 +91,106 @@ func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
 		"ip -6 n",
 		"ss -t -p -a -i -s",
 		"ss -u -p -a -i -s",
-		"nstat",
+		"tc qdisc show",
+		"tc -d -s qdisc show",
 		"uname -a",
-		"dig",
-		"netstat -a",
-		"pidstat",
-		"arp",
 		"top -b -n 1",
 		"uptime",
 		"dmesg --time-format=iso",
+		"sysctl -a",
 		"bpftool map show",
 		"bpftool prog show",
-		// LB and CT map for debugging services; using bpftool for a reliable dump
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_services_v2",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_services",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_backends",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_reverse_nat",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct4_global",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct_any4_global",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_services_v2",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_services",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_backends",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_reverse_nat",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct6_global",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct_any6_global",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_snat_v4_external",
-		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_snat_v6_external",
-		// Versions
-		"docker version",
-		"docker info",
-		// Docker and Kubernetes logs from systemd
-		"journalctl -u cilium*",
-		"journalctl -u kubelet",
+		"bpftool net show",
+		"taskset -pc 1",
 		// iptables
 		"iptables-save -c",
-		"iptables -S",
-		"ip6tables -S",
-		"iptables -L -v",
+		"ip6tables-save -c",
+		"iptables-nft-save -c",
+		"ip6tables-nft-save -c",
+		"iptables-legacy-save -c",
+		"ip6tables-legacy-save -c",
 		"ip rule",
-		"ip -4 route show table 2005",
-		"ip -6 route show table 2005",
-		"ip -4 route show table 200",
-		"ip -6 route show table 200",
+		"ipset list",
 		// xfrm
-		"ip xfrm policy",
-		"ip -s xfrm state | awk '!/auth|enc|aead|auth-trunc|comp/'",
+		"ip -s xfrm policy",
+		"ip -s xfrm state",
 		// gops
 		fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName),
 		fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName),
 		fmt.Sprintf("gops stats $(pidof %s)", components.CiliumAgentName),
 		// Get list of open file descriptors managed by the agent
 		fmt.Sprintf("ls -la /proc/$(pidof %s)/fd", components.CiliumAgentName),
+		"lsmod",
+	}
+
+	if bpffsMountpoint := bpffsMountpoint(); bpffsMountpoint != "" {
+		commands = append(commands, []string{
+			// LB and CT map for debugging services; using bpftool for a reliable dump
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_call_policy", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_calls_overlay_2", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_capture_cache", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lxc", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_metrics", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_tunnel_map", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_signals", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ktime_cache", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ipcache", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_events", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_sock_ops", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_signals", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_capture4_rules", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_capture6_rules", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_call_policy", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_nodeport_neigh4", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_nodeport_neigh6", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_source_range", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_source_range", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_maglev", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_maglev", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_health", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_reverse_sk", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_health", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_reverse_sk", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ipmasq_v4", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ipv4_frag_datagrams", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ep_to_policy", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_throttle", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_encrypt_state", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_egress_v4", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_services_v2", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_services", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_backends_v2", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_backends", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_reverse_nat", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct4_global", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct_any4_global", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb4_affinity", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_affinity", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb_affinity_match", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_services_v2", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_services", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_backends_v2", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_backends", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_lb6_reverse_nat", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct6_global", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_ct_any6_global", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_snat_v4_external", bpffsMountpoint),
+			fmt.Sprintf("bpftool map dump pinned %s/tc/globals/cilium_snat_v6_external", bpffsMountpoint),
+		}...)
+	}
+
+	cgroup2fsMounts := cgroup2fsMounts()
+	for i := range cgroup2fsMounts {
+		commands = append(commands, []string{
+			fmt.Sprintf("bpftool cgroup tree %s", cgroup2fsMounts[i]),
+		}...)
 	}
 
 	// Commands that require variables and / or more configuration are added
 	// separately below
 	commands = append(commands, catCommands()...)
-	commands = append(commands, ethoolCommands()...)
+	commands = append(commands, routeCommands()...)
+	commands = append(commands, ethtoolCommands()...)
 	commands = append(commands, copyConfigCommands(confDir, k8sPods)...)
 	commands = append(commands, copyCiliumInfoCommands(cmdDir, k8sPods)...)
 
@@ -128,7 +208,7 @@ func save(c *BugtoolConfiguration, path string) error {
 	if err != nil {
 		return fmt.Errorf("Cannot marshal config %s", err)
 	}
-	err = ioutil.WriteFile(path, data, 0644)
+	err = os.WriteFile(path, data, 0644)
 	if err != nil {
 		return fmt.Errorf("Cannot write config %s", err)
 	}
@@ -138,7 +218,7 @@ func save(c *BugtoolConfiguration, path string) error {
 func loadConfigFile(path string) (*BugtoolConfiguration, error) {
 	var content []byte
 	var err error
-	content, err = ioutil.ReadFile(path)
+	content, err = os.ReadFile(path)
 
 	if err != nil {
 		return nil, err
@@ -172,6 +252,19 @@ func catCommands() []string {
 	return commands
 }
 
+// routeCommands gets the routes tables dynamically.
+func routeCommands() []string {
+	commands := []string{}
+	routes, _ := execCommand("ip route show table all | grep -E --only-matching 'table [0-9]+'")
+
+	for _, r := range bytes.Split(bytes.TrimSuffix(routes, []byte("\n")), []byte("\n")) {
+		routeTablev4 := fmt.Sprintf("ip -4 route show %v", r)
+		routeTablev6 := fmt.Sprintf("ip -6 route show %v", r)
+		commands = append(commands, routeTablev4, routeTablev6)
+	}
+	return commands
+}
+
 func copyConfigCommands(confDir string, k8sPods []string) []string {
 	commands := []string{}
 	// Location is a convenience structure to avoid too many long lines
@@ -193,7 +286,7 @@ func copyConfigCommands(confDir string, k8sPods []string) []string {
 	// path. This should be refactored.
 	if len(k8sPods) == 0 {
 		kernel, _ := execCommand("uname -r")
-		kernel = strings.TrimSpace(kernel)
+		kernel = bytes.TrimSpace(kernel)
 		// Append the boot config for the current kernel
 		l := Location{fmt.Sprintf("/boot/config-%s", kernel),
 			fmt.Sprintf("%s/kernel-config-%s", confDir, kernel)}
@@ -212,7 +305,7 @@ func copyConfigCommands(confDir string, k8sPods []string) []string {
 		for _, pod := range k8sPods {
 			prompt := podPrefix(pod, "uname -r")
 			kernel, _ := execCommand(prompt)
-			kernel = strings.TrimSpace(kernel)
+			kernel = bytes.TrimSpace(kernel)
 			l := Location{fmt.Sprintf("/boot/config-%s", kernel),
 				fmt.Sprintf("%s/kernel-config-%s", confDir, kernel)}
 			locations = append(locations, l)
@@ -238,17 +331,25 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		fmt.Sprintf("cilium debuginfo --output=markdown,json -f --output-directory=%s", cmdDir),
 		"cilium metrics list",
 		"cilium fqdn cache list",
-		"cilium config",
+		"cilium config -a",
+		"cilium encrypt status",
+		"cilium bpf bandwidth list",
 		"cilium bpf tunnel list",
 		"cilium bpf lb list",
+		"cilium bpf egress list",
 		"cilium bpf endpoint list",
 		"cilium bpf ct list global",
 		"cilium bpf nat list",
-		"cilium bpf proxy list",
+		"cilium bpf ipmasq list",
 		"cilium bpf ipcache list",
 		"cilium bpf policy get --all --numeric",
 		"cilium bpf sha list",
+		"cilium bpf fs show",
+		"cilium bpf recorder list",
+		"cilium ip list -n -o json",
 		"cilium map list --verbose",
+		"cilium service list",
+		"cilium recorder list",
 		"cilium status --verbose",
 		"cilium identity list",
 		"cilium-health status",

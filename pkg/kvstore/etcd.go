@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package kvstore
 
@@ -20,28 +9,30 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"math/rand"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/cilium/cilium/pkg/contexthelpers"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/defaults"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/spanstat"
 	"github.com/cilium/cilium/pkg/versioncheck"
 
-	go_version "github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"github.com/sirupsen/logrus"
-	client "go.etcd.io/etcd/clientv3"
-	"go.etcd.io/etcd/clientv3/concurrency"
-	clientyaml "go.etcd.io/etcd/clientv3/yaml"
-	v3rpcErrors "go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
-	"go.etcd.io/etcd/pkg/tlsutil"
+	v3rpcErrors "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/tlsutil"
+	client "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
+	clientyaml "go.etcd.io/etcd/client/v3/yaml"
 	"golang.org/x/time/rate"
 	"sigs.k8s.io/yaml"
 )
@@ -50,9 +41,11 @@ const (
 	// EtcdBackendName is the backend name for etcd
 	EtcdBackendName = "etcd"
 
-	EtcdAddrOption       = "etcd.address"
-	isEtcdOperatorOption = "etcd.operator"
-	EtcdOptionConfig     = "etcd.config"
+	EtcdAddrOption               = "etcd.address"
+	isEtcdOperatorOption         = "etcd.operator"
+	EtcdOptionConfig             = "etcd.config"
+	etcdOptionKeepAliveHeartbeat = "etcd.keepaliveHeartbeat"
+	etcdOptionKeepAliveTimeout   = "etcd.keepaliveTimeout"
 
 	// EtcdRateLimitOption specifies maximum kv operations per second
 	EtcdRateLimitOption = "etcd.qps"
@@ -64,11 +57,9 @@ var (
 	// ErrLockLeaseExpired is an error whenever the lease of the lock does not
 	// exist or it was expired.
 	ErrLockLeaseExpired = errors.New("transaction did not succeed: lock lease expired")
-)
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
+	randGen = rand.NewSafeRand(time.Now().UnixNano())
+)
 
 type etcdModule struct {
 	opts   backendOptions
@@ -79,11 +70,12 @@ var (
 	// versionCheckTimeout is the time we wait trying to verify the version
 	// of an etcd endpoint. The timeout can be encountered on network
 	// connectivity problems.
-	versionCheckTimeout = 30 * time.Second
+	// This field needs to be accessed with the atomic library.
+	versionCheckTimeout = int64(30 * time.Second)
 
 	// statusCheckTimeout is the timeout when performing status checks with
 	// all etcd endpoints
-	statusCheckTimeout = 5 * time.Second
+	statusCheckTimeout = 10 * time.Second
 
 	// initialConnectionTimeout  is the timeout for the initial connection to
 	// the etcd server
@@ -112,6 +104,20 @@ func newEtcdModule() backendModule {
 			},
 			EtcdOptionConfig: &backendOption{
 				description: "Path to etcd configuration file",
+			},
+			etcdOptionKeepAliveTimeout: &backendOption{
+				description: "Timeout after which an unanswered heartbeat triggers the connection to be closed",
+				validate: func(v string) error {
+					_, err := time.ParseDuration(v)
+					return err
+				},
+			},
+			etcdOptionKeepAliveHeartbeat: &backendOption{
+				description: "Heartbeat interval to keep gRPC connection alive",
+				validate: func(v string) error {
+					_, err := time.ParseDuration(v)
+					return err
+				},
 			},
 			EtcdRateLimitOption: &backendOption{
 				description: "Rate limit in kv store operations per second",
@@ -153,19 +159,41 @@ func (e *etcdModule) getConfig() map[string]string {
 	return getOpts(e.opts)
 }
 
+func shuffleEndpoints(endpoints []string) {
+	randGen.Shuffle(len(endpoints), func(i, j int) {
+		endpoints[i], endpoints[j] = endpoints[j], endpoints[i]
+	})
+}
+
+type clientOptions struct {
+	KeepAliveHeartbeat time.Duration
+	KeepAliveTimeout   time.Duration
+	RateLimit          int
+}
+
 func (e *etcdModule) newClient(ctx context.Context, opts *ExtraOptions) (BackendOperations, chan error) {
 	errChan := make(chan error, 10)
 
+	clientOptions := clientOptions{
+		KeepAliveHeartbeat: 15 * time.Second,
+		KeepAliveTimeout:   25 * time.Second,
+		RateLimit:          defaults.KVstoreQPS,
+	}
+
+	if o, ok := e.opts[EtcdRateLimitOption]; ok && o.value != "" {
+		clientOptions.RateLimit, _ = strconv.Atoi(o.value)
+	}
+
+	if o, ok := e.opts[etcdOptionKeepAliveTimeout]; ok && o.value != "" {
+		clientOptions.KeepAliveTimeout, _ = time.ParseDuration(o.value)
+	}
+
+	if o, ok := e.opts[etcdOptionKeepAliveHeartbeat]; ok && o.value != "" {
+		clientOptions.KeepAliveHeartbeat, _ = time.ParseDuration(o.value)
+	}
+
 	endpointsOpt, endpointsSet := e.opts[EtcdAddrOption]
 	configPathOpt, configSet := e.opts[EtcdOptionConfig]
-
-	rateLimitOpt, rateLimitSet := e.opts[EtcdRateLimitOption]
-
-	rateLimit := defaults.KVstoreQPS
-	if rateLimitSet {
-		// error is discarded here because this option has validation
-		rateLimit, _ = strconv.Atoi(rateLimitOpt.value)
-	}
 
 	var configPath string
 	if configSet {
@@ -192,10 +220,17 @@ func (e *etcdModule) newClient(ctx context.Context, opts *ExtraOptions) (Backend
 		e.config.Endpoints = []string{endpointsOpt.value}
 	}
 
+	log.WithFields(logrus.Fields{
+		"ConfigPath":         configPath,
+		"KeepAliveHeartbeat": clientOptions.KeepAliveHeartbeat,
+		"KeepAliveTimeout":   clientOptions.KeepAliveTimeout,
+		"RateLimit":          clientOptions.RateLimit,
+	}).Info("Creating etcd client")
+
 	for {
 		// connectEtcdClient will close errChan when the connection attempt has
 		// been successful
-		backend, err := connectEtcdClient(e.config, configPath, errChan, rateLimit, opts)
+		backend, err := connectEtcdClient(ctx, e.config, configPath, errChan, clientOptions, opts)
 		switch {
 		case os.IsNotExist(err):
 			log.WithError(err).Info("Waiting for all etcd configuration files to be available")
@@ -213,6 +248,13 @@ func (e *etcdModule) newClient(ctx context.Context, opts *ExtraOptions) (Backend
 func init() {
 	// register etcd module for use
 	registerBackend(EtcdBackendName, etcdInstance)
+
+	if duration := os.Getenv("CILIUM_ETCD_STATUS_CHECK_INTERVAL"); duration != "" {
+		timeout, err := time.ParseDuration(duration)
+		if err == nil {
+			statusCheckTimeout = timeout
+		}
+	}
 }
 
 // Hint tries to improve the error message displayed to te user.
@@ -227,7 +269,9 @@ func Hint(err error) error {
 
 type etcdClient struct {
 	// firstSession is a channel that will be closed once the first session
-	// is set up in the etcd Client.
+	// is set up in the etcd client. If an error occurred and the initial
+	// session cannot be established, the error is provided via the
+	// channel.
 	firstSession chan struct{}
 
 	// stopStatusChecker is closed when the status checker can be terminated
@@ -240,10 +284,18 @@ type etcdClient struct {
 	config     *client.Config
 	configPath string
 
-	// protects sessions from concurrent access
+	// statusCheckErrors receives all errors reported by statusChecker()
+	statusCheckErrors chan error
+
+	// protects all sessions and sessionErr from concurrent access
 	lock.RWMutex
-	session     *concurrency.Session
-	lockSession *concurrency.Session
+
+	sessionErr    error
+	session       *concurrency.Session
+	sessionCancel context.CancelFunc
+
+	lockSession       *concurrency.Session
+	lockSessionCancel context.CancelFunc
 
 	// statusLock protects latestStatusSnapshot and latestErrorStatus for
 	// read/write access
@@ -258,6 +310,8 @@ type etcdClient struct {
 	extraOptions *ExtraOptions
 
 	limiter *rate.Limiter
+
+	lastHeartbeat time.Time
 }
 
 func (e *etcdClient) getLogger() *logrus.Entry {
@@ -295,6 +349,11 @@ func (e *etcdClient) GetSessionLeaseID() client.LeaseID {
 	return l
 }
 
+// StatusCheckErrors returns a channel which receives status check errors
+func (e *etcdClient) StatusCheckErrors() <-chan error {
+	return e.statusCheckErrors
+}
+
 // GetLockSessionLeaseID returns the current lease ID for the lock session.
 func (e *etcdClient) GetLockSessionLeaseID() client.LeaseID {
 	e.RWMutex.RLock()
@@ -309,7 +368,7 @@ func (e *etcdClient) GetLockSessionLeaseID() client.LeaseID {
 // it as an Orphan() the session would be considered expired after the leaseTTL
 // By make it orphan we guarantee the session will be marked to be renewed.
 func (e *etcdClient) checkSession(err error, leaseID client.LeaseID) {
-	if err == v3rpcErrors.ErrLeaseNotFound {
+	if errors.Is(err, v3rpcErrors.ErrLeaseNotFound) {
 		e.closeSession(leaseID)
 	}
 }
@@ -320,7 +379,7 @@ func (e *etcdClient) checkSession(err error, leaseID client.LeaseID) {
 // it as an Orphan() the session would be considered expired after the leaseTTL
 // By make it orphan we guarantee the session will be marked to be renewed.
 func (e *etcdClient) checkLockSession(err error, leaseID client.LeaseID) {
-	if err == v3rpcErrors.ErrLeaseNotFound {
+	if errors.Is(err, v3rpcErrors.ErrLeaseNotFound) {
 		e.closeLockSession(leaseID)
 	}
 }
@@ -347,26 +406,34 @@ func (e *etcdClient) closeLockSession(leaseID client.LeaseID) {
 	e.RWMutex.RUnlock()
 }
 
-func (e *etcdClient) waitForInitLock(ctx context.Context) <-chan bool {
-	initLockSucceeded := make(chan bool)
+func (e *etcdClient) waitForInitLock(ctx context.Context) <-chan error {
+	initLockSucceeded := make(chan error)
 
 	go func() {
 		for {
 			select {
+			case <-e.client.Ctx().Done():
+				initLockSucceeded <- fmt.Errorf("client context ended: %w", e.client.Ctx().Err())
+				close(initLockSucceeded)
+				return
 			case <-ctx.Done():
-				initLockSucceeded <- false
+				initLockSucceeded <- fmt.Errorf("caller context ended: %w", ctx.Err())
 				close(initLockSucceeded)
 				return
 			default:
 			}
 
+			if e.extraOptions != nil && e.extraOptions.NoLockQuorumCheck {
+				close(initLockSucceeded)
+				return
+			}
+
 			// Generate a random number so that we can acquire a lock even
 			// if other agents are killed while locking this path.
-			randNumber := strconv.FormatUint(rand.Uint64(), 16)
+			randNumber := strconv.FormatUint(randGen.Uint64(), 16)
 			locker, err := e.LockPath(ctx, InitLockPath+"/"+randNumber)
 			if err == nil {
 				locker.Unlock(context.Background())
-				initLockSucceeded <- true
 				close(initLockSucceeded)
 				e.getLogger().Debug("Distributed lock successful, etcd has quorum")
 				return
@@ -379,16 +446,23 @@ func (e *etcdClient) waitForInitLock(ctx context.Context) <-chan bool {
 	return initLockSucceeded
 }
 
-func (e *etcdClient) isConnectedAndHasQuorum(ctx context.Context) bool {
+func (e *etcdClient) isConnectedAndHasQuorum(ctx context.Context) error {
 	ctxTimeout, cancel := context.WithTimeout(ctx, statusCheckTimeout)
 	defer cancel()
 
 	select {
 	// Wait for the the initial connection to be established
 	case <-e.firstSession:
+		if err := e.sessionError(); err != nil {
+			return err
+		}
+	// Client is closing
+	case <-e.client.Ctx().Done():
+		return fmt.Errorf("client is closing")
 	// Timeout while waiting for initial connection, no success
 	case <-ctxTimeout.Done():
-		return false
+		recordQuorumError("timeout")
+		return fmt.Errorf("timeout while waiting for initial connection")
 	}
 
 	e.RLock()
@@ -399,21 +473,41 @@ func (e *etcdClient) isConnectedAndHasQuorum(ctx context.Context) bool {
 	select {
 	// Catch disconnect event, no success
 	case <-ch:
-		return false
+		recordQuorumError("session timeout")
+		return fmt.Errorf("etcd session ended")
 	// wait for initial lock to succeed
-	case success := <-initLockSucceeded:
-		return success
+	case err := <-initLockSucceeded:
+		if err != nil {
+			recordQuorumError("lock timeout")
+			return fmt.Errorf("unable to acquire lock: %w", err)
+		}
+
+		return nil
 	}
 }
 
-// Connected closes the returned channel when the etcd client is connected.
-func (e *etcdClient) Connected(ctx context.Context) <-chan struct{} {
-	out := make(chan struct{})
+// Connected closes the returned channel when the etcd client is connected. If
+// the context is cancelled or if the etcd client is closed, an error is
+// returned on the channel.
+func (e *etcdClient) Connected(ctx context.Context) <-chan error {
+	out := make(chan error)
 	go func() {
-		for !e.isConnectedAndHasQuorum(ctx) {
+		defer close(out)
+		for {
+			select {
+			case <-e.client.Ctx().Done():
+				out <- fmt.Errorf("etcd client context ended")
+				return
+			case <-ctx.Done():
+				out <- ctx.Err()
+				return
+			default:
+			}
+			if e.isConnectedAndHasQuorum(ctx) == nil {
+				return
+			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		close(out)
 	}()
 	return out
 }
@@ -429,51 +523,120 @@ func (e *etcdClient) Disconnected() <-chan struct{} {
 	return ch
 }
 
-func (e *etcdClient) renewSession() error {
-	<-e.firstSession
-	<-e.session.Done()
+func (e *etcdClient) renewSession(ctx context.Context) error {
+	if err := e.waitForInitialSession(ctx); err != nil {
+		return err
+	}
+
+	e.RLock()
+	sessionChan := e.session.Done()
+	e.RUnlock()
+
+	select {
+	// session has ended
+	case <-sessionChan:
+	// controller has stopped or etcd client is closing
+	case <-ctx.Done():
+		return nil
+	}
 	// This is an attempt to avoid concurrent access of a session that was
 	// already expired. It's not perfect as there is still a period between the
 	// e.session.Done() is closed and the e.Lock() is held where parallel go
 	// routines can get a lease ID of an already expired lease.
 	e.Lock()
 
-	newSession, err := concurrency.NewSession(e.client, concurrency.WithTTL(int(option.Config.KVstoreLeaseTTL.Seconds())))
+	// Cancel any eventual old session context
+	if e.sessionCancel != nil {
+		e.sessionCancel()
+		e.sessionCancel = nil
+	}
+
+	// Create a context representing the lifetime of the session. It will
+	// timeout if the session creation does not succeed in time and then
+	// persists until any of the below conditions are met:
+	//  - The parent context is cancelled due to the etcd client closing or
+	//    the controller being shut down
+	//  - The above call to sessionCancel() cancels the session due to the
+	//  session ending and requiring renewal.
+	sessionContext, sessionCancel, sessionSuccess := contexthelpers.NewConditionalTimeoutContext(ctx, statusCheckTimeout)
+	defer close(sessionSuccess)
+
+	newSession, err := concurrency.NewSession(
+		e.client,
+		concurrency.WithTTL(int(option.Config.KVstoreLeaseTTL.Seconds())),
+		concurrency.WithContext(sessionContext),
+	)
 	if err != nil {
 		e.UnlockIgnoreTime()
 		return fmt.Errorf("unable to renew etcd session: %s", err)
 	}
+	sessionSuccess <- true
 	log.Infof("Got new lease ID %x", newSession.Lease())
 
 	e.session = newSession
+	e.sessionCancel = sessionCancel
 	e.UnlockIgnoreTime()
 
 	e.getLogger().WithField(fieldSession, newSession).Debug("Renewing etcd session")
 
-	if err := e.checkMinVersion(); err != nil {
+	if err := e.checkMinVersion(ctx); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (e *etcdClient) renewLockSession() error {
-	<-e.firstSession
-	<-e.lockSession.Done()
+func (e *etcdClient) renewLockSession(ctx context.Context) error {
+	if err := e.waitForInitialSession(ctx); err != nil {
+		return err
+	}
+
+	e.RWMutex.RLock()
+	lockSessionChan := e.lockSession.Done()
+	e.RWMutex.RUnlock()
+
+	select {
+	// session has ended
+	case <-lockSessionChan:
+	// controller has stopped or etcd client is closing
+	case <-ctx.Done():
+		return nil
+	}
 	// This is an attempt to avoid concurrent access of a session that was
 	// already expired. It's not perfect as there is still a period between the
 	// e.lockSession.Done() is closed and the e.Lock() is held where parallel go
 	// routines can get a lease ID of an already expired lease.
 	e.Lock()
 
-	newSession, err := concurrency.NewSession(e.client, concurrency.WithTTL(int(defaults.LockLeaseTTL.Seconds())))
+	if e.lockSessionCancel != nil {
+		e.lockSessionCancel()
+		e.lockSessionCancel = nil
+	}
+
+	// Create a context representing the lifetime of the lock session. It
+	// will timeout if the session creation does not succeed in time and
+	// persists until any of the below conditions are met:
+	//  - The parent context is cancelled due to the etcd client closing or
+	//    the controller being shut down
+	//  - The above call to sessionCancel() cancels the session due to the
+	//  session ending and requiring renewal.
+	sessionContext, sessionCancel, sessionSuccess := contexthelpers.NewConditionalTimeoutContext(ctx, statusCheckTimeout)
+	defer close(sessionSuccess)
+
+	newSession, err := concurrency.NewSession(
+		e.client,
+		concurrency.WithTTL(int(defaults.LockLeaseTTL.Seconds())),
+		concurrency.WithContext(sessionContext),
+	)
 	if err != nil {
 		e.UnlockIgnoreTime()
 		return fmt.Errorf("unable to renew etcd lock session: %s", err)
 	}
+	sessionSuccess <- true
 	log.Infof("Got new lock lease ID %x", newSession.Lease())
 
 	e.lockSession = newSession
+	e.lockSessionCancel = sessionCancel
 	e.UnlockIgnoreTime()
 
 	e.getLogger().WithField(fieldSession, newSession).Debug("Renewing etcd lock session")
@@ -481,20 +644,38 @@ func (e *etcdClient) renewLockSession() error {
 	return nil
 }
 
-func connectEtcdClient(config *client.Config, cfgPath string, errChan chan error, rateLimit int, opts *ExtraOptions) (BackendOperations, error) {
+func connectEtcdClient(ctx context.Context, config *client.Config, cfgPath string, errChan chan error, clientOptions clientOptions, opts *ExtraOptions) (BackendOperations, error) {
 	if cfgPath != "" {
 		cfg, err := newConfig(cfgPath)
 		if err != nil {
 			return nil, err
 		}
+		if cfg.TLS != nil {
+			cfg.TLS.GetClientCertificate, err = getClientCertificateReloader(cfgPath)
+			if err != nil {
+				return nil, err
+			}
+		}
 		cfg.DialOptions = append(cfg.DialOptions, config.DialOptions...)
 		config = cfg
+	}
+
+	// Shuffle the order of endpoints to avoid all agents connecting to the
+	// same etcd endpoint and to work around etcd client library failover
+	// bugs. (https://github.com/etcd-io/etcd/pull/9860)
+	if config.Endpoints != nil {
+		shuffleEndpoints(config.Endpoints)
 	}
 
 	// Set DialTimeout to 0, otherwise the creation of a new client will
 	// block until DialTimeout is reached or a connection to the server
 	// is made.
 	config.DialTimeout = 0
+	// Ping the server to verify if the server connection is still valid
+	config.DialKeepAliveTime = clientOptions.KeepAliveHeartbeat
+	// Timeout if the server does not reply within 15 seconds and close the
+	// connection. Ideally it should be lower than staleLockTimeout
+	config.DialKeepAliveTimeout = clientOptions.KeepAliveTimeout
 	c, err := client.New(*config)
 	if err != nil {
 		return nil, err
@@ -506,8 +687,22 @@ func connectEtcdClient(config *client.Config, cfgPath string, errChan chan error
 	}).Info("Connecting to etcd server...")
 
 	var s, ls concurrency.Session
-	firstSession := make(chan struct{})
 	errorChan := make(chan error)
+
+	ec := &etcdClient{
+		client:               c,
+		config:               config,
+		configPath:           cfgPath,
+		session:              &s,
+		lockSession:          &ls,
+		firstSession:         make(chan struct{}),
+		controllers:          controller.NewManager(),
+		latestStatusSnapshot: "Waiting for initial connection to be established",
+		stopStatusChecker:    make(chan struct{}),
+		extraOptions:         opts,
+		limiter:              rate.NewLimiter(rate.Limit(clientOptions.RateLimit), clientOptions.RateLimit),
+		statusCheckErrors:    make(chan error, 128),
+	}
 
 	// create session in parallel as this is a blocking operation
 	go func() {
@@ -523,57 +718,81 @@ func connectEtcdClient(config *client.Config, cfgPath string, errChan chan error
 			close(errorChan)
 			return
 		}
+
+		ec.RWMutex.Lock()
 		s = *session
 		ls = *lockSession
+		ec.RWMutex.Unlock()
 
 		log.Infof("Got lease ID %x", s.Lease())
 		log.Infof("Got lock lease ID %x", ls.Lease())
 		close(errorChan)
 	}()
 
-	ec := &etcdClient{
-		client:               c,
-		config:               config,
-		configPath:           cfgPath,
-		session:              &s,
-		lockSession:          &ls,
-		firstSession:         firstSession,
-		controllers:          controller.NewManager(),
-		latestStatusSnapshot: "No connection to etcd",
-		stopStatusChecker:    make(chan struct{}),
-		extraOptions:         opts,
-		limiter:              rate.NewLimiter(rate.Limit(rateLimit), rateLimit),
+	handleSessionError := func(err error) {
+		ec.RWMutex.Lock()
+		ec.sessionErr = err
+		ec.RWMutex.Unlock()
+		errChan <- err
 	}
 
 	// wait for session to be created also in parallel
 	go func() {
 		defer close(errChan)
+		defer close(ec.firstSession)
 
 		select {
 		case err = <-errorChan:
 			if err != nil {
-				errChan <- err
+				handleSessionError(err)
 				return
 			}
 		case <-time.After(initialConnectionTimeout):
-			errChan <- fmt.Errorf("timed out while waiting for etcd session. Ensure that etcd is running on %s", config.Endpoints)
+			handleSessionError(fmt.Errorf("timed out while waiting for etcd session. Ensure that etcd is running on %s", config.Endpoints))
 			return
 		}
 
-		ec.getLogger().Debugf("Session received")
-		close(ec.firstSession)
+		ec.getLogger().Info("Initial etcd session established")
 
-		if err := ec.checkMinVersion(); err != nil {
-			errChan <- fmt.Errorf("unable to validate etcd version: %s", err)
+		if err := ec.checkMinVersion(ctx); err != nil {
+			handleSessionError(fmt.Errorf("unable to validate etcd version: %s", err))
 		}
 	}()
 
-	go ec.statusChecker(context.TODO())
+	go func() {
+		watcher := ec.ListAndWatch(ctx, HeartbeatPath, HeartbeatPath, 128)
+
+		for {
+			select {
+			case _, ok := <-watcher.Events:
+				if !ok {
+					log.Debug("Stopping heartbeat watcher")
+					watcher.Stop()
+					return
+				}
+
+				// It is tempting to compare against the
+				// heartbeat value stored in the key. However,
+				// this would require the time on all nodes to
+				// be synchronized. Instead, assume current
+				// time and print the heartbeat value in debug
+				// messages for troubleshooting
+				ec.RWMutex.Lock()
+				ec.lastHeartbeat = time.Now()
+				ec.RWMutex.Unlock()
+				log.Debug("Received update notification of heartbeat")
+			}
+		}
+	}()
+
+	go ec.statusChecker()
 
 	ec.controllers.UpdateController("kvstore-etcd-session-renew",
 		controller.ControllerParams{
+			// Stop controller function when etcd client is terminating
+			Context: ec.client.Ctx(),
 			DoFunc: func(ctx context.Context) error {
-				return ec.renewSession()
+				return ec.renewSession(ctx)
 			},
 			RunInterval: time.Duration(10) * time.Millisecond,
 		},
@@ -581,8 +800,10 @@ func connectEtcdClient(config *client.Config, cfgPath string, errChan chan error
 
 	ec.controllers.UpdateController("kvstore-etcd-lock-session-renew",
 		controller.ControllerParams{
+			// Stop controller function when etcd client is terminating
+			Context: ec.client.Ctx(),
 			DoFunc: func(ctx context.Context) error {
-				return ec.renewLockSession()
+				return ec.renewLockSession(ctx)
 			},
 			RunInterval: time.Duration(10) * time.Millisecond,
 		},
@@ -591,28 +812,36 @@ func connectEtcdClient(config *client.Config, cfgPath string, errChan chan error
 	return ec, nil
 }
 
-func getEPVersion(c client.Maintenance, etcdEP string, timeout time.Duration) (go_version.Version, error) {
-	ctxTimeout, cancel := context.WithTimeout(context.TODO(), timeout)
+func getEPVersion(ctx context.Context, c client.Maintenance, etcdEP string, timeout time.Duration) (semver.Version, error) {
+	ctxTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	sr, err := c.Status(ctxTimeout, etcdEP)
 	if err != nil {
-		return go_version.Version{}, Hint(err)
+		return semver.Version{}, Hint(err)
 	}
 	v, err := versioncheck.Version(sr.Version)
 	if err != nil {
-		return go_version.Version{}, fmt.Errorf("error parsing server version %q: %s", sr.Version, Hint(err))
+		return semver.Version{}, fmt.Errorf("error parsing server version %q: %s", sr.Version, Hint(err))
 	}
 	return v, nil
+}
+
+func (e *etcdClient) sessionError() (err error) {
+	e.RWMutex.RLock()
+	err = e.sessionErr
+	e.RWMutex.RUnlock()
+	return
 }
 
 // checkMinVersion checks the minimal version running on etcd cluster.  This
 // function should be run whenever the etcd client is connected for the first
 // time and whenever the session is renewed.
-func (e *etcdClient) checkMinVersion() error {
+func (e *etcdClient) checkMinVersion(ctx context.Context) error {
 	eps := e.client.Endpoints()
 
 	for _, ep := range eps {
-		v, err := getEPVersion(e.client.Maintenance, ep, versionCheckTimeout)
+		vcTimeout := atomic.LoadInt64(&versionCheckTimeout)
+		v, err := getEPVersion(ctx, e.client.Maintenance, ep, time.Duration(vcTimeout))
 		if err != nil {
 			e.getLogger().WithError(Hint(err)).WithField(fieldEtcdEndpoint, ep).
 				Warn("Unable to verify version of etcd endpoint")
@@ -637,20 +866,35 @@ func (e *etcdClient) checkMinVersion() error {
 	return nil
 }
 
-func (e *etcdClient) LockPath(ctx context.Context, path string) (KVLocker, error) {
+func (e *etcdClient) waitForInitialSession(ctx context.Context) error {
 	select {
 	case <-e.firstSession:
+		if err := e.sessionError(); err != nil {
+			return err
+		}
 	case <-ctx.Done():
-		return nil, fmt.Errorf("lock cancelled via context: %s", ctx.Err())
+		return fmt.Errorf("interrupt while waiting for initial session to be established: %w", ctx.Err())
 	}
+
+	return nil
+}
+
+func (e *etcdClient) LockPath(ctx context.Context, path string) (KVLocker, error) {
+	if err := e.waitForInitialSession(ctx); err != nil {
+		return nil, err
+	}
+
+	// Create the context first so that if a connectivity issue causes the
+	// RLock acquisition below to block, this timeout will run concurrently
+	// with the timeouts in renewSession() rather than running serially.
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 
 	e.RLock()
 	mu := concurrency.NewMutex(e.lockSession, path)
 	leaseID := e.lockSession.Lease()
 	e.RUnlock()
 
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
 	err := mu.Lock(ctx)
 	if err != nil {
 		e.checkLockSession(err, leaseID)
@@ -677,14 +921,28 @@ func (e *etcdClient) Watch(ctx context.Context, w *Watcher) {
 
 	scopedLog := e.getLogger().WithFields(logrus.Fields{
 		fieldWatcher: w,
-		fieldPrefix:  w.prefix,
+		fieldPrefix:  w.Prefix,
 	})
-	<-e.Connected(ctx)
+
+	err := <-e.Connected(ctx)
+	if err != nil {
+		// The context ended or the etcd client was closed
+		// before connectivity was achieved
+		return
+	}
 
 reList:
 	for {
+		select {
+		case <-e.client.Ctx().Done():
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		e.limiter.Wait(ctx)
-		res, err := e.client.Get(ctx, w.prefix, client.WithPrefix(),
+		res, err := e.client.Get(ctx, w.Prefix, client.WithPrefix(),
 			client.WithSerializable())
 		if err != nil {
 			scopedLog.WithError(Hint(err)).Warn("Unable to list keys before starting watcher")
@@ -744,10 +1002,14 @@ reList:
 		scopedLog.WithField(fieldRev, nextRev).Debug("Starting to watch a prefix")
 
 		e.limiter.Wait(ctx)
-		etcdWatch := e.client.Watch(ctx, w.prefix,
+		etcdWatch := e.client.Watch(ctx, w.Prefix,
 			client.WithPrefix(), client.WithRev(nextRev))
 		for {
 			select {
+			case <-e.client.Ctx().Done():
+				return
+			case <-ctx.Done():
+				return
 			case <-w.stopWatch:
 				close(w.Events)
 				w.stopWait.Done()
@@ -766,7 +1028,7 @@ reList:
 					// revision that may no longer exist,
 					// recreate the watcher and try to
 					// watch on the next possible revision
-					if err == v3rpcErrors.ErrCompacted {
+					if errors.Is(err, v3rpcErrors.ErrCompacted) {
 						scopedLog.WithError(Hint(err)).Debug("Tried watching on compacted revision")
 					}
 
@@ -830,12 +1092,19 @@ func (e *etcdClient) determineEndpointStatus(ctx context.Context, endpointAddres
 	return str, nil
 }
 
-func (e *etcdClient) statusChecker(ctx context.Context) {
+func (e *etcdClient) statusChecker() {
+	ctx := context.Background()
+
+	consecutiveQuorumErrors := 0
+
+	statusTimer, statusTimerDone := inctimer.New()
+	defer statusTimerDone()
+
 	for {
 		newStatus := []string{}
 		ok := 0
 
-		hasQuorum := e.isConnectedAndHasQuorum(ctx)
+		quorumError := e.isConnectedAndHasQuorum(ctx)
 
 		endpoints := e.client.Endpoints()
 		for _, ep := range endpoints {
@@ -852,25 +1121,49 @@ func (e *etcdClient) statusChecker(ctx context.Context) {
 		e.RWMutex.RLock()
 		sessionLeaseID := e.session.Lease()
 		lockSessionLeaseID := e.lockSession.Lease()
+		lastHeartbeat := e.lastHeartbeat
 		e.RWMutex.RUnlock()
 
-		e.statusLock.Lock()
-		e.latestStatusSnapshot = fmt.Sprintf("etcd: %d/%d connected, lease-ID=%x, lock lease-ID=%x, has-quorum=%t: %s",
-			ok, len(endpoints), sessionLeaseID, lockSessionLeaseID, hasQuorum, strings.Join(newStatus, "; "))
+		if heartbeatDelta := time.Since(lastHeartbeat); !lastHeartbeat.IsZero() && heartbeatDelta > 2*HeartbeatWriteInterval {
+			recordQuorumError("no event received")
+			quorumError = fmt.Errorf("%s since last heartbeat update has been received", heartbeatDelta)
+		}
 
-		// Only mark the etcd health as unstable if no etcd endpoints can be reached
-		if len(endpoints) > 0 && ok == 0 {
-			e.latestErrorStatus = fmt.Errorf("not able to connect to any etcd endpoints")
+		quorumString := "true"
+		if quorumError != nil {
+			quorumString = quorumError.Error()
+			consecutiveQuorumErrors++
+			quorumString += fmt.Sprintf(", consecutive-errors=%d", consecutiveQuorumErrors)
 		} else {
+			consecutiveQuorumErrors = 0
+		}
+
+		e.statusLock.Lock()
+
+		switch {
+		case consecutiveQuorumErrors > option.Config.KVstoreMaxConsecutiveQuorumErrors:
+			e.latestErrorStatus = fmt.Errorf("quorum check failed %d times in a row: %s",
+				consecutiveQuorumErrors, quorumError)
+			e.latestStatusSnapshot = e.latestErrorStatus.Error()
+		case len(endpoints) > 0 && ok == 0:
+			e.latestErrorStatus = fmt.Errorf("not able to connect to any etcd endpoints")
+			e.latestStatusSnapshot = e.latestErrorStatus.Error()
+		default:
 			e.latestErrorStatus = nil
+			e.latestStatusSnapshot = fmt.Sprintf("etcd: %d/%d connected, lease-ID=%x, lock lease-ID=%x, has-quorum=%s: %s",
+				ok, len(endpoints), sessionLeaseID, lockSessionLeaseID, quorumString, strings.Join(newStatus, "; "))
 		}
 
 		e.statusLock.Unlock()
+		if e.latestErrorStatus != nil {
+			e.statusCheckErrors <- e.latestErrorStatus
+		}
 
 		select {
 		case <-e.stopStatusChecker:
+			close(e.statusCheckErrors)
 			return
-		case <-time.After(e.extraOptions.StatusCheckInterval(allConnected)):
+		case <-statusTimer.After(e.extraOptions.StatusCheckInterval(allConnected)):
 		}
 	}
 }
@@ -987,6 +1280,7 @@ func (e *etcdClient) DeleteIfLocked(ctx context.Context, key string, lock KVLock
 	defer func() { Trace("DeleteIfLocked", err, logrus.Fields{fieldKey: key}) }()
 
 	duration := spanstat.Start()
+	e.limiter.Wait(ctx)
 	opDel := client.OpDelete(key)
 	cmp := lock.Comparator().(client.Cmp)
 	txnReply, err := e.client.Txn(ctx).If(cmp).Then(opDel).Commit()
@@ -1020,10 +1314,8 @@ func (e *etcdClient) createOpPut(key string, value []byte, leaseID client.LeaseI
 
 // UpdateIfLocked atomically creates a key or fails if it already exists if the client is still holding the given lock.
 func (e *etcdClient) UpdateIfLocked(ctx context.Context, key string, value []byte, lease bool, lock KVLocker) error {
-	select {
-	case <-e.firstSession:
-	case <-ctx.Done():
-		return fmt.Errorf("update cancelled via context: %s", ctx.Err())
+	if err := e.waitForInitialSession(ctx); err != nil {
+		return err
 	}
 
 	var (
@@ -1055,10 +1347,8 @@ func (e *etcdClient) UpdateIfLocked(ctx context.Context, key string, value []byt
 func (e *etcdClient) Update(ctx context.Context, key string, value []byte, lease bool) (err error) {
 	defer Trace("Update", err, logrus.Fields{fieldKey: key, fieldValue: string(value), fieldAttachLease: lease})
 
-	select {
-	case <-e.firstSession:
-	case <-ctx.Done():
-		return fmt.Errorf("update cancelled via context: %s", ctx.Err())
+	if err = e.waitForInitialSession(ctx); err != nil {
+		return
 	}
 
 	if lease {
@@ -1084,11 +1374,10 @@ func (e *etcdClient) UpdateIfDifferentIfLocked(ctx context.Context, key string, 
 		Trace("UpdateIfDifferentIfLocked", err, logrus.Fields{fieldKey: key, fieldValue: value, fieldAttachLease: lease, "recreated": recreated})
 	}()
 
-	select {
-	case <-e.firstSession:
-	case <-ctx.Done():
-		return false, fmt.Errorf("update cancelled via context: %s", ctx.Err())
+	if err = e.waitForInitialSession(ctx); err != nil {
+		return false, err
 	}
+
 	duration := spanstat.Start()
 	e.limiter.Wait(ctx)
 	cnds := lock.Comparator().(client.Cmp)
@@ -1132,10 +1421,8 @@ func (e *etcdClient) UpdateIfDifferent(ctx context.Context, key string, value []
 		Trace("UpdateIfDifferent", err, logrus.Fields{fieldKey: key, fieldValue: value, fieldAttachLease: lease, "recreated": recreated})
 	}()
 
-	select {
-	case <-e.firstSession:
-	case <-ctx.Done():
-		return false, fmt.Errorf("update cancelled via context: %s", ctx.Err())
+	if err = e.waitForInitialSession(ctx); err != nil {
+		return false, err
 	}
 
 	duration := spanstat.Start()
@@ -1352,15 +1639,29 @@ func (e *etcdClient) ListPrefix(ctx context.Context, prefix string) (v KeyValueP
 // Close closes the etcd session
 func (e *etcdClient) Close() {
 	close(e.stopStatusChecker)
-	<-e.firstSession
+	sessionErr := e.waitForInitialSession(context.Background())
 	if e.controllers != nil {
 		e.controllers.RemoveAll()
 	}
 	e.RLock()
 	defer e.RUnlock()
-	e.lockSession.Close()
-	e.session.Close()
-	e.client.Close()
+	// Only close e.lockSession if the initial session was successful
+	if sessionErr == nil {
+		if err := e.lockSession.Close(); err != nil {
+			e.getLogger().WithError(err).Warning("Failed to revoke lock session while closing etcd client")
+		}
+	}
+	// Only close e.session if the initial session was successful
+	if sessionErr == nil {
+		if err := e.session.Close(); err != nil {
+			e.getLogger().WithError(err).Warning("Failed to revoke main session while closing etcd client")
+		}
+	}
+	if e.client != nil {
+		if err := e.client.Close(); err != nil {
+			e.getLogger().WithError(err).Warning("Failed to close etcd client")
+		}
+	}
 }
 
 // GetCapabilities returns the capabilities of the backend
@@ -1476,7 +1777,7 @@ func newConfig(fpath string) (*client.Config, error) {
 	}
 
 	yc := &yamlConfig{}
-	b, err := ioutil.ReadFile(fpath)
+	b, err := os.ReadFile(fpath)
 	if err != nil {
 		return nil, err
 	}
@@ -1495,11 +1796,36 @@ func newConfig(fpath string) (*client.Config, error) {
 		}
 		cfg.TLS.RootCAs = cp
 	}
-	cfg.TLS.GetClientCertificate = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	return cfg, nil
+}
+
+// reload on-disk certificate and key when needed
+func getClientCertificateReloader(fpath string) (func(*tls.CertificateRequestInfo) (*tls.Certificate, error), error) {
+	yc := &yamlKeyPairConfig{}
+	b, err := os.ReadFile(fpath)
+	if err != nil {
+		return nil, err
+	}
+	err = yaml.Unmarshal(b, yc)
+	if err != nil {
+		return nil, err
+	}
+	if yc.Certfile == "" || yc.Keyfile == "" {
+		return nil, nil
+	}
+	reloader := func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 		cer, err := tls.LoadX509KeyPair(yc.Certfile, yc.Keyfile)
 		return &cer, err
 	}
-	return cfg, nil
+	return reloader, nil
+}
+
+// copy of relevant internal structure fields in go.etcd.io/etcd/clientv3/yaml
+// needed to implement certificates reload, not depending on the deprecated
+// newconfig/yamlConfig.
+type yamlKeyPairConfig struct {
+	Certfile string `json:"cert-file"`
+	Keyfile  string `json:"key-file"`
 }
 
 // copy of the internal structure in github.com/etcd-io/etcd/clientv3/yaml so we

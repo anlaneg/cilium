@@ -1,18 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-// +build privileged_tests
+//go:build !privileged_tests
+// +build !privileged_tests
 
 package cmd
 
@@ -56,13 +46,14 @@ func (s *BPFIPCacheGetSuite) TestGetPrefix(c *C) {
 }
 
 func (s *BPFIPCacheGetSuite) TestGetLPMValue(c *C) {
-	entries := map[string][]string{}
-	entries["10.0.0.0/8"] = []string{"2"}
-	entries["10.0.0.0/16"] = []string{"9"}
-	entries["10.0.0.0/32"] = []string{"8"}
-	entries["10.128.0.0/9"] = []string{"4", "20"}
-	entries["feed::ed/112"] = []string{"3"}
-	entries["feed::feed/128"] = []string{"5", "17"}
+	entries := map[string][]string{
+		"10.0.0.0/8":     {"2"},
+		"10.0.0.0/16":    {"9"},
+		"10.0.0.0/32":    {"8"},
+		"10.128.0.0/9":   {"4", "20"},
+		"feed::ed/112":   {"3"},
+		"feed::feed/128": {"5", "17"},
+	}
 
 	tests := []struct {
 		ip          string   // Input ip address.

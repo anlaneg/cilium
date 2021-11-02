@@ -1,25 +1,16 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 
 package cmd
 
 import (
 	"fmt"
 	"os"
+	"reflect"
 
-	"github.com/cilium/cilium/common"
+	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/maps/nat"
 
 	"github.com/spf13/cobra"
@@ -32,7 +23,11 @@ var bpfNatListCmd = &cobra.Command{
 	Short:   "List all NAT mapping entries",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf nat list")
-		dumpNat()
+		ipv4, ipv6 := nat.GlobalMaps(true, getIpv6EnableStatus(), true)
+		globalMaps := make([]interface{}, 2)
+		globalMaps[0] = ipv4
+		globalMaps[1] = ipv6
+		dumpNat(globalMaps)
 	},
 }
 
@@ -41,16 +36,16 @@ func init() {
 	command.AddJSONOutput(bpfNatListCmd)
 }
 
-func dumpNat() {
-	ipv4, ipv6 := nat.GlobalMaps(true, true)
+func dumpNat(maps []interface{}, args ...interface{}) {
+	entries := make([]nat.NatMapRecord, 0)
 
-	for _, m := range []*nat.Map{ipv4, ipv6} {
-		if m == nil {
+	for _, m := range maps {
+		if m == nil || reflect.ValueOf(m).IsNil() {
 			continue
 		}
-		path, err := m.Path()
+		path, err := m.(nat.NatMap).Path()
 		if err == nil {
-			err = m.Open()
+			err = m.(nat.NatMap).Open()
 		}
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -59,17 +54,28 @@ func dumpNat() {
 			}
 			Fatalf("Unable to open %s: %s", path, err)
 		}
-		defer m.Close()
+		defer m.(nat.NatMap).Close()
+		// Plain output prints immediately, JSON output holds until it
+		// collected values from all maps to have one consistent object
 		if command.OutputJSON() {
-			if err := command.PrintOutput(m); err != nil {
-				os.Exit(1)
+			callback := func(key bpf.MapKey, value bpf.MapValue) {
+				record := nat.NatMapRecord{Key: key.(nat.NatKey), Value: value.(nat.NatEntry)}
+				entries = append(entries, record)
+			}
+			if err = m.(nat.NatMap).DumpWithCallback(callback); err != nil {
+				Fatalf("Error while collecting BPF map entries: %s", err)
 			}
 		} else {
-			out, err := m.DumpEntries()
+			out, err := m.(nat.NatMap).DumpEntries()
 			if err != nil {
 				Fatalf("Error while dumping BPF Map: %s", err)
 			}
 			fmt.Println(out)
+		}
+	}
+	if command.OutputJSON() {
+		if err := command.PrintOutput(entries); err != nil {
+			os.Exit(1)
 		}
 	}
 }

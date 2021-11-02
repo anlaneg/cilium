@@ -1,23 +1,22 @@
-# GOBUILD relies on the order of makefile list to get VERSION file
+# Copyright 2017-2020 Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
 include ../Makefile.defs
 
-TARGET=cilium-agent
-LINKS=cilium-node-monitor
-SOURCES := $(shell find ../api ../common ../daemon ../pkg . \( -name '*.go'  ! -name '*_test.go' \))
-$(TARGET): $(SOURCES) ../Dockerfile ../Makefile ../Makefile.defs Makefile
+TARGET := cilium-agent
+
+all: $(TARGET)
+
+.PHONY: all $(TARGET)
+
+$(TARGET): ../Makefile ../Makefile.defs Makefile
 	@$(ECHO_GO)
-	$(QUIET) CGO_ENABLED=0 $(GO) build $(GOBUILD) -o $(TARGET)
-
-all: $(TARGET) links
-
-links:
-	$(foreach link,$(LINKS), ln -f -s $(TARGET) $(link) || cp $(TARGET) $(link);)
+	$(QUIET)$(GO_BUILD) -o $(TARGET)
 
 clean:
 	@$(ECHO_CLEAN)
 	$(QUIET)rm -f $(TARGET)
-	$(QUIET)$(GO) clean $(GOCLEAN)
-	$(foreach link,$(LINKS), rm -f $(link);)
+	$(QUIET)$(GO_CLEAN)
 
 ifeq ("$(PKG_BUILD)","")
 
@@ -25,13 +24,19 @@ install:
 	groupadd -f cilium
 	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
 	$(QUIET)$(INSTALL) -m 0755 $(TARGET) $(DESTDIR)$(BINDIR)
-	$(foreach link,$(LINKS), ln -f -s $(TARGET) $(DESTDIR)$(BINDIR)/$(link) || cp $(TARGET) $(DESTDIR)$(BINDIR)/$(link);)
+
+install-binary: install
+
+install-bash-completion:
 
 else
 
 install:
 	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
 	$(QUIET)$(INSTALL) -m 0755 $(TARGET) $(DESTDIR)$(BINDIR)
-	$(foreach link,$(LINKS), ln -f -s $(TARGET) $(DESTDIR)$(BINDIR)/$(link) || cp $(TARGET) $(DESTDIR)$(BINDIR)/$(link);)
+
+install-binary: install
+
+install-bash-completion:
 
 endif

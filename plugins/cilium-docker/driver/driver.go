@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package driver
 
@@ -21,20 +10,21 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/client"
+	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
-	"github.com/cilium/cilium/pkg/endpoint/connector"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	endpointIDPkg "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/option"
 
 	apiTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/events"
@@ -47,6 +37,8 @@ import (
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "cilium-docker-driver")
+
+var endpointIDRx = regexp.MustCompile(`\A[-.0-9a-z]+\z`)
 
 // Driver interface that listens for docker requests.
 type Driver interface {
@@ -224,7 +216,7 @@ func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
 
 	if driver.conf.Addressing.IPV6 != nil && driver.conf.Addressing.IPV6.Enabled {
 		if routes, err := connector.IPv6Routes(driver.conf.Addressing, int(driver.conf.RouteMTU)); err != nil {
-			log.Fatalf("Unable to generate IPv6 routes: %s", err)
+			log.WithError(err).Fatal("Unable to generate IPv6 routes")
 		} else {
 			for _, r := range routes {
 				driver.routes = append(driver.routes, newLibnetworkRoute(r))
@@ -236,7 +228,7 @@ func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
 
 	if driver.conf.Addressing.IPV4 != nil && driver.conf.Addressing.IPV4.Enabled {
 		if routes, err := connector.IPv4Routes(driver.conf.Addressing, int(driver.conf.RouteMTU)); err != nil {
-			log.Fatalf("Unable to generate IPv4 routes: %s", err)
+			log.WithError(err).Fatal("Unable to generate IPv4 routes")
 		} else {
 			for _, r := range routes {
 				driver.routes = append(driver.routes, newLibnetworkRoute(r))
@@ -375,6 +367,10 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "No IPv4 or IPv6 address provided (required)", http.StatusBadRequest)
 		return
 	}
+	if !endpointIDRx.MatchString(create.EndpointID) {
+		sendError(w, "Invalid endpoint ID", http.StatusBadRequest)
+		return
+	}
 
 	endpoint := &models.EndpointChangeRequest{
 		SyncBuildEndpoint: true,
@@ -399,11 +395,11 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch driver.conf.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		var veth *netlink.Veth
 		veth, _, _, err = connector.SetupVeth(create.EndpointID, int(driver.conf.DeviceMTU), endpoint)
 		defer removeLinkOnErr(veth)
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		var ipvlan *netlink.IPVlan
 		ipvlan, _, _, err = connector.CreateIpvlanSlave(
 			create.EndpointID, int(driver.conf.DeviceMTU),
@@ -452,9 +448,9 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.WithField(logfields.Request, logfields.Repr(&del)).Debug("Delete endpoint request")
 
 	switch driver.conf.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		ifName = connector.Endpoint2IfName(del.EndpointID)
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		ifName = connector.Endpoint2TempIfName(del.EndpointID)
 	}
 

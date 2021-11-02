@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipcache
 
@@ -24,7 +13,6 @@ import (
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -47,7 +35,7 @@ type datapath interface {
 
 // monitor is an interface not notify the monitor about changes to the ipcache
 type monitorNotify interface {
-	SendNotification(typ monitorAPI.AgentNotification, text string) error
+	SendNotification(msg monitorAPI.AgentNotifyMessage) error
 }
 
 // BPFListener implements the ipcache.IPIdentityMappingBPFListener
@@ -82,8 +70,8 @@ func NewListener(d datapath, mn monitorNotify) *BPFListener {
 }
 
 func (l *BPFListener) notifyMonitor(modType ipcache.CacheModification,
-	cidr net.IPNet, oldHostIP, newHostIP net.IP, oldID *identity.NumericIdentity,
-	newID identity.NumericIdentity, encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
+	cidr net.IPNet, oldHostIP, newHostIP net.IP, oldID *ipcache.Identity,
+	newID ipcache.Identity, encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
 	var (
 		k8sNamespace, k8sPodName string
 		newIdentity, oldIdentity uint32
@@ -99,21 +87,21 @@ func (l *BPFListener) notifyMonitor(modType ipcache.CacheModification,
 		k8sPodName = k8sMeta.PodName
 	}
 
-	newIdentity = newID.Uint32()
+	newIdentity = newID.ID.Uint32()
 	if oldID != nil {
-		oldIdentity = (*oldID).Uint32()
+		oldIdentity = oldID.ID.Uint32()
 		oldIdentityPtr = &oldIdentity
 	}
 
-	repr, err := monitorAPI.IPCacheNotificationRepr(cidr.String(), newIdentity, oldIdentityPtr,
-		newHostIP, oldHostIP, encryptKey, k8sNamespace, k8sPodName)
-	if err == nil {
-		switch modType {
-		case ipcache.Upsert:
-			l.monitorNotify.SendNotification(monitorAPI.AgentNotifyIPCacheUpserted, repr)
-		case ipcache.Delete:
-			l.monitorNotify.SendNotification(monitorAPI.AgentNotifyIPCacheDeleted, repr)
-		}
+	switch modType {
+	case ipcache.Upsert:
+		msg := monitorAPI.IPCacheUpsertedMessage(cidr.String(), newIdentity, oldIdentityPtr,
+			newHostIP, oldHostIP, encryptKey, k8sNamespace, k8sPodName)
+		l.monitorNotify.SendNotification(msg)
+	case ipcache.Delete:
+		msg := monitorAPI.IPCacheDeletedMessage(cidr.String(), newIdentity, oldIdentityPtr,
+			newHostIP, oldHostIP, encryptKey, k8sNamespace, k8sPodName)
+		l.monitorNotify.SendNotification(msg)
 	}
 }
 
@@ -125,7 +113,7 @@ func (l *BPFListener) notifyMonitor(modType ipcache.CacheModification,
 // IP->ID mapping will replace any existing contents; knowledge of the old pair
 // is not required to upsert the new pair.
 func (l *BPFListener) OnIPIdentityCacheChange(modType ipcache.CacheModification, cidr net.IPNet,
-	oldHostIP, newHostIP net.IP, oldID *identity.NumericIdentity, newID identity.NumericIdentity,
+	oldHostIP, newHostIP net.IP, oldID *ipcache.Identity, newID ipcache.Identity,
 	encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
 
 	scopedLog := log
@@ -152,7 +140,7 @@ func (l *BPFListener) OnIPIdentityCacheChange(modType ipcache.CacheModification,
 	switch modType {
 	case ipcache.Upsert:
 		value := ipcacheMap.RemoteEndpointInfo{
-			SecurityIdentity: uint32(newID),
+			SecurityIdentity: uint32(newID.ID),
 			Key:              encryptKey,
 		}
 
@@ -161,8 +149,8 @@ func (l *BPFListener) OnIPIdentityCacheChange(modType ipcache.CacheModification,
 			// the local host, then the ipcache should be populated
 			// with the hostIP so that this traffic can be guided
 			// to a tunnel endpoint destination.
-			externalIP := node.GetExternalIPv4()
-			if ip4 := newHostIP.To4(); ip4 != nil && !ip4.Equal(externalIP) {
+			nodeIPv4 := node.GetIPv4()
+			if ip4 := newHostIP.To4(); ip4 != nil && !ip4.Equal(nodeIPv4) {
 				copy(value.TunnelEndpoint[:], ip4)
 			}
 		}
@@ -261,13 +249,13 @@ func shuffleMaps(realized, backup, pending string) error {
 func (l *BPFListener) garbageCollect(ctx context.Context) (*sync.WaitGroup, error) {
 	log.Debug("Running garbage collection for BPF IPCache")
 
-	// Since controllers run asynchronously, need to make sure
-	// IPIdentityCache is not being updated concurrently while we do
-	// GC;
-	ipcache.IPIdentityCache.RLock()
-	defer ipcache.IPIdentityCache.RUnlock()
-
 	if ipcacheMap.SupportsDelete() {
+		// Since controllers run asynchronously, need to make sure
+		// IPIdentityCache is not being updated concurrently while we
+		// do GC;
+		ipcache.IPIdentityCache.RLock()
+		defer ipcache.IPIdentityCache.RUnlock()
+
 		keysToRemove := map[string]*ipcacheMap.Key{}
 		if err := l.bpfMap.DumpWithCallback(updateStaleEntriesFunction(keysToRemove)); err != nil {
 			return nil, fmt.Errorf("error dumping ipcache BPF map: %s", err)
@@ -283,10 +271,16 @@ func (l *BPFListener) garbageCollect(ctx context.Context) (*sync.WaitGroup, erro
 			}
 		}
 	} else {
+		// Since controllers run asynchronously, need to make sure
+		// IPIdentityCache is not being updated concurrently while we
+		// do GC;
+		ipcache.IPIdentityCache.RLock()
+
 		// Populate the map at the new path
 		pendingMapName := fmt.Sprintf("%s_pending", ipcacheMap.Name)
 		pendingMap := ipcacheMap.NewMap(pendingMapName)
 		if _, err := pendingMap.OpenOrCreate(); err != nil {
+			ipcache.IPIdentityCache.RUnlock()
 			return nil, fmt.Errorf("Unable to create %s map: %s", pendingMapName, err)
 		}
 		pendingListener := newListener(pendingMap, l.datapath, nil)
@@ -300,24 +294,35 @@ func (l *BPFListener) garbageCollect(ctx context.Context) (*sync.WaitGroup, erro
 		// will pick up the new paths without requiring recompilation.
 		backupMapName := fmt.Sprintf("%s_old", ipcacheMap.Name)
 		if err := shuffleMaps(ipcacheMap.Name, backupMapName, pendingMapName); err != nil {
+			ipcache.IPIdentityCache.RUnlock()
 			return nil, err
 		}
+
+		// Reopen the ipcache map so that new writes and reads will use
+		// the new map
+		if err := ipcacheMap.Reopen(); err != nil {
+			handleMapShuffleFailure(backupMapName, ipcacheMap.Name)
+			ipcache.IPIdentityCache.RUnlock()
+			return nil, err
+		}
+
+		// Unlock the ipcache as in order for
+		// TriggerReloadWithoutCompile() to succeed, other endpoint
+		// regenerations which are blocking on the ipcache lock may
+		// need to succeed first (#11946)
+		ipcache.IPIdentityCache.RUnlock()
 
 		wg, err := l.datapath.TriggerReloadWithoutCompile("datapath ipcache")
 		if err != nil {
-			handleMapShuffleFailure(backupMapName, ipcacheMap.Name)
-			return nil, err
+			// We can't really undo the map rename again as ipcache
+			// operations had already been permitted so the backup
+			// map is potentially outdated. Fail hard to restart
+			// the agent so we reconstruct the ipcache from
+			// scratch.
+			log.WithError(err).Fatal("Endpoint datapath reload triggered by ipcache GC failed. Inconsistent state.")
 		}
 
-		// If the base programs successfully compiled, then the maps
-		// should be OK so let's update all references to the IPCache
-		// so that they point to the new version.
 		_ = os.RemoveAll(bpf.MapPath(backupMapName))
-		if err := ipcacheMap.Reopen(); err != nil {
-			// Very unlikely; base program compilation succeeded.
-			log.WithError(err).Warning("Failed to reopen BPF ipcache map")
-			return nil, err
-		}
 		return wg, nil
 	}
 	return nil, nil
@@ -334,7 +339,7 @@ func (l *BPFListener) OnIPIdentityCacheGC() {
 	// fully to give us the history of all events. As such, periodically check
 	// for inconsistencies in the data-path with that in the agent to ensure
 	// consistent state.
-	controller.NewManager().UpdateController("ipcache-bpf-garbage-collection",
+	ipcache.IPIdentityCache.UpdateController("ipcache-bpf-garbage-collection",
 		controller.ControllerParams{
 			DoFunc: func(ctx context.Context) error {
 				wg, err := l.garbageCollect(ctx)

@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package watchers
@@ -28,19 +18,17 @@ import (
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/k8s"
-	"github.com/cilium/cilium/pkg/k8s/types"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
 
 	. "gopkg.in/check.v1"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -51,6 +39,12 @@ func Test(t *testing.T) {
 type K8sWatcherSuite struct{}
 
 var _ = Suite(&K8sWatcherSuite{})
+
+type fakeWatcherConfiguration struct{}
+
+func (f *fakeWatcherConfiguration) K8sServiceProxyNameValue() string {
+	return ""
+}
 
 type fakeEndpointManager struct {
 	OnGetEndpoints                func() []*endpoint.Endpoint
@@ -80,12 +74,12 @@ func (f *fakeEndpointManager) WaitForEndpointsAtPolicyRev(ctx context.Context, r
 }
 
 type fakeNodeDiscoverManager struct {
-	OnNodeDeleted                  func(n node.Node)
-	OnNodeUpdated                  func(n node.Node)
+	OnNodeDeleted                  func(n nodeTypes.Node)
+	OnNodeUpdated                  func(n nodeTypes.Node)
 	OnClusterSizeDependantInterval func(baseInterval time.Duration) time.Duration
 }
 
-func (f *fakeNodeDiscoverManager) NodeDeleted(n node.Node) {
+func (f *fakeNodeDiscoverManager) NodeDeleted(n nodeTypes.Node) {
 	if f.OnNodeDeleted != nil {
 		f.OnNodeDeleted(n)
 		return
@@ -93,7 +87,7 @@ func (f *fakeNodeDiscoverManager) NodeDeleted(n node.Node) {
 	panic("OnNodeDeleted(node) was called and is not set!")
 }
 
-func (f *fakeNodeDiscoverManager) NodeUpdated(n node.Node) {
+func (f *fakeNodeDiscoverManager) NodeUpdated(n nodeTypes.Node) {
 	if f.OnNodeUpdated != nil {
 		f.OnNodeUpdated(n)
 		return
@@ -149,12 +143,7 @@ func (f *fakePolicyRepository) TranslateRules(translator policy.Translator) (*po
 
 type fakeSvcManager struct {
 	OnDeleteService func(frontend loadbalancer.L3n4Addr) (bool, error)
-	OnUpsertService func(frontend loadbalancer.L3n4AddrID,
-		backends []loadbalancer.Backend,
-		svcType loadbalancer.SVCType,
-		svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-		svcHealthCheckNodePort uint16,
-		svcName, svcNamespace string) (bool, loadbalancer.ID, error)
+	OnUpsertService func(*loadbalancer.SVC) (bool, loadbalancer.ID, error)
 }
 
 func (f *fakeSvcManager) DeleteService(frontend loadbalancer.L3n4Addr) (bool, error) {
@@ -164,35 +153,28 @@ func (f *fakeSvcManager) DeleteService(frontend loadbalancer.L3n4Addr) (bool, er
 	panic("OnDeleteService(loadbalancer.L3n4Addr) (bool, error) was called and is not set!")
 }
 
-func (f *fakeSvcManager) UpsertService(frontend loadbalancer.L3n4AddrID,
-	backends []loadbalancer.Backend,
-	svcType loadbalancer.SVCType,
-	svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-	svcHealthCheckNodePort uint16,
-	svcName, svcNamespace string) (bool, loadbalancer.ID, error) {
+func (f *fakeSvcManager) UpsertService(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
 	if f.OnUpsertService != nil {
-		return f.OnUpsertService(frontend, backends, svcType, svcTrafficPolicy, svcHealthCheckNodePort, svcName, svcNamespace)
+		return f.OnUpsertService(p)
 	}
-	panic("OnUpsertService(loadbalancer.L3n4AddrID, []loadbalancer.Backend, loadbalancer.SVCType, loadbalancer.SVCTrafficPolicy, uint16, string, string) (bool, loadbalancer.ID, error) was called and is not set!")
+	panic("OnUpsertService() was called and is not set!")
 }
 
 func (s *K8sWatcherSuite) TestUpdateToServiceEndpointsGH9525(c *C) {
 
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
-				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "http-test-svc",
-							Port:     8080,
-							Protocol: v1.ProtocolTCP,
-						},
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "http-test-svc",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolTCP,
 					},
 				},
 			},
@@ -202,7 +184,7 @@ func (s *K8sWatcherSuite) TestUpdateToServiceEndpointsGH9525(c *C) {
 	ep2ndApply := ep1stApply.DeepCopy()
 	ep2ndApply.Subsets[0].Addresses = append(
 		ep2ndApply.Subsets[0].Addresses,
-		v1.EndpointAddress{IP: "3.3.3.3"},
+		slim_corev1.EndpointAddress{IP: "3.3.3.3"},
 	)
 
 	policyManagerCalls := 0
@@ -239,23 +221,25 @@ func (s *K8sWatcherSuite) TestUpdateToServiceEndpointsGH9525(c *C) {
 		policyRepository,
 		nil,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
 
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
-				},
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
 			},
-			Spec: v1.ServiceSpec{
-				ClusterIP: "127.0.0.1",
-				Type:      v1.ServiceTypeClusterIP,
-			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			ClusterIP: "127.0.0.1",
+			Type:      slim_corev1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -272,93 +256,82 @@ func (s *K8sWatcherSuite) TestUpdateToServiceEndpointsGH9525(c *C) {
 }
 
 func (s *K8sWatcherSuite) Test_addK8sSVCs_ClusterIP(c *C) {
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
+			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
+				{
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     80,
+				},
+				// FIXME: We don't distinguish about the protocol being used
+				//        so we can't tell if a UDP/80 maps to port 8080/udp
+				//        or if TCP/80 maps to port 8081/TCP
+				// {
+				// 	Name:       "port-tcp-80",
+				// 	Protocol:  slim_corev1.ProtocolTCP,
+				// 	Port:       80,
+				// 	TargetPort: intstr.FromString("port-80-t"),
+				// },
+				{
+					Name:     "port-tcp-81",
+					Protocol: slim_corev1.ProtocolTCP,
+					Port:     81,
 				},
 			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
+			Selector:              nil,
+			ClusterIP:             "172.0.20.1",
+			Type:                  slim_corev1.ServiceTypeClusterIP,
+			ExternalIPs:           nil,
+			SessionAffinity:       "",
+			ExternalTrafficPolicy: "",
+			HealthCheckNodePort:   0,
+			SessionAffinityConfig: nil,
+		},
+	}
+
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
 					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       80,
-						TargetPort: intstr.FromString("port-80-u"),
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
 					},
 					// FIXME: We don't distinguish about the protocol being used
 					//        so we can't tell if a UDP/80 maps to port 8080/udp
 					//        or if TCP/80 maps to port 8081/TCP
 					// {
-					// 	Name:       "port-tcp-80",
-					// 	Protocol:   v1.ProtocolTCP,
-					// 	Port:       80,
-					// 	TargetPort: intstr.FromString("port-80-t"),
+					// 	Name:     "port-tcp-80",
+					// 	Protocol:slim_corev1.ProtocolTCP,
+					// 	Port:     8081,
 					// },
 					{
-						Name:       "port-tcp-81",
-						Protocol:   v1.ProtocolTCP,
-						Port:       81,
-						TargetPort: intstr.FromInt(81),
-					},
-				},
-				Selector:                 nil,
-				ClusterIP:                "172.0.20.1",
-				Type:                     v1.ServiceTypeClusterIP,
-				ExternalIPs:              nil,
-				SessionAffinity:          "",
-				LoadBalancerIP:           "",
-				LoadBalancerSourceRanges: nil,
-				ExternalName:             "",
-				ExternalTrafficPolicy:    "",
-				HealthCheckNodePort:      0,
-				PublishNotReadyAddresses: false,
-				SessionAffinityConfig:    nil,
-				IPFamily:                 nil,
-			},
-		},
-	}
-
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
-				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
-						// FIXME: We don't distinguish about the protocol being used
-						//        so we can't tell if a UDP/80 maps to port 8080/udp
-						//        or if TCP/80 maps to port 8081/TCP
-						// {
-						// 	Name:     "port-tcp-80",
-						// 	Protocol: v1.ProtocolTCP,
-						// 	Port:     8081,
-						// },
-						{
-							Name:     "port-tcp-81",
-							Protocol: v1.ProtocolTCP,
-							Port:     81,
-						},
+						Name:     "port-tcp-81",
+						Protocol: slim_corev1.ProtocolTCP,
+						Port:     81,
 					},
 				},
 			},
 		},
 	}
 
-	lb1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, 0)
-	// lb2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 80, 0)
-	lb3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, 0)
+	lb1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	// lb2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	lb3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, loadbalancer.ScopeExternal, 0)
 	upsert1stWanted := map[string]loadbalancer.SVC{
 		lb1.Hash(): {
 			Type:     loadbalancer.SVCTypeClusterIP,
@@ -413,7 +386,7 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ClusterIP(c *C) {
 	ep2ndApply := ep1stApply.DeepCopy()
 	ep2ndApply.Subsets[0].Addresses = append(
 		ep2ndApply.Subsets[0].Addresses,
-		v1.EndpointAddress{IP: "3.3.3.3"},
+		slim_corev1.EndpointAddress{IP: "3.3.3.3"},
 	)
 
 	upsert2ndWanted := map[string]loadbalancer.SVC{
@@ -517,35 +490,24 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ClusterIP(c *C) {
 	svcUpsertManagerCalls, svcDeleteManagerCalls := 0, 0
 
 	svcManager := &fakeSvcManager{
-		OnUpsertService: func(
-			fe loadbalancer.L3n4AddrID,
-			bes []loadbalancer.Backend,
-			svcType loadbalancer.SVCType,
-			svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-			svcHealthCheckNodePort uint16,
-			svcName,
-			namespace string) (
-			b bool,
-			id loadbalancer.ID,
-			e error,
-		) {
-			sort.Slice(bes, func(i, j int) bool {
-				return bytes.Compare(bes[i].IP, bes[j].IP) < 0
+		OnUpsertService: func(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
+			sort.Slice(p.Backends, func(i, j int) bool {
+				return bytes.Compare(p.Backends[i].IP, p.Backends[j].IP) < 0
 			})
 			switch {
 			// 1st update endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted):
-				upsert1st[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert1st[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			// 2nd update endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted)+len(upsert2ndWanted):
-				upsert2nd[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert2nd[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			}
 			svcUpsertManagerCalls++
@@ -565,6 +527,10 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ClusterIP(c *C) {
 		policyRepository,
 		svcManager,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -590,53 +556,48 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ClusterIP(c *C) {
 }
 
 func (s *K8sWatcherSuite) TestChangeSVCPort(c *C) {
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
-				},
-			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
-					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       80,
-						TargetPort: intstr.FromString("port-80-u"),
-					},
-				},
-				ClusterIP: "172.0.20.1",
-				Type:      v1.ServiceTypeClusterIP,
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
 			},
 		},
-	}
-
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
 				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     80,
+				},
+			},
+			ClusterIP: "172.0.20.1",
+			Type:      slim_corev1.ServiceTypeClusterIP,
+		},
+	}
+
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
 					},
 				},
 			},
 		},
 	}
 
-	lb1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, 0)
-	lb2 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 81, 0)
+	lb1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	lb2 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 81, loadbalancer.ScopeExternal, 0)
 	upsertsWanted := []loadbalancer.SVC{
 		{
 			Type:     loadbalancer.SVCTypeClusterIP,
@@ -671,7 +632,7 @@ func (s *K8sWatcherSuite) TestChangeSVCPort(c *C) {
 	}
 
 	k8sSvcChanged := k8sSvc.DeepCopy()
-	k8sSvcChanged.Service.Spec.Ports[0].Port = 81
+	k8sSvcChanged.Spec.Ports[0].Port = 81
 
 	upserts := []loadbalancer.SVC{}
 
@@ -688,22 +649,11 @@ func (s *K8sWatcherSuite) TestChangeSVCPort(c *C) {
 	svcUpsertManagerCalls := 0
 
 	svcManager := &fakeSvcManager{
-		OnUpsertService: func(
-			fe loadbalancer.L3n4AddrID,
-			bes []loadbalancer.Backend,
-			svcType loadbalancer.SVCType,
-			svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-			svcHealthCheckNodePort uint16,
-			svcName,
-			namespace string) (
-			b bool,
-			id loadbalancer.ID,
-			e error,
-		) {
+		OnUpsertService: func(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
 			upserts = append(upserts, loadbalancer.SVC{
-				Frontend: fe,
-				Backends: bes,
-				Type:     svcType,
+				Frontend: p.Frontend,
+				Backends: p.Backends,
+				Type:     p.Type,
 			})
 			svcUpsertManagerCalls++
 			return false, 0, nil
@@ -720,6 +670,10 @@ func (s *K8sWatcherSuite) TestChangeSVCPort(c *C) {
 		policyRepository,
 		svcManager,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -741,96 +695,85 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 		option.Config.EnableNodePort = enableNodePortBak
 	}()
 
-	k8sSvc := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
+	k8sSvc := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
+			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
+				{
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     80,
+					NodePort: 18080,
+				},
+				// FIXME: We don't distinguish about the protocol being used
+				//        so we can't tell if a UDP/80 maps to port 8080/udp
+				//        or if TCP/80 maps to port 8081/TCP
+				// {
+				// 	Name:       "port-tcp-80",
+				// 	Protocol:  slim_corev1.ProtocolTCP,
+				// 	Port:       80,
+				// 	TargetPort: intstr.FromString("port-80-t"),
+				//  NodePort:   18080,
+				// },
+				{
+					Name:     "port-tcp-81",
+					Protocol: slim_corev1.ProtocolTCP,
+					Port:     81,
+					NodePort: 18081,
 				},
 			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
+			Selector:              nil,
+			ClusterIP:             "172.0.20.1",
+			Type:                  slim_corev1.ServiceTypeNodePort,
+			ExternalIPs:           nil,
+			SessionAffinity:       "",
+			ExternalTrafficPolicy: "",
+			HealthCheckNodePort:   0,
+			SessionAffinityConfig: nil,
+		},
+	}
+
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
 					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       80,
-						TargetPort: intstr.FromString("port-80-u"),
-						NodePort:   18080,
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
 					},
 					// FIXME: We don't distinguish about the protocol being used
 					//        so we can't tell if a UDP/80 maps to port 8080/udp
 					//        or if TCP/80 maps to port 8081/TCP
 					// {
-					// 	Name:       "port-tcp-80",
-					// 	Protocol:   v1.ProtocolTCP,
-					// 	Port:       80,
-					// 	TargetPort: intstr.FromString("port-80-t"),
-					//  NodePort:   18080,
+					// 	Name:     "port-tcp-80",
+					// 	Protocol:slim_corev1.ProtocolTCP,
+					// 	Port:     8081,
 					// },
 					{
-						Name:       "port-tcp-81",
-						Protocol:   v1.ProtocolTCP,
-						Port:       81,
-						TargetPort: intstr.FromInt(81),
-						NodePort:   18081,
-					},
-				},
-				Selector:                 nil,
-				ClusterIP:                "172.0.20.1",
-				Type:                     v1.ServiceTypeNodePort,
-				ExternalIPs:              nil,
-				SessionAffinity:          "",
-				LoadBalancerIP:           "",
-				LoadBalancerSourceRanges: nil,
-				ExternalName:             "",
-				ExternalTrafficPolicy:    "",
-				HealthCheckNodePort:      0,
-				PublishNotReadyAddresses: false,
-				SessionAffinityConfig:    nil,
-				IPFamily:                 nil,
-			},
-		},
-	}
-
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
-				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
-						// FIXME: We don't distinguish about the protocol being used
-						//        so we can't tell if a UDP/80 maps to port 8080/udp
-						//        or if TCP/80 maps to port 8081/TCP
-						// {
-						// 	Name:     "port-tcp-80",
-						// 	Protocol: v1.ProtocolTCP,
-						// 	Port:     8081,
-						// },
-						{
-							Name:     "port-tcp-81",
-							Protocol: v1.ProtocolTCP,
-							Port:     8081,
-						},
+						Name:     "port-tcp-81",
+						Protocol: slim_corev1.ProtocolTCP,
+						Port:     8081,
 					},
 				},
 			},
 		},
 	}
 
-	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, 0)
-	// clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 80, 0)
-	clusterIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, 0)
+	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	// clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	clusterIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, loadbalancer.ScopeExternal, 0)
 
 	upsert1stWanted := map[string]loadbalancer.SVC{
 		clusterIP1.Hash(): {
@@ -884,9 +827,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 	}
 
 	nodePortIPs1 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, loadbalancer.ScopeExternal, 0),
 	}
 	for _, nodePort := range nodePortIPs1 {
 		upsert1stWanted[nodePort.Hash()] = loadbalancer.SVC{
@@ -906,9 +849,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 		}
 	}
 	// nodePortIPs2 := []*loadbalancer.L3n4AddrID{
-	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18080, 0),
-	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.Pv4NodePortAddress, 18080, 0),
-	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18080, 0),
+	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18080, loadbalancer.ScopeExternal, 0),
+	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.Pv4NodePortAddress, 18080, loadbalancer.ScopeExternal, 0),
+	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18080, loadbalancer.ScopeExternal, 0),
 	// }
 	// for _, nodePort := range nodePortIPs2 {
 	// 	upsert1stWanted[nodePort.Hash()] = loadbalancer.SVC{
@@ -928,9 +871,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 	// 	}
 	// }
 	nodePortIPs3 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, loadbalancer.ScopeExternal, 0),
 	}
 	for _, nodePort := range nodePortIPs3 {
 		upsert1stWanted[nodePort.Hash()] = loadbalancer.SVC{
@@ -953,7 +896,7 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 	ep2ndApply := ep1stApply.DeepCopy()
 	ep2ndApply.Subsets[0].Addresses = append(
 		ep2ndApply.Subsets[0].Addresses,
-		v1.EndpointAddress{IP: "3.3.3.3"},
+		slim_corev1.EndpointAddress{IP: "3.3.3.3"},
 	)
 
 	upsert2ndWanted := map[string]loadbalancer.SVC{
@@ -1139,35 +1082,24 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 	svcUpsertManagerCalls, svcDeleteManagerCalls := 0, 0
 
 	svcManager := &fakeSvcManager{
-		OnUpsertService: func(
-			fe loadbalancer.L3n4AddrID,
-			bes []loadbalancer.Backend,
-			svcType loadbalancer.SVCType,
-			svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-			svcHealthCheckNodePort uint16,
-			svcName,
-			namespace string) (
-			b bool,
-			id loadbalancer.ID,
-			e error,
-		) {
-			sort.Slice(bes, func(i, j int) bool {
-				return bytes.Compare(bes[i].IP, bes[j].IP) < 0
+		OnUpsertService: func(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
+			sort.Slice(p.Backends, func(i, j int) bool {
+				return bytes.Compare(p.Backends[i].IP, p.Backends[j].IP) < 0
 			})
 			switch {
 			// 1st update endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted):
-				upsert1st[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert1st[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			// 2nd update endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted)+len(upsert2ndWanted):
-				upsert2nd[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert2nd[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			}
 			svcUpsertManagerCalls++
@@ -1187,6 +1119,10 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 		policyRepository,
 		svcManager,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -1222,106 +1158,96 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_1(c *C) {
 		option.Config.EnableNodePort = enableNodePortBak
 	}()
 
-	k8sSvc1stApply := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
-				},
-			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
-					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       80,
-						TargetPort: intstr.FromString("port-80-u"),
-						NodePort:   18080,
-					},
-					{
-						Name:       "port-tcp-81",
-						Protocol:   v1.ProtocolTCP,
-						Port:       81,
-						TargetPort: intstr.FromInt(81),
-						NodePort:   18081,
-					},
-				},
-				ClusterIP: "172.0.20.1",
-				Type:      v1.ServiceTypeNodePort,
+	k8sSvc1stApply := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
 			},
 		},
-	}
-
-	k8sSvc2ndApply := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
-				},
-			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
-					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       8083,
-						TargetPort: intstr.FromString("port-80-u"),
-					},
-					{
-						Name:       "port-tcp-81",
-						Protocol:   v1.ProtocolTCP,
-						Port:       81,
-						TargetPort: intstr.FromInt(81),
-					},
-				},
-				ClusterIP: "172.0.20.1",
-				Type:      v1.ServiceTypeClusterIP,
-			},
-		},
-	}
-
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
 				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
-						{
-							Name:     "port-tcp-81",
-							Protocol: v1.ProtocolTCP,
-							Port:     8081,
-						},
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     80,
+					NodePort: 18080,
+				},
+				{
+					Name:     "port-tcp-81",
+					Protocol: slim_corev1.ProtocolTCP,
+					Port:     81,
+					NodePort: 18081,
+				},
+			},
+			ClusterIP: "172.0.20.1",
+			Type:      slim_corev1.ServiceTypeNodePort,
+		},
+	}
+
+	k8sSvc2ndApply := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
+			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
+				{
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     8083,
+				},
+				{
+					Name:     "port-tcp-81",
+					Protocol: slim_corev1.ProtocolTCP,
+					Port:     81,
+				},
+			},
+			ClusterIP: "172.0.20.1",
+			Type:      slim_corev1.ServiceTypeClusterIP,
+		},
+	}
+
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
+					},
+					{
+						Name:     "port-tcp-81",
+						Protocol: slim_corev1.ProtocolTCP,
+						Port:     8081,
 					},
 				},
 			},
 		},
 	}
 
-	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, 0)
-	clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, 0)
+	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, loadbalancer.ScopeExternal, 0)
 
 	nodePortIPs1 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, loadbalancer.ScopeExternal, 0),
 	}
 	nodePortIPs2 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, loadbalancer.ScopeExternal, 0),
 	}
 
 	upsert1stWanted := map[string]loadbalancer.SVC{
@@ -1391,7 +1317,7 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_1(c *C) {
 		}
 	}
 
-	clusterIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 8083, 0)
+	clusterIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 8083, loadbalancer.ScopeExternal, 0)
 
 	upsert2ndWanted := map[string]loadbalancer.SVC{
 		clusterIP2.Hash(): {
@@ -1452,36 +1378,24 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_1(c *C) {
 	wantSvcDeleteManagerCalls := len(del1stWanted)
 
 	svcManager := &fakeSvcManager{
-		OnUpsertService: func(
-			fe loadbalancer.L3n4AddrID,
-			bes []loadbalancer.Backend,
-			svcType loadbalancer.SVCType,
-			svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-			svcHealthCheckNodePort uint16,
-			svcName,
-			namespace string) (
-			b bool,
-			id loadbalancer.ID,
-			e error,
-		) {
-
-			sort.Slice(bes, func(i, j int) bool {
-				return bytes.Compare(bes[i].IP, bes[j].IP) < 0
+		OnUpsertService: func(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
+			sort.Slice(p.Backends, func(i, j int) bool {
+				return bytes.Compare(p.Backends[i].IP, p.Backends[j].IP) < 0
 			})
 			switch {
 			// 1st update service-endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted):
-				upsert1st[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert1st[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			// 2nd update services
 			case svcUpsertManagerCalls < len(upsert1stWanted)+len(upsert2ndWanted):
-				upsert2nd[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert2nd[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			}
 			svcUpsertManagerCalls++
@@ -1501,6 +1415,10 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_1(c *C) {
 		policyRepository,
 		svcManager,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -1532,97 +1450,89 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_2(c *C) {
 		option.Config.EnableNodePort = enableNodePortBak
 	}()
 
-	k8sSvc1stApply := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
-				},
-			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
-					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       80,
-						TargetPort: intstr.FromString("port-80-u"),
-						NodePort:   18080,
-					},
-					{
-						Name:       "port-tcp-81",
-						Protocol:   v1.ProtocolTCP,
-						Port:       81,
-						TargetPort: intstr.FromInt(81),
-						NodePort:   18081,
-					},
-				},
-				ClusterIP: "172.0.20.1",
-				Type:      v1.ServiceTypeNodePort,
+	k8sSvc1stApply := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
 			},
 		},
-	}
-
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
 				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
-						{
-							Name:     "port-tcp-81",
-							Protocol: v1.ProtocolTCP,
-							Port:     8081,
-						},
-					},
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     80,
+					NodePort: 18080,
 				},
-			},
-		},
-	}
-
-	ep2ndApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
 				{
-					Addresses: []v1.EndpointAddress{{IP: "3.3.3.3"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
+					Name:     "port-tcp-81",
+					Protocol: slim_corev1.ProtocolTCP,
+					Port:     81,
+					NodePort: 18081,
+				},
+			},
+			ClusterIP: "172.0.20.1",
+			Type:      slim_corev1.ServiceTypeNodePort,
+		},
+	}
+
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
+					},
+					{
+						Name:     "port-tcp-81",
+						Protocol: slim_corev1.ProtocolTCP,
+						Port:     8081,
 					},
 				},
 			},
 		},
 	}
 
-	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, 0)
-	clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, 0)
+	ep2ndApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "3.3.3.3"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
+					},
+				},
+			},
+		},
+	}
+
+	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, loadbalancer.ScopeExternal, 0)
 
 	nodePortIPs1 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, loadbalancer.ScopeExternal, 0),
 	}
 	nodePortIPs2 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, loadbalancer.ScopeExternal, 0),
 	}
 
 	upsert1stWanted := map[string]loadbalancer.SVC{
@@ -1757,36 +1667,24 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_2(c *C) {
 	wantSvcDeleteManagerCalls := len(del1stWanted)
 
 	svcManager := &fakeSvcManager{
-		OnUpsertService: func(
-			fe loadbalancer.L3n4AddrID,
-			bes []loadbalancer.Backend,
-			svcType loadbalancer.SVCType,
-			svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-			svcHealthCheckNodePort uint16,
-			svcName,
-			namespace string) (
-			b bool,
-			id loadbalancer.ID,
-			e error,
-		) {
-
-			sort.Slice(bes, func(i, j int) bool {
-				return bytes.Compare(bes[i].IP, bes[j].IP) < 0
+		OnUpsertService: func(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
+			sort.Slice(p.Backends, func(i, j int) bool {
+				return bytes.Compare(p.Backends[i].IP, p.Backends[j].IP) < 0
 			})
 			switch {
 			// 1st update service-endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted):
-				upsert1st[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert1st[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			// 2nd update services
 			case svcUpsertManagerCalls < len(upsert1stWanted)+len(upsert2ndWanted):
-				upsert2nd[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert2nd[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			}
 			svcUpsertManagerCalls++
@@ -1806,6 +1704,10 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_2(c *C) {
 		policyRepository,
 		svcManager,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -1832,90 +1734,79 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 		option.Config.EnableNodePort = enableNodePortBak
 	}()
 
-	svc1stApply := &types.Service{
-		Service: &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-				Labels: map[string]string{
-					"foo": "bar",
+	svc1stApply := &slim_corev1.Service{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+			Labels: map[string]string{
+				"foo": "bar",
+			},
+		},
+		Spec: slim_corev1.ServiceSpec{
+			Ports: []slim_corev1.ServicePort{
+				{
+					Name:     "port-udp-80",
+					Protocol: slim_corev1.ProtocolUDP,
+					Port:     80,
+					NodePort: 18080,
+				},
+				// FIXME: We don't distinguish about the protocol being used
+				//        so we can't tell if a UDP/80 maps to port 8080/udp
+				//        or if TCP/80 maps to port 8081/TCP
+				// {
+				// 	Name:       "port-tcp-80",
+				// 	Protocol:  slim_corev1.ProtocolTCP,
+				// 	Port:       80,
+				// 	TargetPort: intstr.FromString("port-80-t"),
+				//  NodePort:   18080,
+				// },
+				{
+					Name:     "port-tcp-81",
+					Protocol: slim_corev1.ProtocolTCP,
+					Port:     81,
+					NodePort: 18081,
 				},
 			},
-			Spec: v1.ServiceSpec{
-				Ports: []v1.ServicePort{
-					{
-						Name:       "port-udp-80",
-						Protocol:   v1.ProtocolUDP,
-						Port:       80,
-						TargetPort: intstr.FromString("port-80-u"),
-						NodePort:   18080,
-					},
-					// FIXME: We don't distinguish about the protocol being used
-					//        so we can't tell if a UDP/80 maps to port 8080/udp
-					//        or if TCP/80 maps to port 8081/TCP
-					// {
-					// 	Name:       "port-tcp-80",
-					// 	Protocol:   v1.ProtocolTCP,
-					// 	Port:       80,
-					// 	TargetPort: intstr.FromString("port-80-t"),
-					//  NodePort:   18080,
-					// },
-					{
-						Name:       "port-tcp-81",
-						Protocol:   v1.ProtocolTCP,
-						Port:       81,
-						TargetPort: intstr.FromInt(81),
-						NodePort:   18081,
-					},
-				},
-				Selector:                 nil,
-				ClusterIP:                "172.0.20.1",
-				Type:                     v1.ServiceTypeNodePort,
-				ExternalIPs:              []string{"127.8.8.8", "127.9.9.9"},
-				SessionAffinity:          "",
-				LoadBalancerIP:           "",
-				LoadBalancerSourceRanges: nil,
-				ExternalName:             "",
-				ExternalTrafficPolicy:    "",
-				HealthCheckNodePort:      0,
-				PublishNotReadyAddresses: false,
-				SessionAffinityConfig:    nil,
-				IPFamily:                 nil,
-			},
+			Selector:              nil,
+			ClusterIP:             "172.0.20.1",
+			Type:                  slim_corev1.ServiceTypeNodePort,
+			ExternalIPs:           []string{"127.8.8.8", "127.9.9.9"},
+			SessionAffinity:       "",
+			ExternalTrafficPolicy: "",
+			HealthCheckNodePort:   0,
+			SessionAffinityConfig: nil,
 		},
 	}
 
 	svc2ndApply := svc1stApply.DeepCopy()
 	svc2ndApply.Spec.ExternalIPs = []string{"127.8.8.8"}
 
-	ep1stApply := &types.Endpoints{
-		Endpoints: &v1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "bar",
-			},
-			Subsets: []v1.EndpointSubset{
-				{
-					Addresses: []v1.EndpointAddress{{IP: "2.2.2.2"}},
-					Ports: []v1.EndpointPort{
-						{
-							Name:     "port-udp-80",
-							Port:     8080,
-							Protocol: v1.ProtocolUDP,
-						},
-						// FIXME: We don't distinguish about the protocol being used
-						//        so we can't tell if a UDP/80 maps to port 8080/udp
-						//        or if TCP/80 maps to port 8081/TCP
-						// {
-						// 	Name:     "port-tcp-80",
-						// 	Protocol: v1.ProtocolTCP,
-						// 	Port:     8081,
-						// },
-						{
-							Name:     "port-tcp-81",
-							Protocol: v1.ProtocolTCP,
-							Port:     8081,
-						},
+	ep1stApply := &slim_corev1.Endpoints{
+		ObjectMeta: slim_metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Subsets: []slim_corev1.EndpointSubset{
+			{
+				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Ports: []slim_corev1.EndpointPort{
+					{
+						Name:     "port-udp-80",
+						Port:     8080,
+						Protocol: slim_corev1.ProtocolUDP,
+					},
+					// FIXME: We don't distinguish about the protocol being used
+					//        so we can't tell if a UDP/80 maps to port 8080/udp
+					//        or if TCP/80 maps to port 8081/TCP
+					// {
+					// 	Name:     "port-tcp-80",
+					// 	Protocol:slim_corev1.ProtocolTCP,
+					// 	Port:     8081,
+					// },
+					{
+						Name:     "port-tcp-81",
+						Protocol: slim_corev1.ProtocolTCP,
+						Port:     8081,
 					},
 				},
 			},
@@ -1925,12 +1816,12 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 	ep2ndApply := ep1stApply.DeepCopy()
 	ep2ndApply.Subsets[0].Addresses = append(
 		ep2ndApply.Subsets[0].Addresses,
-		v1.EndpointAddress{IP: "3.3.3.3"},
+		slim_corev1.EndpointAddress{IP: "3.3.3.3"},
 	)
 
-	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, 0)
-	// clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 80, 0)
-	clusterIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, 0)
+	clusterIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	// clusterIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 80, loadbalancer.ScopeExternal, 0)
+	clusterIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("172.0.20.1"), 81, loadbalancer.ScopeExternal, 0)
 
 	upsert1stWanted := map[string]loadbalancer.SVC{
 		clusterIP1.Hash(): {
@@ -1983,12 +1874,12 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 		},
 	}
 
-	externalIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("127.8.8.8"), 80, 0)
-	// externalIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.8.8.8"), 80, 0)
-	externalIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.8.8.8"), 81, 0)
-	externalIP4 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("127.9.9.9"), 80, 0)
-	// externalIP5 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.9.9.9"), 80, 0)
-	externalIP6 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.9.9.9"), 81, 0)
+	externalIP1 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("127.8.8.8"), 80, loadbalancer.ScopeExternal, 0)
+	// externalIP2 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.8.8.8"), 80, loadbalancer.ScopeExternal, 0)
+	externalIP3 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.8.8.8"), 81, loadbalancer.ScopeExternal, 0)
+	externalIP4 := loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("127.9.9.9"), 80, loadbalancer.ScopeExternal, 0)
+	// externalIP5 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.9.9.9"), 80, loadbalancer.ScopeExternal, 0)
+	externalIP6 := loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("127.9.9.9"), 81, loadbalancer.ScopeExternal, 0)
 	for _, externalIP := range []*loadbalancer.L3n4AddrID{externalIP1, externalIP4} {
 		upsert1stWanted[externalIP.Hash()] = loadbalancer.SVC{
 			Type:     loadbalancer.SVCTypeExternalIPs,
@@ -2042,9 +1933,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 	}
 
 	nodePortIPs1 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, net.ParseIP("0.0.0.0"), 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4NodePortAddress, 18080, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.UDP, fakeDatapath.IPv4InternalAddress, 18080, loadbalancer.ScopeExternal, 0),
 	}
 	for _, nodePort := range nodePortIPs1 {
 		upsert1stWanted[nodePort.Hash()] = loadbalancer.SVC{
@@ -2064,9 +1955,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 		}
 	}
 	// nodePortIPs2 := []*loadbalancer.L3n4AddrID{
-	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18080, 0),
-	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18080, 0),
-	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18080, 0),
+	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18080, loadbalancer.ScopeExternal, 0),
+	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18080, loadbalancer.ScopeExternal, 0),
+	// 	loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18080, loadbalancer.ScopeExternal, 0),
 	// }
 	// for _, nodePort := range nodePortIPs2 {
 	// 	upsert1stWanted[nodePort.Hash()] = loadbalancer.SVC{
@@ -2086,9 +1977,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 	// 	}
 	// }
 	nodePortIPs3 := []*loadbalancer.L3n4AddrID{
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, 0),
-		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, net.ParseIP("0.0.0.0"), 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4NodePortAddress, 18081, loadbalancer.ScopeExternal, 0),
+		loadbalancer.NewL3n4AddrID(loadbalancer.TCP, fakeDatapath.IPv4InternalAddress, 18081, loadbalancer.ScopeExternal, 0),
 	}
 	for _, nodePort := range nodePortIPs3 {
 		upsert1stWanted[nodePort.Hash()] = loadbalancer.SVC{
@@ -2616,43 +2507,31 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 	svcUpsertManagerCalls, svcDeleteManagerCalls := 0, 0
 
 	svcManager := &fakeSvcManager{
-		OnUpsertService: func(
-			fe loadbalancer.L3n4AddrID,
-			bes []loadbalancer.Backend,
-			svcType loadbalancer.SVCType,
-			svcTrafficPolicy loadbalancer.SVCTrafficPolicy,
-			svcHealthCheckNodePort uint16,
-			svcName,
-			namespace string) (
-			b bool,
-			id loadbalancer.ID,
-			e error,
-		) {
-
-			sort.Slice(bes, func(i, j int) bool {
-				return bytes.Compare(bes[i].IP, bes[j].IP) < 0
+		OnUpsertService: func(p *loadbalancer.SVC) (bool, loadbalancer.ID, error) {
+			sort.Slice(p.Backends, func(i, j int) bool {
+				return bytes.Compare(p.Backends[i].IP, p.Backends[j].IP) < 0
 			})
 			switch {
 			// 1st update endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted):
-				upsert1st[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert1st[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			// 2nd update endpoints
 			case svcUpsertManagerCalls < len(upsert1stWanted)+len(upsert2ndWanted):
-				upsert2nd[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert2nd[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			// 3rd update services
 			case svcUpsertManagerCalls < len(upsert1stWanted)+len(upsert2ndWanted)+len(upsert3rdWanted):
-				upsert3rd[fe.Hash()] = loadbalancer.SVC{
-					Frontend: fe,
-					Backends: bes,
-					Type:     svcType,
+				upsert3rd[p.Frontend.Hash()] = loadbalancer.SVC{
+					Frontend: p.Frontend,
+					Backends: p.Backends,
+					Type:     p.Type,
 				}
 			}
 			svcUpsertManagerCalls++
@@ -2679,6 +2558,10 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 		policyRepository,
 		svcManager,
 		fakeDatapath.NewDatapath(),
+		nil,
+		nil,
+		nil,
+		&fakeWatcherConfiguration{},
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()

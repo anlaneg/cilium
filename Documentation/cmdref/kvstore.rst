@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _install_kvstore:
 
@@ -36,7 +36,7 @@ for TLS authentication:
 
 Example of the consul configuration file:
 
-.. code:: yaml
+.. code-block:: yaml
 
     ---
     cafile: '/var/lib/cilium/consul-ca.pem'
@@ -55,12 +55,16 @@ etcd endpoints:
 +---------------------+---------+---------------------------------------------------+
 | etcd.address        | Address | Address of etcd endpoint                          |
 +---------------------+---------+---------------------------------------------------+
+|                     |         | When set to true, Cilium will resolve the domain  |
+| etcd.operator       | Boolean | name of the etcd server from the associated k8s   |
+|                     |         | service deployed.                                 |
++---------------------+---------+---------------------------------------------------+
 | etcd.config         | Path    | Path to an etcd configuration file.               |
 +---------------------+---------+---------------------------------------------------+
 
 Example of the etcd configuration file:
 
-.. code:: yaml
+.. code-block:: yaml
 
     ---
     endpoints:

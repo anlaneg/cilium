@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package healthserver
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -25,8 +15,10 @@ import (
 	lb "github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "service-healthserver")
@@ -130,7 +122,6 @@ func (s *ServiceHealthServer) UpsertService(svcID lb.ID, ns, name string, localE
 	// endpoints. We reference count the listeners to make sure we only have
 	// a single listener per port.
 
-	var srv healthHTTPServer
 	svc := NewService(ns, name, localEndpoints)
 	if !foundSvc {
 		// We only bump the reference count if this is a service ID we have
@@ -187,8 +178,15 @@ func (h *httpHealthHTTPServerFactory) newHTTPHealthServer(port uint16, svc *Serv
 			logfields.ServiceHealthCheckNodePort: port,
 		}).Debug("Starting new service health server")
 
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			svc := srv.loadService()
+			if errors.Is(err, unix.EADDRINUSE) {
+				log.WithError(err).WithFields(logrus.Fields{
+					logfields.ServiceName:                svc.Service.Name,
+					logfields.ServiceNamespace:           svc.Service.Namespace,
+					logfields.ServiceHealthCheckNodePort: port,
+				}).Errorf("ListenAndServe failed for service health server, since the user might be running with kube-proxy. Please ensure that '--%s' option is set to false if kube-proxy is running.", option.EnableHealthCheckNodePort)
+			}
 			log.WithError(err).WithFields(logrus.Fields{
 				logfields.ServiceName:                svc.Service.Name,
 				logfields.ServiceNamespace:           svc.Service.Namespace,

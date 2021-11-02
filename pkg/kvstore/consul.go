@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package kvstore
 
@@ -20,11 +9,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"time"
 
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
@@ -99,7 +89,7 @@ func (c *consulModule) setConfigDummy() {
 	c.config = consulAPI.DefaultConfig()
 	c.config.Address = consulDummyAddress
 	yc := consulAPI.TLSConfig{}
-	b, err := ioutil.ReadFile(consulDummyConfigFile)
+	b, err := os.ReadFile(consulDummyConfigFile)
 	if err != nil {
 		log.WithError(err).Warnf("unable to read consul tls configuration file %s", consulDummyConfigFile)
 	}
@@ -149,7 +139,7 @@ func (c *consulModule) connectConsulClient(ctx context.Context, opts *ExtraOptio
 		addr := consulAddr.value
 		c.config = consulAPI.DefaultConfig()
 		if configPathOptSet && configPathOpt.value != "" {
-			b, err := ioutil.ReadFile(configPathOpt.value)
+			b, err := os.ReadFile(configPathOpt.value)
 			if err != nil {
 				return nil, fmt.Errorf("unable to read consul tls configuration file %s: %s", configPathOpt.value, err)
 			}
@@ -178,11 +168,12 @@ var (
 
 type consulClient struct {
 	*consulAPI.Client
-	lease          string
-	controllers    *controller.Manager
-	extraOptions   *ExtraOptions
-	disconnectedMu lock.RWMutex
-	disconnected   chan struct{}
+	lease             string
+	controllers       *controller.Manager
+	extraOptions      *ExtraOptions
+	disconnectedMu    lock.RWMutex
+	disconnected      chan struct{}
+	statusCheckErrors chan error
 }
 
 func newConsulClient(ctx context.Context, config *consulAPI.Config, opts *ExtraOptions) (BackendOperations, error) {
@@ -200,7 +191,6 @@ func newConsulClient(ctx context.Context, config *consulAPI.Config, opts *ExtraO
 	}
 
 	boff := backoff.Exponential{Min: time.Duration(100) * time.Millisecond}
-	log.Info("Waiting for consul to elect a leader")
 
 	for i := 0; i < maxRetries; i++ {
 		var leader string
@@ -214,6 +204,7 @@ func newConsulClient(ctx context.Context, config *consulAPI.Config, opts *ExtraO
 				err = errors.New("timeout while waiting for leader to be elected")
 			}
 		}
+		log.Info("Waiting for consul to elect a leader")
 		boff.Wait(ctx)
 	}
 
@@ -233,11 +224,12 @@ func newConsulClient(ctx context.Context, config *consulAPI.Config, opts *ExtraO
 	}
 
 	client := &consulClient{
-		Client:       c,
-		lease:        lease,
-		controllers:  controller.NewManager(),
-		extraOptions: opts,
-		disconnected: make(chan struct{}),
+		Client:            c,
+		lease:             lease,
+		controllers:       controller.NewManager(),
+		extraOptions:      opts,
+		disconnected:      make(chan struct{}),
+		statusCheckErrors: make(chan error, 128),
 	}
 
 	client.controllers.UpdateController(fmt.Sprintf("consul-lease-keepalive-%p", c),
@@ -284,7 +276,7 @@ func (c *consulClient) LockPath(ctx context.Context, path string) (KVLocker, err
 		switch {
 		case err != nil:
 			return nil, err
-		case ch == nil && err == nil:
+		case ch == nil:
 			Trace("Acquiring lock timed out, retrying", nil, logrus.Fields{fieldKey: path, logfields.Attempt: retries})
 		default:
 			return &ConsulLocker{Lock: lockKey}, err
@@ -312,16 +304,19 @@ func (c *consulClient) Watch(ctx context.Context, w *Watcher) {
 
 	qo := q.WithContext(ctx)
 
+	sleepTimer, sleepTimerDone := inctimer.New()
+	defer sleepTimerDone()
+
 	for {
 		// Initialize sleep time to a millisecond as we don't
 		// want to sleep in between successful watch cycles
 		sleepTime := 1 * time.Millisecond
 
 		qo.WaitIndex = nextIndex
-		pairs, q, err := c.KV().List(w.prefix, qo)
+		pairs, q, err := c.KV().List(w.Prefix, qo)
 		if err != nil {
 			sleepTime = 5 * time.Second
-			Trace("List of Watch failed", err, logrus.Fields{fieldPrefix: w.prefix, fieldWatcher: w.name})
+			Trace("List of Watch failed", err, logrus.Fields{fieldPrefix: w.Prefix, fieldWatcher: w.Name})
 		}
 
 		if q != nil {
@@ -389,7 +384,7 @@ func (c *consulClient) Watch(ctx context.Context, w *Watcher) {
 
 	wait:
 		select {
-		case <-time.After(sleepTime):
+		case <-sleepTimer.After(sleepTime):
 		case <-w.stopWatch:
 			close(w.Events)
 			w.stopWait.Done()
@@ -419,8 +414,8 @@ func (c *consulClient) waitForInitLock(ctx context.Context) <-chan struct{} {
 }
 
 // Connected closes the returned channel when the consul client is connected.
-func (c *consulClient) Connected(ctx context.Context) <-chan struct{} {
-	ch := make(chan struct{})
+func (c *consulClient) Connected(ctx context.Context) <-chan error {
+	ch := make(chan error)
 	go func() {
 		for {
 			qo := &consulAPI.QueryOptions{}
@@ -728,6 +723,7 @@ func (c *consulClient) listPrefix(ctx context.Context, prefix string) (KeyValueP
 
 // Close closes the consul session
 func (c *consulClient) Close() {
+	close(c.statusCheckErrors)
 	if c.controllers != nil {
 		c.controllers.RemoveAll()
 	}
@@ -762,4 +758,9 @@ func (c *consulClient) ListAndWatch(ctx context.Context, name, prefix string, ch
 	go c.Watch(ctx, w)
 
 	return w
+}
+
+// StatusCheckErrors returns a channel which receives status check errors
+func (c *consulClient) StatusCheckErrors() <-chan error {
+	return c.statusCheckErrors
 }

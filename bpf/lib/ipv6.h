@@ -35,12 +35,12 @@
 
 #define NEXTHDR_MAX             255
 
-static __always_inline int ipv6_optlen(struct ipv6_opt_hdr *opthdr)
+static __always_inline int ipv6_optlen(const struct ipv6_opt_hdr *opthdr)
 {
 	return (opthdr->hdrlen + 1) << 3;
 }
 
-static __always_inline int ipv6_authlen(struct ipv6_opt_hdr *opthdr)
+static __always_inline int ipv6_authlen(const struct ipv6_opt_hdr *opthdr)
 {
 	return (opthdr->hdrlen + 2) << 2;
 }
@@ -49,7 +49,7 @@ static __always_inline int ipv6_hdrlen(struct __ctx_buff *ctx, int l3_off,
 				       __u8 *nexthdr)
 {
 	int i, len = sizeof(struct ipv6hdr);
-	struct ipv6_opt_hdr opthdr;
+	struct ipv6_opt_hdr opthdr __align_stack_8;
 	__u8 nh = *nexthdr;
 
 #pragma unroll
@@ -85,13 +85,15 @@ static __always_inline int ipv6_hdrlen(struct __ctx_buff *ctx, int l3_off,
 	return DROP_INVALID_EXTHDR;
 }
 
-static __always_inline void ipv6_addr_copy(union v6addr *dst, union v6addr *src)
+static __always_inline void ipv6_addr_copy(union v6addr *dst,
+					   const union v6addr *src)
 {
 	dst->d1 = src->d1;
 	dst->d2 = src->d2;
 }
 
-static __always_inline __u64 ipv6_addrcmp(union v6addr *a, union v6addr *b)
+static __always_inline __u64 ipv6_addrcmp(const union v6addr *a,
+					  const union v6addr *b)
 {
 	__u64 tmp;
 
@@ -101,9 +103,10 @@ static __always_inline __u64 ipv6_addrcmp(union v6addr *a, union v6addr *b)
 	return tmp;
 }
 
-// Only works with contiguous masks.
-static __always_inline int ipv6_addr_in_net(union v6addr *addr, union v6addr *net,
-					    union v6addr *mask)
+/* Only works with contiguous masks. */
+static __always_inline int ipv6_addr_in_net(const union v6addr *addr,
+					    const union v6addr *net,
+					    const union v6addr *mask)
 {
 	return ((addr->p1 & mask->p1) == net->p1)
 		&& (!mask->p2
@@ -114,7 +117,7 @@ static __always_inline int ipv6_addr_in_net(union v6addr *addr, union v6addr *ne
 }
 
 #define GET_PREFIX(PREFIX)						\
-	bpf_htonl(prefix <= 0 ? 0 : prefix < 32 ? ((1<<prefix) - 1) << (32-prefix)	\
+	bpf_htonl(PREFIX <= 0 ? 0 : PREFIX < 32 ? ((1<<PREFIX) - 1) << (32-PREFIX)	\
 			      : 0xFFFFFFFF)
 
 static __always_inline void ipv6_addr_clear_suffix(union v6addr *addr,
@@ -127,7 +130,6 @@ static __always_inline void ipv6_addr_clear_suffix(union v6addr *addr,
 	addr->p3 &= GET_PREFIX(prefix);
 	prefix -= 32;
 	addr->p4 &= GET_PREFIX(prefix);
-	prefix -= 32;
 }
 
 static __always_inline int ipv6_match_prefix_64(const union v6addr *addr,
@@ -146,8 +148,10 @@ static __always_inline int ipv6_dec_hoplimit(struct __ctx_buff *ctx, int off)
 {
 	__u8 hl;
 
-	ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, hop_limit),
-		       &hl, sizeof(hl));
+	if (ctx_load_bytes(ctx, off + offsetof(struct ipv6hdr, hop_limit),
+			   &hl, sizeof(hl)) < 0)
+		return DROP_INVALID;
+
 	if (hl <= 1)
 		return 1;
 	hl--;
@@ -239,6 +243,7 @@ static __always_inline __be32 ipv6_pseudohdr_checksum(struct ipv6hdr *hdr,
 {
 	__be32 len = bpf_htonl((__u32)payload_len);
 	__be32 nexthdr = bpf_htonl((__u32)next_hdr);
+
 	sum = csum_diff(NULL, 0, &hdr->saddr, sizeof(struct in6_addr), sum);
 	sum = csum_diff(NULL, 0, &hdr->daddr, sizeof(struct in6_addr), sum);
 	sum = csum_diff(NULL, 0, &len, sizeof(len), sum);
@@ -250,7 +255,7 @@ static __always_inline __be32 ipv6_pseudohdr_checksum(struct ipv6hdr *hdr,
 /*
  * Ipv4 mapped address - 0:0:0:0:0:FFFF::/96
  */
-static __always_inline int ipv6_addr_is_mapped(union v6addr *addr)
+static __always_inline int ipv6_addr_is_mapped(const union v6addr *addr)
 {
 	return addr->p1 == 0 && addr->p2 == 0 && addr->p3 == 0xFFFF0000;
 }

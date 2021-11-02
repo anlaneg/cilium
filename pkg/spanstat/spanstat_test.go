@@ -1,25 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package spanstat
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	. "gopkg.in/check.v1"
 )
 
@@ -89,4 +82,103 @@ func (s *SpanStatTestSuite) TestSpanStat(c *C) {
 func (s *SpanStatTestSuite) TestSpanStatSeconds(c *C) {
 	span1 := Start()
 	c.Assert(span1.Seconds(), Not(Equals), float64(0))
+}
+
+func (s *SpanStatTestSuite) TestSpanStatSecondsRaceCondition(c *C) {
+	span1 := Start()
+	var wg sync.WaitGroup
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(span *SpanStat) {
+			defer wg.Done()
+			c.Assert(span1.Seconds(), Not(Equals), float64(0))
+		}(span1)
+	}
+	wg.Wait()
+}
+
+func TestSpanStatRaceCondition(t *testing.T) {
+	type fields struct {
+		runFunc func(span *SpanStat) float64
+	}
+	tests := []struct {
+		name   string
+		fields fields
+	}{
+		{
+			name: "End function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					return span.End(true).Seconds()
+				},
+			},
+		},
+		{
+			name: "EndError function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					return span.EndError(fmt.Errorf("dummy error")).Seconds()
+				},
+			},
+		},
+		{
+			name: "Seconds function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					return span.Seconds()
+				},
+			},
+		},
+		{
+			name: "Total function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					return span.Total().Seconds() + 1
+				},
+			},
+		},
+		{
+			name: "FailureTotal function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					return span.FailureTotal().Seconds() + 1
+				},
+			},
+		},
+		{
+			name: "SuccessTotal function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					return span.SuccessTotal().Seconds() + 1
+				},
+			},
+		},
+		{
+			name: "Reset function",
+			fields: fields{
+				runFunc: func(span *SpanStat) float64 {
+					span.Reset()
+					return 1
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			span := Start()
+			var wg sync.WaitGroup
+
+			for i := 0; i < 5; i++ {
+				wg.Add(1)
+				go func(span *SpanStat) {
+					defer wg.Done()
+					assert.NotEqual(t, tt.fields.runFunc(span), float64(0))
+				}(span)
+			}
+			wg.Wait()
+		})
+	}
+
 }

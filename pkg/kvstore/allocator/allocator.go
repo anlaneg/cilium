@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package allocator
 
@@ -26,6 +15,7 @@ import (
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/rate"
 
 	"github.com/sirupsen/logrus"
 )
@@ -370,7 +360,7 @@ func (k *kvstoreBackend) UpdateKeyIfLocked(ctx context.Context, id idpool.ID, ke
 // Release releases the use of an ID associated with the provided key.  It does
 // not guard against concurrent releases. This is currently guarded by
 // Allocator.slaveKeysMutex when called from pkg/allocator.Allocator.Release.
-func (k *kvstoreBackend) Release(ctx context.Context, key allocator.AllocatorKey) (err error) {
+func (k *kvstoreBackend) Release(ctx context.Context, _ idpool.ID, key allocator.AllocatorKey) (err error) {
 	valueKey := path.Join(k.valuePrefix, k.backend.Encode([]byte(key.GetKey())), k.suffix)
 	log.WithField(fieldKey, key).Info("Released last local use of key, invoking global release")
 
@@ -436,12 +426,15 @@ func (k *kvstoreBackend) RunLocksGC(ctx context.Context, staleKeysPrevRound map[
 }
 
 // RunGC scans the kvstore for unused master keys and removes them
-func (k *kvstoreBackend) RunGC(ctx context.Context, staleKeysPrevRound map[string]uint64) (map[string]uint64, error) {
+func (k *kvstoreBackend) RunGC(ctx context.Context, rateLimit *rate.Limiter, staleKeysPrevRound map[string]uint64) (map[string]uint64, *allocator.GCStats, error) {
 	// fetch list of all /id/ keys
 	allocated, err := k.backend.ListPrefix(ctx, k.idPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("list failed: %s", err)
+		return nil, nil, fmt.Errorf("list failed: %s", err)
 	}
+
+	totalEntries := len(allocated)
+	deletedEntries := 0
 
 	staleKeys := map[string]uint64{}
 
@@ -474,6 +467,7 @@ func (k *kvstoreBackend) RunGC(ctx context.Context, staleKeysPrevRound map[strin
 			}
 		}
 
+		var deleted bool
 		// if ID has no user, delete it
 		if !hasUsers {
 			scopedLog := log.WithFields(logrus.Fields{
@@ -481,11 +475,22 @@ func (k *kvstoreBackend) RunGC(ctx context.Context, staleKeysPrevRound map[strin
 				fieldID:  path.Base(key),
 			})
 			// Only delete if this key was previously marked as to be deleted
-			if modRev, ok := staleKeysPrevRound[key]; ok && modRev == v.ModRevision {
-				if err := k.backend.DeleteIfLocked(ctx, key, lock); err != nil {
-					scopedLog.WithError(err).Warning("Unable to delete unused allocator master key")
-				} else {
-					scopedLog.Info("Deleted unused allocator master key")
+			if modRev, ok := staleKeysPrevRound[key]; ok {
+				// if the v.ModRevision is different than the modRev (which is
+				// the last seen v.ModRevision) then this key was re-used in
+				// between GC calls. We should not mark it as stale keys yet,
+				// but the next GC call will do it.
+				if modRev == v.ModRevision {
+					if err := k.backend.DeleteIfLocked(ctx, key, lock); err != nil {
+						scopedLog.WithError(err).Warning("Unable to delete unused allocator master key")
+					} else {
+						deletedEntries++
+						scopedLog.Info("Deleted unused allocator master key")
+					}
+					// consider the key regardless if there was an error from
+					// the kvstore. We want to rate limit the number of requests
+					// done to the KVStore.
+					deleted = true
 				}
 			} else {
 				// If the key was not found mark it to be delete in the next RunGC
@@ -494,9 +499,23 @@ func (k *kvstoreBackend) RunGC(ctx context.Context, staleKeysPrevRound map[strin
 		}
 
 		lock.Unlock(context.Background())
+		if deleted {
+			// Wait after deleted the key. This is not ideal because we have
+			// done the operation that should be rate limited before checking the
+			// rate limit. We have to do this here to avoid holding the global lock
+			// for a long period of time.
+			err = rateLimit.Wait(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 
-	return staleKeys, nil
+	gcStats := &allocator.GCStats{
+		Alive:   totalEntries - deletedEntries,
+		Deleted: deletedEntries,
+	}
+	return staleKeys, gcStats, nil
 }
 
 func (k *kvstoreBackend) keyToID(key string) (id idpool.ID, err error) {

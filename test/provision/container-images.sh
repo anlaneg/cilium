@@ -2,11 +2,11 @@
 
 function check_img_list {
   local imgs=$@
-  for img in $imgs ; do 
+  for img in $imgs ; do
     #fmt_img=$img
     fmt_img=$(echo $img | sed -e 's/.*docker.io\///g' | sed -e 's/library\///g')
     #echo "checking if $img is cached..."
-    IMG_EXISTS=$(docker images $fmt_img | wc -l) 
+    IMG_EXISTS=$(docker images $fmt_img | wc -l)
     if [[ "$IMG_EXISTS" != "2" ]] ; then
       #echo "*******************************"
       echo -e "not cached in VM: \t$img"
@@ -26,8 +26,10 @@ function test_images {
   # sed's -n does not print non-matching lines and the `#p` prints only
   # matching groups. `#` is used as the sed delimiter to avoid escaping `/` in
   # the regex.
-  DOCKER_IMAGES=$(grep -rI --no-filename "docker.io" test/ | sed -nEe 's#.*(docker.io/[-_a-zA-Z0-9]+/[-_a-zA-Z0-9]+:[-_.a-zA-Z0-9]+)[^-_.a-zA-Z0-9].*#\1#p' | sort | uniq)
-  QUAY_IMAGES=$(grep -rI --no-filename "quay.io" test/     | sed -nEe 's#.*(quay.io/[-_a-zA-Z0-9]+/[-_a-zA-Z0-9]+:[-_.a-zA-Z0-9]+)[^-_.a-zA-Z0-9].*#\1#p'   | sort | uniq)
+  # Narrow down the directories to avoid pulling images from random yamls or test_result logs.
+  TEST_DIRS="test/helpers test/k8sT test/provision"
+  DOCKER_IMAGES=$(grep -rI --no-filename "docker.io" $TEST_DIRS | sed -nEe 's#.*(docker.io/[-_a-zA-Z0-9]+/[-_a-zA-Z0-9]+:[-_.a-zA-Z0-9]+)[^-_.a-zA-Z0-9].*#\1#p' | sort | uniq)
+  QUAY_IMAGES=$(grep -rI --no-filename "quay.io" $TEST_DIRS     | sed -nEe   's#.*(quay.io/[-_a-zA-Z0-9]+/[-_a-zA-Z0-9]+:[-_.a-zA-Z0-9]+)[^-_.a-zA-Z0-9].*#\1#p' | sort | uniq)
 
   check_img_list $DOCKER_IMAGES
   check_img_list $QUAY_IMAGES
@@ -39,8 +41,7 @@ function test_images {
 
 function cilium_images {
   echo "Downloading all images needed to build cilium"
-  CILIUM_DOCKERFILES="./Dockerfile ./cilium-operator.Dockerfile ./Dockerfile.builder"
-  CILIUM_IMGS=$(grep -rI --no-filename "quay.io" $CILIUM_DOCKERFILES   | sed -nEe 's#.*(quay.io/[-_a-zA-Z0-9]+/[-_a-zA-Z0-9]+:[-_.a-zA-Z0-9]+)[^-_.a-zA-Z0-9].*#\1#p' | sort | uniq)
+  CILIUM_IMGS=$(grep -rI --no-filename "quay.io" images/*/Dockerfile | sed -nEe 's#.*(quay.io/[-_a-zA-Z0-9]+/[-_a-zA-Z0-9]+:[-_.a-zA-Z0-9]+)[^-_.a-zA-Z0-9].*#\1#p' | sort | uniq)
 
   check_img_list $CILIUM_IMGS
   for p in `jobs -p`; do

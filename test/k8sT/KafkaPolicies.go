@@ -1,37 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
 import (
-	"context"
 	"fmt"
 	"time"
 
-	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("K8sKafkaPolicyTest", func() {
+// The 5.4 CI job is intended to catch BPF complexity regressions and as such
+// doesn't need to execute this test suite.
+var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sKafkaPolicyTest", func() {
 
 	var (
-		kubectl          *helpers.Kubectl
-		backgroundCancel context.CancelFunc = func() { return }
-		backgroundError  error
+		kubectl *helpers.Kubectl
 
 		// these two are set in BeforeAll
 		l7Policy       string
@@ -48,27 +35,25 @@ var _ = Describe("K8sKafkaPolicyTest", func() {
 		topicDeathstarPlans = "deathstar-plans"
 		topicTest           = "test-topic"
 
-		prodHqAnnounce    = `-c "echo 'Happy 40th Birthday to General Tagge' | ./kafka-produce.sh --topic empire-announce"`
-		conOutpostAnnoune = `-c "./kafka-consume.sh --topic empire-announce --from-beginning --max-messages 1"`
-		prodHqDeathStar   = `-c "echo 'deathstar reactor design v3' | ./kafka-produce.sh --topic deathstar-plans"`
-		conOutDeathStar   = `-c "./kafka-consume.sh --topic deathstar-plans --from-beginning --max-messages 1"`
-		prodBackAnnounce  = `-c "echo 'Happy 40th Birthday to General Tagge' | ./kafka-produce.sh --topic empire-announce"`
-		prodOutAnnounce   = `-c "echo 'Vader Booed at Empire Karaoke Party' | ./kafka-produce.sh --topic empire-announce"`
+		prodHqAnnounce    = `sh -c "echo 'Happy 40th Birthday to General Tagge' | ./kafka-produce.sh --topic empire-announce"`
+		conOutpostAnnoune = `sh -c "./kafka-consume.sh --topic empire-announce --from-beginning --max-messages 1"`
+		prodHqDeathStar   = `sh -c "echo 'deathstar reactor design v3' | ./kafka-produce.sh --topic deathstar-plans"`
+		conOutDeathStar   = `sh -c "./kafka-consume.sh --topic deathstar-plans --from-beginning --max-messages 1"`
+		prodBackAnnounce  = `sh -c "echo 'Happy 40th Birthday to General Tagge' | ./kafka-produce.sh --topic empire-announce"`
+		prodOutAnnounce   = `sh -c "echo 'Vader Booed at Empire Karaoke Party' | ./kafka-produce.sh --topic empire-announce"`
 	)
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.CiliumNamespace,
-			"cilium service list",
-			"cilium endpoint list")
+		kubectl.CiliumReport("cilium service list", "cilium endpoint list")
 	})
 
 	AfterAll(func() {
-		kubectl.DeleteCiliumDS()
-		ExpectAllPodsTerminated(kubectl)
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		kubectl.CloseSSHClient()
 	})
 
-	Context("Kafka Policy Tests", func() {
+	// Tests involving the L7 proxy do not work when built with -race, see issue #13757.
+	SkipContextIf(helpers.SkipRaceDetectorEnabled, "Kafka Policy Tests", func() {
 		createTopicCmd := func(topic string) string {
 			return fmt.Sprintf("/opt/kafka_2.11-0.10.1.0/bin/kafka-topics.sh --create "+
 				"--zookeeper localhost:2181 --replication-factor 1 "+
@@ -103,18 +88,12 @@ var _ = Describe("K8sKafkaPolicyTest", func() {
 				}
 				return true
 			}
-			err := helpers.WithTimeout(body, fmt.Sprintf("unable to resolve DNS for service %s in pod %s", service, pod), &helpers.TimeoutConfig{Timeout: 30 * time.Second})
+			err := helpers.WithTimeout(body, fmt.Sprintf("unable to resolve DNS for service %s in pod %s", service, pod), &helpers.TimeoutConfig{Timeout: 240 * time.Second})
 			return err
 		}
 
-		JustBeforeEach(func() {
-			backgroundCancel, backgroundError = kubectl.BackgroundReport("uptime")
-			Expect(backgroundError).To(BeNil(), "Cannot start background report process")
-		})
-
 		JustAfterEach(func() {
 			kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-			backgroundCancel()
 		})
 
 		AfterEach(func() {
@@ -171,27 +150,27 @@ var _ = Describe("K8sKafkaPolicyTest", func() {
 			// some messages to be already there by the producer.
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[empireHqApp], fmt.Sprintf(prodHqAnnounce))
-			Expect(err).Should(BeNil(), "Failed to produce to empire-hq on topic empire-announce")
+				helpers.DefaultNamespace, appPods[empireHqApp], prodHqAnnounce)
+			Expect(err).Should(BeNil(), "Failed to produce from empire-hq on topic empire-announce")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(conOutpostAnnoune))
+				helpers.DefaultNamespace, appPods[outpostApp], conOutpostAnnoune)
 			Expect(err).Should(BeNil(), "Failed to consume from outpost on topic empire-announce")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[empireHqApp], fmt.Sprintf(prodHqDeathStar))
-			Expect(err).Should(BeNil(), "Failed to produce to empire-hq on topic deathstar-plans")
+				helpers.DefaultNamespace, appPods[empireHqApp], prodHqDeathStar)
+			Expect(err).Should(BeNil(), "Failed to produce from empire-hq on topic deathstar-plans")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(conOutDeathStar))
+				helpers.DefaultNamespace, appPods[outpostApp], conOutDeathStar)
 			Expect(err).Should(BeNil(), "Failed to consume from outpost on topic deathstar-plans")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[backupApp], fmt.Sprintf(prodBackAnnounce))
+				helpers.DefaultNamespace, appPods[backupApp], prodBackAnnounce)
 			Expect(err).Should(BeNil(), "Failed to produce to backup on topic empire-announce")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(prodOutAnnounce))
+				helpers.DefaultNamespace, appPods[outpostApp], prodOutAnnounce)
 			Expect(err).Should(BeNil(), "Failed to produce to outpost on topic empire-announce")
 
 			By("Apply L7 kafka policy and wait")
@@ -201,68 +180,34 @@ var _ = Describe("K8sKafkaPolicyTest", func() {
 				helpers.KubectlApply, helpers.HelperTimeout)
 			Expect(err).To(BeNil(), "L7 policy cannot be imported correctly")
 
-			By("validate that CEP is updated with correct enforcement mode")
-
-			desiredPolicyStatus := map[string]models.EndpointPolicyEnabled{
-				backupApp:   models.EndpointPolicyEnabledNone,
-				empireHqApp: models.EndpointPolicyEnabledNone,
-				kafkaApp:    models.EndpointPolicyEnabledBoth,
-				outpostApp:  models.EndpointPolicyEnabledNone,
-			}
-
-			body := func() bool {
-				for app, policy := range desiredPolicyStatus {
-					cep := kubectl.CepGet(helpers.DefaultNamespace, appPods[app])
-					if cep == nil {
-						return false
-					}
-					state := models.EndpointPolicyEnabledNone
-					switch {
-					case cep.Policy.Egress.Enforcing && cep.Policy.Ingress.Enforcing:
-						state = models.EndpointPolicyEnabledBoth
-					case cep.Policy.Egress.Enforcing:
-						state = models.EndpointPolicyEnabledIngress
-					case cep.Policy.Ingress.Enforcing:
-						state = models.EndpointPolicyEnabledEgress
-					}
-
-					if state != policy {
-						return false
-					}
-				}
-				return true
-			}
-			err = helpers.WithTimeout(body, "CEP policy enforcement", &helpers.TimeoutConfig{Timeout: helpers.HelperTimeout})
-			Expect(err).To(BeNil(), "CEP not updated with correct policy enforcement")
-
 			By("Testing Kafka L7 policy enforcement status")
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[empireHqApp], fmt.Sprintf(prodHqAnnounce))
-			Expect(err).Should(BeNil(), "Failed to produce to empire-hq on topic empire-announce")
+				helpers.DefaultNamespace, appPods[empireHqApp], prodHqAnnounce)
+			Expect(err).Should(BeNil(), "Failed to produce from empire-hq on topic empire-announce")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(conOutpostAnnoune))
+				helpers.DefaultNamespace, appPods[outpostApp], conOutpostAnnoune)
 			Expect(err).Should(BeNil(), "Failed to consume from outpost on topic empire-announce")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[empireHqApp], fmt.Sprintf(prodHqDeathStar))
+				helpers.DefaultNamespace, appPods[empireHqApp], prodHqDeathStar)
 			Expect(err).Should(BeNil(), "Failed to produce from empire-hq on topic deathstar-plans")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(conOutpostAnnoune))
+				helpers.DefaultNamespace, appPods[outpostApp], conOutpostAnnoune)
 			Expect(err).Should(BeNil(), "Failed to consume from outpost on topic empire-announce")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[backupApp], fmt.Sprintf(prodBackAnnounce))
-			Expect(err).Should(HaveOccurred(), " Produce to backup on topic empire-announce should have been denied")
+				helpers.DefaultNamespace, appPods[backupApp], prodBackAnnounce)
+			Expect(err).Should(HaveOccurred(), "Produce from backup on topic empire-announce should have been denied by egress policy")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(conOutDeathStar))
-			Expect(err).Should(HaveOccurred(), " Consume from outpost on topic deathstar-plans should have been denied")
+				helpers.DefaultNamespace, appPods[outpostApp], conOutDeathStar)
+			Expect(err).Should(HaveOccurred(), "Consume from outpost on topic deathstar-plans should have been denied")
 
 			err = kubectl.ExecKafkaPodCmd(
-				helpers.DefaultNamespace, appPods[outpostApp], fmt.Sprintf(prodOutAnnounce))
-			Expect(err).Should(HaveOccurred(), "Produce to outpost on topic empire-announce should have been denied")
+				helpers.DefaultNamespace, appPods[outpostApp], prodOutAnnounce)
+			Expect(err).Should(HaveOccurred(), "Produce from outpost on topic empire-announce should have been denied")
 		})
 	})
 })

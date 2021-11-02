@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package xds
 
@@ -27,7 +16,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
-	envoy_api_v2 "github.com/cilium/proxy/go/envoy/api/v2"
+	envoy_service_discovery "github.com/cilium/proxy/go/envoy/service/discovery/v3"
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes/any"
 	"github.com/sirupsen/logrus"
@@ -123,10 +112,9 @@ func NewServer(resourceTypes map[string]*ResourceTypeConfiguration,
 	return &Server{watchers: watchers, ackObservers: ackObservers}
 }
 
-func getXDSRequestFields(req *envoy_api_v2.DiscoveryRequest) logrus.Fields {
+func getXDSRequestFields(req *envoy_service_discovery.DiscoveryRequest) logrus.Fields {
 	return logrus.Fields{
 		logfields.XDSAckedVersion: req.GetVersionInfo(),
-		logfields.XDSClientNode:   req.GetNode(),
 		logfields.XDSTypeURL:      req.GetTypeUrl(),
 		logfields.XDSNonce:        req.GetResponseNonce(),
 	}
@@ -137,14 +125,16 @@ func (s *Server) HandleRequestStream(ctx context.Context, stream Stream, default
 	// increment stream count
 	streamID := atomic.AddUint64(&s.lastStreamID, 1)
 
-	streamLog := log.WithField(logfields.XDSStreamID, streamID)
+	reqStreamLog := log.WithField(logfields.XDSStreamID, streamID)
 
-	reqCh := make(chan *envoy_api_v2.DiscoveryRequest)
+	reqCh := make(chan *envoy_service_discovery.DiscoveryRequest)
 
 	stopRecv := make(chan struct{})
 	defer close(stopRecv)
 
-	go func() {
+	nodeId := ""
+
+	go func(streamLog *logrus.Entry) {
 		defer close(reqCh)
 		for {
 			req, err := stream.Recv()
@@ -165,7 +155,12 @@ func (s *Server) HandleRequestStream(ctx context.Context, stream Stream, default
 			if req.GetTypeUrl() == "" {
 				req.TypeUrl = defaultTypeURL
 			}
+			if nodeId == "" {
+				nodeId = req.GetNode().GetId()
+				streamLog = streamLog.WithField(logfields.XDSClientNode, nodeId)
+			}
 			streamLog.WithFields(getXDSRequestFields(req)).Debug("received request from xDS stream")
+
 			select {
 			case <-stopRecv:
 				streamLog.Debug("stopping xDS stream handling")
@@ -173,9 +168,9 @@ func (s *Server) HandleRequestStream(ctx context.Context, stream Stream, default
 			case reqCh <- req:
 			}
 		}
-	}()
+	}(reqStreamLog)
 
-	return s.processRequestStream(ctx, streamLog, stream, reqCh, defaultTypeURL)
+	return s.processRequestStream(ctx, reqStreamLog, stream, reqCh, defaultTypeURL)
 }
 
 // perTypeStreamState is the state maintained per resource type for each
@@ -200,7 +195,7 @@ type perTypeStreamState struct {
 
 // processRequestStream processes the requests in an xDS stream from a channel.
 func (s *Server) processRequestStream(ctx context.Context, streamLog *logrus.Entry, stream Stream,
-	reqCh <-chan *envoy_api_v2.DiscoveryRequest, defaultTypeURL string) error {
+	reqCh <-chan *envoy_service_discovery.DiscoveryRequest, defaultTypeURL string) error {
 	// The request state for every type URL.
 	typeStates := make([]perTypeStreamState, len(s.watchers))
 	defer func() {
@@ -259,6 +254,8 @@ func (s *Server) processRequestStream(ctx context.Context, streamLog *logrus.Ent
 
 	streamLog.Info("starting xDS stream processing")
 
+	nodeIP := ""
+
 	for {
 		// Process either a new request from the xDS stream or a response
 		// from the resource watcher.
@@ -275,7 +272,19 @@ func (s *Server) processRequestStream(ctx context.Context, streamLog *logrus.Ent
 				return nil
 			}
 
-			req := recv.Interface().(*envoy_api_v2.DiscoveryRequest)
+			req := recv.Interface().(*envoy_service_discovery.DiscoveryRequest)
+
+			// only require Node to exist in the first request
+			if nodeIP == "" {
+				id := req.GetNode().GetId()
+				streamLog = streamLog.WithField(logfields.XDSClientNode, id)
+				var err error
+				nodeIP, err = IstioNodeToIP(id)
+				if err != nil {
+					streamLog.WithError(err).Error("invalid Node in xDS request")
+					return ErrInvalidNodeFormat
+				}
+			}
 
 			requestLog := streamLog.WithFields(getXDSRequestFields(req))
 
@@ -321,12 +330,6 @@ func (s *Server) processRequestStream(ctx context.Context, streamLog *logrus.Ent
 			state := &typeStates[index]
 			watcher := s.watchers[typeURL]
 
-			nodeIP, err := IstioNodeToIP(req.GetNode())
-			if err != nil {
-				requestLog.WithError(err).Error("invalid Node in xDS request")
-				return ErrInvalidNodeFormat
-			}
-
 			// Response nonce is always the same as the response version.
 			// Request version indicates the last acked version. If the
 			// response nonce in the request is different (smaller) than
@@ -342,7 +345,7 @@ func (s *Server) processRequestStream(ctx context.Context, streamLog *logrus.Ent
 				}
 				if versionInfo < nonce {
 					// versions after VersionInfo, upto and including ResponseNonce are NACKed
-					requestLog.Warningf("NACK received for versions after %s and up to %s; waiting for a version update before sending again", req.VersionInfo, req.ResponseNonce)
+					requestLog.WithField(logfields.XDSDetail, detail).Warningf("NACK received for versions after %s and up to %s; waiting for a version update before sending again", req.VersionInfo, req.ResponseNonce)
 					// Watcher will behave as if the sent version was acked.
 					// Otherwise we will just be sending the same failing
 					// version over and over filling logs.
@@ -409,7 +412,7 @@ func (s *Server) processRequestStream(ctx context.Context, streamLog *logrus.Ent
 			responseLog.Debugf("sending xDS response with %d resources", len(resp.Resources))
 
 			versionStr := strconv.FormatUint(resp.Version, 10)
-			out := &envoy_api_v2.DiscoveryResponse{
+			out := &envoy_service_discovery.DiscoveryResponse{
 				VersionInfo: versionStr,
 				Resources:   resources,
 				Canary:      resp.Canary,

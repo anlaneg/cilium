@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package cassandra
@@ -97,7 +87,7 @@ func (s *CassandraSuite) TestCassandraOnDataOptionsReq(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_action"
 			  value: "select"
@@ -128,7 +118,7 @@ func (s *CassandraSuite) TestCassandraOnDataPartialReq(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: ".*"
@@ -156,7 +146,7 @@ func (s *CassandraSuite) TestCassandraOnDataQueryReq(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: ".*"
@@ -185,7 +175,7 @@ func (s *CassandraSuite) TestCassandraOnDataSplitQueryReq(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: ".*"
@@ -214,7 +204,7 @@ func (s *CassandraSuite) TestCassandraOnDataMultiReq(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: ".*"
@@ -247,7 +237,7 @@ func (s *CassandraSuite) TestSimpleCassandraPolicy(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "no-match"
@@ -294,7 +284,7 @@ func (s *CassandraSuite) TestCassandraBatchRequestPolicy(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db1.*"
@@ -355,7 +345,7 @@ func (s *CassandraSuite) TestCassandraBatchRequestPolicyDenied(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db1.*"
@@ -418,7 +408,7 @@ func (s *CassandraSuite) TestCassandraBatchRequestPreparedStatement(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db3.*"
@@ -487,7 +477,7 @@ func (s *CassandraSuite) TestCassandraBatchRequestPreparedStatementDenied(c *C) 
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db3.*"
@@ -557,7 +547,7 @@ func (s *CassandraSuite) TestCassandraExecutePreparedStatement(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db3.*"
@@ -681,7 +671,7 @@ func (s *CassandraSuite) TestCassandraAdditionalQueries(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db4.t1"
@@ -751,7 +741,7 @@ func (s *CassandraSuite) TestCassandraUseQuery(c *C) {
 		    remote_policies: 4
 		    l7_proto: "cassandra"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 			rule: <
 			  key: "query_table"
 			  value: "db5.t1"

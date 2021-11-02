@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package cmd
@@ -19,7 +9,6 @@ package cmd
 import (
 	"archive/tar"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,6 +27,11 @@ var (
 
 	baseDir, tmpDir string
 )
+
+type testStrings struct {
+	input  string
+	output string
+}
 
 type dummyTarWriter struct{}
 
@@ -62,9 +56,9 @@ func (l *logWrapper) Write(p []byte) (n int, err error) {
 
 func (b *BugtoolSuite) SetUpSuite(c *C) {
 	var err error
-	baseDir, err = ioutil.TempDir("", "cilium_test_bugtool_base")
+	baseDir, err = os.MkdirTemp("", "cilium_test_bugtool_base")
 	c.Assert(err, IsNil)
-	tmpDir, err = ioutil.TempDir("", "cilium_test_bugtool_tmp")
+	tmpDir, err = os.MkdirTemp("", "cilium_test_bugtool_tmp")
 	c.Assert(err, IsNil)
 }
 
@@ -99,7 +93,7 @@ func (b *BugtoolSuite) TestWalkPath(c *C) {
 	c.Assert(err, IsNil)
 
 	// With real file
-	realFile, err := ioutil.TempFile(baseDir, "test")
+	realFile, err := os.CreateTemp(baseDir, "test")
 	c.Assert(err, IsNil)
 	info, err = os.Stat(realFile.Name())
 	c.Assert(err, IsNil)
@@ -116,10 +110,43 @@ func (b *BugtoolSuite) TestWalkPath(c *C) {
 	c.Assert(err, IsNil)
 
 	// With directory
-	nestedDir, err := ioutil.TempDir(baseDir, "nested")
+	nestedDir, err := os.MkdirTemp(baseDir, "nested")
 	c.Assert(err, IsNil)
 	info, err = os.Stat(nestedDir)
 	c.Assert(err, IsNil)
 	err = w.walkPath(nestedDir, info, nil)
 	c.Assert(err, IsNil)
+}
+
+// TestHashEncryptionKeys tests proper hashing of keys. Lines in which `auth` or
+// other relevant pattern are found but not the hexadecimal keys are intentionally
+// redacted from the output to avoid accidental leaking of keys.
+func (b *BugtoolSuite) TestHashEncryptionKeys(c *C) {
+	testdata := []testStrings{
+		{
+			// `auth` and hexa string
+			input:  "<garbage> auth foo bar 0x123456af baz",
+			output: "<garbage> auth foo bar [hash:21d466b493f5c133edc008ee375e849fe5babb55d31550c25b993d151038c8a8] baz",
+		},
+		{
+			// `auth` but no hexa string
+			input:  "<garbage> auth foo bar ###23456af baz",
+			output: "[redacted]",
+		},
+		{
+			// `enc` and hexa string
+			input:  "<garbage> enc foo bar 0x123456af baz",
+			output: "<garbage> enc foo bar [hash:21d466b493f5c133edc008ee375e849fe5babb55d31550c25b993d151038c8a8] baz",
+		},
+		{
+			// nothing
+			input:  "<garbage> xxxx foo bar 0x123456af baz",
+			output: "<garbage> xxxx foo bar 0x123456af baz",
+		},
+	}
+
+	for _, v := range testdata {
+		modifiedString := hashEncryptionKeys([]byte(v.input))
+		c.Assert(string(modifiedString), Equals, v.output)
+	}
 }

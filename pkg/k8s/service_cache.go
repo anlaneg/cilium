@@ -1,27 +1,21 @@
-// Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
 package k8s
 
 import (
+	"net"
+
 	"github.com/cilium/cilium/pkg/datapath"
-	"github.com/cilium/cilium/pkg/k8s/types"
+	"github.com/cilium/cilium/pkg/ip"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_discovery_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	slim_discovery_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/service"
+	serviceStore "github.com/cilium/cilium/pkg/service/store"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
@@ -80,9 +74,12 @@ type ServiceCache struct {
 
 	// mutex protects the maps below including the concurrent access of each
 	// value.
-	mutex     lock.RWMutex
-	services  map[ServiceID]*Service
-	endpoints map[ServiceID]*Endpoints
+	mutex    lock.RWMutex
+	services map[ServiceID]*Service
+	// endpoints maps a service to a map of EndpointSlices. In case the cluster
+	// is still using the v1.Endpoints, the key used in the internal map of
+	// EndpointSlices is the v1.Endpoint name.
+	endpoints map[ServiceID]*EndpointSlices
 
 	// externalEndpoints is a list of additional service backends derived from source other than the local cluster
 	externalEndpoints map[ServiceID]externalEndpoints
@@ -94,7 +91,7 @@ type ServiceCache struct {
 func NewServiceCache(nodeAddressing datapath.NodeAddressing) ServiceCache {
 	return ServiceCache{
 		services:          map[ServiceID]*Service{},
-		endpoints:         map[ServiceID]*Endpoints{},
+		endpoints:         map[ServiceID]*EndpointSlices{},
 		externalEndpoints: map[ServiceID]externalEndpoints{},
 		Events:            make(chan ServiceEvent, option.Config.K8sServiceCacheSize),
 		nodeAddressing:    nodeAddressing,
@@ -102,24 +99,89 @@ func NewServiceCache(nodeAddressing datapath.NodeAddressing) ServiceCache {
 }
 
 // GetServiceIP returns a random L3n4Addr that is backing the given Service ID.
+// The returned IP is with external scope since its string representation might
+// be used for net Dialer.
 func (s *ServiceCache) GetServiceIP(svcID ServiceID) *loadbalancer.L3n4Addr {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	svc := s.services[svcID]
-	if svc == nil {
+	if svc == nil || len(svc.FrontendIPs) == 0 || len(svc.Ports) == 0 {
 		return nil
 	}
+
+	feIP := ip.GetIPFromListByFamily(svc.FrontendIPs, option.Config.EnableIPv4)
+	if feIP == nil {
+		return nil
+	}
+
 	for _, port := range svc.Ports {
-		return loadbalancer.NewL3n4Addr(port.Protocol, svc.FrontendIP, port.Port)
+		return loadbalancer.NewL3n4Addr(port.Protocol, feIP, port.Port,
+			loadbalancer.ScopeExternal)
 	}
 	return nil
+}
+
+// GetServiceFrontendIP returns the frontend IP (aka clusterIP) for the given service with type.
+func (s *ServiceCache) GetServiceFrontendIP(svcID ServiceID, svcType loadbalancer.SVCType) net.IP {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	svc := s.services[svcID]
+	if svc == nil || svc.Type != svcType || len(svc.FrontendIPs) == 0 {
+		return nil
+	}
+
+	return ip.GetIPFromListByFamily(svc.FrontendIPs, option.Config.EnableIPv4)
+}
+
+// GetServiceAddrsWithType returns a map of all the ports and slice of L3n4Addr that are backing the
+// given Service ID with given type. It also returns the number of frontend IPs associated with the service.
+// Note: The returned IPs are with External scope.
+func (s *ServiceCache) GetServiceAddrsWithType(svcID ServiceID,
+	svcType loadbalancer.SVCType) (map[loadbalancer.FEPortName][]*loadbalancer.L3n4Addr, int) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	svc := s.services[svcID]
+	if svc == nil || svc.Type != svcType || len(svc.FrontendIPs) == 0 {
+		return nil, 0
+	}
+
+	addrsByPort := make(map[loadbalancer.FEPortName][]*loadbalancer.L3n4Addr)
+	for pName, l4Addr := range svc.Ports {
+		addrs := make([]*loadbalancer.L3n4Addr, 0, len(svc.FrontendIPs))
+		for _, feIP := range svc.FrontendIPs {
+			if isValidServiceFrontendIP(feIP) {
+				addrs = append(addrs, loadbalancer.NewL3n4Addr(l4Addr.Protocol, feIP, l4Addr.Port, loadbalancer.ScopeExternal))
+			}
+		}
+
+		addrsByPort[pName] = addrs
+	}
+
+	return addrsByPort, len(svc.FrontendIPs)
+}
+
+// GetEndpointsOfService returns all the endpoints that correlate with a
+// service given a ServiceID.
+func (s *ServiceCache) GetEndpointsOfService(svcID ServiceID) *Endpoints {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	eps, ok := s.endpoints[svcID]
+	if !ok {
+		return nil
+	}
+	return eps.GetEndpoints()
+}
+
+// GetNodeAddressing returns the registered node addresses to this service cache.
+func (s *ServiceCache) GetNodeAddressing() datapath.NodeAddressing {
+	return s.nodeAddressing
 }
 
 // UpdateService parses a Kubernetes service and adds or updates it in the
 // ServiceCache. Returns the ServiceID unless the Kubernetes service could not
 // be parsed and a bool to indicate whether the service was changed in the
 // cache or not.
-func (s *ServiceCache) UpdateService(k8sSvc *types.Service, swg *lock.StoppableWaitGroup) ServiceID {
+func (s *ServiceCache) UpdateService(k8sSvc *slim_corev1.Service, swg *lock.StoppableWaitGroup) ServiceID {
 	svcID, newService := ParseService(k8sSvc, s.nodeAddressing)
 	if newService == nil {
 		return svcID
@@ -130,7 +192,7 @@ func (s *ServiceCache) UpdateService(k8sSvc *types.Service, swg *lock.StoppableW
 
 	oldService, ok := s.services[svcID]
 	if ok {
-		if oldService.DeepEquals(newService) {
+		if oldService.DeepEqual(newService) {
 			return svcID
 		}
 	}
@@ -154,9 +216,29 @@ func (s *ServiceCache) UpdateService(k8sSvc *types.Service, swg *lock.StoppableW
 	return svcID
 }
 
+func (s *ServiceCache) EnsureService(svcID ServiceID, swg *lock.StoppableWaitGroup) bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	if svc, found := s.services[svcID]; found {
+		if endpoints, serviceReady := s.correlateEndpoints(svcID); serviceReady {
+			swg.Add()
+			s.Events <- ServiceEvent{
+				Action:     UpdateService,
+				ID:         svcID,
+				Service:    svc,
+				OldService: svc,
+				Endpoints:  endpoints,
+				SWG:        swg,
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // DeleteService parses a Kubernetes service and removes it from the
 // ServiceCache
-func (s *ServiceCache) DeleteService(k8sSvc *types.Service, swg *lock.StoppableWaitGroup) {
+func (s *ServiceCache) DeleteService(k8sSvc *slim_corev1.Service, swg *lock.StoppableWaitGroup) {
 	svcID := ParseServiceID(k8sSvc)
 
 	s.mutex.Lock()
@@ -178,88 +260,103 @@ func (s *ServiceCache) DeleteService(k8sSvc *types.Service, swg *lock.StoppableW
 	}
 }
 
-func (s *ServiceCache) updateEndpoints(svcID ServiceID, newEndpoints *Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
+func (s *ServiceCache) updateEndpoints(esID EndpointSliceID, newEndpoints *Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if oldEndpoints, ok := s.endpoints[svcID]; ok {
-		if oldEndpoints.DeepEquals(newEndpoints) {
-			return svcID, newEndpoints
+	eps, ok := s.endpoints[esID.ServiceID]
+	if ok {
+		if eps.epSlices[esID.EndpointSliceName].DeepEqual(newEndpoints) {
+			return esID.ServiceID, newEndpoints
 		}
+	} else {
+		eps = newEndpointsSlices()
+		s.endpoints[esID.ServiceID] = eps
 	}
 
-	s.endpoints[svcID] = newEndpoints
+	eps.Upsert(esID.EndpointSliceName, newEndpoints)
 
 	// Check if the corresponding Endpoints resource is already available
-	svc, ok := s.services[svcID]
-	endpoints, serviceReady := s.correlateEndpoints(svcID)
+	svc, ok := s.services[esID.ServiceID]
+	endpoints, serviceReady := s.correlateEndpoints(esID.ServiceID)
 	if ok && serviceReady {
 		swg.Add()
 		s.Events <- ServiceEvent{
 			Action:    UpdateService,
-			ID:        svcID,
+			ID:        esID.ServiceID,
 			Service:   svc,
 			Endpoints: endpoints,
 			SWG:       swg,
 		}
 	}
 
-	return svcID, newEndpoints
+	return esID.ServiceID, newEndpoints
 }
 
 // UpdateEndpoints parses a Kubernetes endpoints and adds or updates it in the
 // ServiceCache. Returns the ServiceID unless the Kubernetes endpoints could not
 // be parsed and a bool to indicate whether the endpoints was changed in the
 // cache or not.
-func (s *ServiceCache) UpdateEndpoints(k8sEndpoints *types.Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
+func (s *ServiceCache) UpdateEndpoints(k8sEndpoints *slim_corev1.Endpoints, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
 	svcID, newEndpoints := ParseEndpoints(k8sEndpoints)
+	epSliceID := EndpointSliceID{
+		ServiceID:         svcID,
+		EndpointSliceName: k8sEndpoints.GetName(),
+	}
+	return s.updateEndpoints(epSliceID, newEndpoints, swg)
+}
+
+func (s *ServiceCache) UpdateEndpointSlicesV1(epSlice *slim_discovery_v1.EndpointSlice, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
+	svcID, newEndpoints := ParseEndpointSliceV1(epSlice)
 
 	return s.updateEndpoints(svcID, newEndpoints, swg)
 }
 
-func (s *ServiceCache) UpdateEndpointSlices(epSlice *types.EndpointSlice, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
-	svcID, newEndpoints := ParseEndpointSlice(epSlice)
+func (s *ServiceCache) UpdateEndpointSlicesV1Beta1(epSlice *slim_discovery_v1beta1.EndpointSlice, swg *lock.StoppableWaitGroup) (ServiceID, *Endpoints) {
+	svcID, newEndpoints := ParseEndpointSliceV1Beta1(epSlice)
 
 	return s.updateEndpoints(svcID, newEndpoints, swg)
 }
 
-func (s *ServiceCache) deleteEndpoints(svcID ServiceID, swg *lock.StoppableWaitGroup) ServiceID {
+func (s *ServiceCache) deleteEndpoints(svcID EndpointSliceID, swg *lock.StoppableWaitGroup) ServiceID {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	svc, serviceOK := s.services[svcID]
-	delete(s.endpoints, svcID)
-	endpoints, serviceReady := s.correlateEndpoints(svcID)
+	svc, serviceOK := s.services[svcID.ServiceID]
+	isEmpty := s.endpoints[svcID.ServiceID].Delete(svcID.EndpointSliceName)
+	if isEmpty {
+		delete(s.endpoints, svcID.ServiceID)
+	}
+	endpoints, _ := s.correlateEndpoints(svcID.ServiceID)
 
 	if serviceOK {
 		swg.Add()
 		event := ServiceEvent{
-			Action:    DeleteService,
-			ID:        svcID,
+			Action:    UpdateService,
+			ID:        svcID.ServiceID,
 			Service:   svc,
 			Endpoints: endpoints,
 			SWG:       swg,
 		}
 
-		if serviceReady {
-			event.Action = UpdateService
-		}
-
 		s.Events <- event
 	}
 
-	return svcID
+	return svcID.ServiceID
 }
 
 // DeleteEndpoints parses a Kubernetes endpoints and removes it from the
 // ServiceCache
-func (s *ServiceCache) DeleteEndpoints(k8sEndpoints *types.Endpoints, swg *lock.StoppableWaitGroup) ServiceID {
+func (s *ServiceCache) DeleteEndpoints(k8sEndpoints *slim_corev1.Endpoints, swg *lock.StoppableWaitGroup) ServiceID {
 	svcID := ParseEndpointsID(k8sEndpoints)
-
-	return s.deleteEndpoints(svcID, swg)
+	epSliceID := EndpointSliceID{
+		ServiceID:         svcID,
+		EndpointSliceName: k8sEndpoints.GetName(),
+	}
+	return s.deleteEndpoints(epSliceID, swg)
 }
 
-func (s *ServiceCache) DeleteEndpointSlices(epSlice *types.EndpointSlice, swg *lock.StoppableWaitGroup) ServiceID {
+func (s *ServiceCache) DeleteEndpointSlices(epSlice endpointSlice, swg *lock.StoppableWaitGroup) ServiceID {
 	svcID := ParseEndpointSliceID(epSlice)
 
 	return s.deleteEndpoints(svcID, swg)
@@ -290,8 +387,9 @@ func (l FrontendList) LooseMatch(frontend loadbalancer.L3n4Addr) (exists bool) {
 	return
 }
 
-// UniqueServiceFrontends returns all services known to the service cache as a
-// map, indexed by the string representation of a loadbalancer.L3n4Addr
+// UniqueServiceFrontends returns all externally scoped services known to
+// the service cache as a map, indexed by the string representation of a
+// loadbalancer.L3n4Addr. This helper is only used in unit tests.
 func (s *ServiceCache) UniqueServiceFrontends() FrontendList {
 	uniqueFrontends := FrontendList{}
 
@@ -299,17 +397,22 @@ func (s *ServiceCache) UniqueServiceFrontends() FrontendList {
 	defer s.mutex.RUnlock()
 
 	for _, svc := range s.services {
-		for _, p := range svc.Ports {
-			address := loadbalancer.L3n4Addr{
-				IP:     svc.FrontendIP,
-				L4Addr: *p,
+		for _, feIP := range svc.FrontendIPs {
+			for _, p := range svc.Ports {
+				address := loadbalancer.L3n4Addr{
+					IP:     feIP,
+					L4Addr: *p,
+					Scope:  loadbalancer.ScopeExternal,
+				}
+				uniqueFrontends[address.StringWithProtocol()] = struct{}{}
 			}
-
-			uniqueFrontends[address.StringWithProtocol()] = struct{}{}
 		}
+
 		for _, nodePortFEs := range svc.NodePorts {
 			for _, fe := range nodePortFEs {
-				uniqueFrontends[fe.StringWithProtocol()] = struct{}{}
+				if fe.Scope == loadbalancer.ScopeExternal {
+					uniqueFrontends[fe.StringWithProtocol()] = struct{}{}
+				}
 			}
 		}
 	}
@@ -321,13 +424,14 @@ func (s *ServiceCache) UniqueServiceFrontends() FrontendList {
 // all external endpoints if the service is marked as a global service. Also
 // returns a boolean that indicates whether the service is ready to be plumbed,
 // this is true if:
-// IF If ta local endpoints resource is present. Regardless whether the
+// A local endpoints resource is present. Regardless whether the
 //    endpoints resource contains actual backends or not.
 // OR Remote endpoints exist which correlate to the service.
 func (s *ServiceCache) correlateEndpoints(id ServiceID) (*Endpoints, bool) {
 	endpoints := newEndpoints()
 
-	localEndpoints, hasLocalEndpoints := s.endpoints[id]
+	localEndpoints := s.endpoints[id].GetEndpoints()
+	hasLocalEndpoints := localEndpoints != nil
 	if hasLocalEndpoints {
 		for ip, e := range localEndpoints.Backends {
 			endpoints.Backends[ip] = e
@@ -338,11 +442,10 @@ func (s *ServiceCache) correlateEndpoints(id ServiceID) (*Endpoints, bool) {
 	if hasExternalService && svc.IncludeExternal {
 		externalEndpoints, hasExternalEndpoints := s.externalEndpoints[id]
 		if hasExternalEndpoints {
+			// remote cluster endpoints already contain all Endpoints from all
+			// EndpointSlices so no need to search the endpoints of a particular
+			// EndpointSlice.
 			for clusterName, remoteClusterEndpoints := range externalEndpoints.endpoints {
-				if clusterName == option.Config.ClusterName {
-					continue
-				}
-
 				for ip, e := range remoteClusterEndpoints.Backends {
 					if _, ok := endpoints.Backends[ip]; ok {
 						log.WithFields(logrus.Fields{
@@ -367,18 +470,21 @@ func (s *ServiceCache) correlateEndpoints(id ServiceID) (*Endpoints, bool) {
 // MergeExternalServiceUpdate merges a cluster service of a remote cluster into
 // the local service cache. The service endpoints are stored as external endpoints
 // and are correlated on demand with local services via correlateEndpoints().
-func (s *ServiceCache) MergeExternalServiceUpdate(service *service.ClusterService, swg *lock.StoppableWaitGroup) {
-	id := ServiceID{Name: service.Name, Namespace: service.Namespace}
-	scopedLog := log.WithFields(logrus.Fields{logfields.ServiceName: service.String()})
-
+func (s *ServiceCache) MergeExternalServiceUpdate(service *serviceStore.ClusterService, swg *lock.StoppableWaitGroup) {
 	// Ignore updates of own cluster
 	if service.Cluster == option.Config.ClusterName {
-		scopedLog.Debug("Not merging external service. Own cluster")
 		return
 	}
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	s.mergeServiceUpdateLocked(service, nil, swg)
+}
+
+func (s *ServiceCache) mergeServiceUpdateLocked(service *serviceStore.ClusterService, oldService *Service, swg *lock.StoppableWaitGroup) {
+	id := ServiceID{Name: service.Name, Namespace: service.Namespace}
+	scopedLog := log.WithFields(logrus.Fields{logfields.ServiceName: service.String()})
 
 	externalEndpoints, ok := s.externalEndpoints[id]
 	if !ok {
@@ -405,11 +511,12 @@ func (s *ServiceCache) MergeExternalServiceUpdate(service *service.ClusterServic
 	if ok && svc.Shared && serviceReady {
 		swg.Add()
 		s.Events <- ServiceEvent{
-			Action:    UpdateService,
-			ID:        id,
-			Service:   svc,
-			Endpoints: endpoints,
-			SWG:       swg,
+			Action:     UpdateService,
+			ID:         id,
+			Service:    svc,
+			OldService: oldService,
+			Endpoints:  endpoints,
+			SWG:        swg,
 		}
 	}
 }
@@ -418,7 +525,7 @@ func (s *ServiceCache) MergeExternalServiceUpdate(service *service.ClusterServic
 // remote cluster into the local service cache. The service endpoints are
 // stored as external endpoints and are correlated on demand with local
 // services via correlateEndpoints().
-func (s *ServiceCache) MergeExternalServiceDelete(service *service.ClusterService, swg *lock.StoppableWaitGroup) {
+func (s *ServiceCache) MergeExternalServiceDelete(service *serviceStore.ClusterService, swg *lock.StoppableWaitGroup) {
 	scopedLog := log.WithFields(logrus.Fields{logfields.ServiceName: service.String()})
 	id := ServiceID{Name: service.Name, Namespace: service.Namespace}
 
@@ -462,6 +569,59 @@ func (s *ServiceCache) MergeExternalServiceDelete(service *service.ClusterServic
 		}
 	} else {
 		scopedLog.Debug("Received delete event for non-existing endpoints")
+	}
+}
+
+// MergeClusterServiceUpdate merges a cluster service of a local cluster into
+// the local service cache. The service endpoints are stored as external endpoints
+// and are correlated on demand with local services via correlateEndpoints().
+// Local service is created and/or updated if needed.
+func (s *ServiceCache) MergeClusterServiceUpdate(service *serviceStore.ClusterService, swg *lock.StoppableWaitGroup) {
+	scopedLog := log.WithFields(logrus.Fields{logfields.ServiceName: service.String()})
+	id := ServiceID{Name: service.Name, Namespace: service.Namespace}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var oldService *Service
+	svc, ok := s.services[id]
+	if !ok || !svc.EqualsClusterService(service) {
+		oldService = svc
+		svc = ParseClusterService(service)
+		s.services[id] = svc
+		scopedLog.Debugf("Added new service %v", svc)
+	}
+	s.mergeServiceUpdateLocked(service, oldService, swg)
+}
+
+// MergeClusterServiceDelete merges the deletion of a cluster service in a
+// remote cluster into the local service cache, deleting the local service.
+func (s *ServiceCache) MergeClusterServiceDelete(service *serviceStore.ClusterService, swg *lock.StoppableWaitGroup) {
+	scopedLog := log.WithFields(logrus.Fields{logfields.ServiceName: service.String()})
+	id := ServiceID{Name: service.Name, Namespace: service.Namespace}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	externalEndpoints, ok := s.externalEndpoints[id]
+	if ok {
+		scopedLog.Debug("Deleting cluster endpoints")
+		delete(externalEndpoints.endpoints, service.Cluster)
+	}
+
+	svc, ok := s.services[id]
+	endpoints, _ := s.correlateEndpoints(id)
+	delete(s.services, id)
+
+	if ok {
+		swg.Add()
+		s.Events <- ServiceEvent{
+			Action:    DeleteService,
+			ID:        id,
+			Service:   svc,
+			Endpoints: endpoints,
+			SWG:       swg,
+		}
 	}
 }
 

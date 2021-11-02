@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2020 Authors of Cilium */
+/* Copyright (C) 2020-2021 Authors of Cilium */
 
 #ifndef __BPF_CTX_XDP_H_
 #define __BPF_CTX_XDP_H_
@@ -11,18 +11,26 @@
 
 #include "common.h"
 #include "../helpers_xdp.h"
+#include "../builtins.h"
+#include "../section.h"
+#include "../loader.h"
+#include "../csum.h"
 
 #define CTX_ACT_OK			XDP_PASS
 #define CTX_ACT_DROP			XDP_DROP
 #define CTX_ACT_TX			XDP_TX	/* hairpin only */
 
-#define META_PIVOT			((int)(field_sizeof(struct __sk_buff, cb) + \
-					       sizeof(__u32))) /* cb + RECIRC_MARKER */
+#define CTX_DIRECT_WRITE_OK		1
 
+					/* cb + RECIRC_MARKER + XFER_MARKER */
+#define META_PIVOT			((int)(field_sizeof(struct __sk_buff, cb) + \
+					       sizeof(__u32) * 2))
+
+/* This must be a mask and all offsets guaranteed to be less than that. */
 #define __CTX_OFF_MAX			0xff
 
 static __always_inline __maybe_unused int
-xdp_load_bytes(struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
+xdp_load_bytes(const struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 {
 	void *from;
 	int ret;
@@ -32,7 +40,7 @@ xdp_load_bytes(struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 	 */
 	asm volatile("r1 = *(u32 *)(%[ctx] +0)\n\t"
 		     "r2 = *(u32 *)(%[ctx] +4)\n\t"
-		     "if %[off] > %[offmax] goto +6\n\t"
+		     "%[off] &= %[offmax]\n\t"
 		     "r1 += %[off]\n\t"
 		     "%[from] = r1\n\t"
 		     "r1 += %[len]\n\t"
@@ -45,20 +53,20 @@ xdp_load_bytes(struct xdp_md *ctx, __u64 off, void *to, const __u64 len)
 		       [offmax]"i"(__CTX_OFF_MAX), [errno]"i"(-EINVAL)
 		     : "r1", "r2");
 	if (!ret)
-		__builtin_memcpy(to, from, len);
+		memcpy(to, from, len);
 	return ret;
 }
 
 static __always_inline __maybe_unused int
-xdp_store_bytes(struct xdp_md *ctx, __u64 off, const void *from,
-		const __u64 len, __u64 flags)
+xdp_store_bytes(const struct xdp_md *ctx, __u64 off, const void *from,
+		const __u64 len, __u64 flags __maybe_unused)
 {
 	void *to;
 	int ret;
 	/* See xdp_load_bytes(). */
 	asm volatile("r1 = *(u32 *)(%[ctx] +0)\n\t"
 		     "r2 = *(u32 *)(%[ctx] +4)\n\t"
-		     "if %[off] > %[offmax] goto +6\n\t"
+		     "%[off] &= %[offmax]\n\t"
 		     "r1 += %[off]\n\t"
 		     "%[to] = r1\n\t"
 		     "r1 += %[len]\n\t"
@@ -71,7 +79,7 @@ xdp_store_bytes(struct xdp_md *ctx, __u64 off, const void *from,
 		       [offmax]"i"(__CTX_OFF_MAX), [errno]"i"(-EINVAL)
 		     : "r1", "r2");
 	if (!ret)
-		__builtin_memcpy(to, from, len);
+		memcpy(to, from, len);
 	return ret;
 }
 
@@ -81,7 +89,6 @@ xdp_store_bytes(struct xdp_md *ctx, __u64 off, const void *from,
 /* Fyi, remapping to stubs helps to assert that the code is not in
  * use since it otherwise triggers a verifier error.
  */
-#define ctx_adjust_room			xdp_adjust_room__stub	/* TODO */
 
 #define ctx_change_type			xdp_change_type__stub
 #define ctx_change_proto		xdp_change_proto__stub
@@ -96,28 +103,8 @@ xdp_store_bytes(struct xdp_md *ctx, __u64 off, const void *from,
 
 #define ctx_adjust_meta			xdp_adjust_meta
 
-#define get_hash_recalc(ctx)		({ 0; })
-
-/* Checksum pieces from Linux kernel. */
-static inline __sum16 csum_fold(__wsum csum)
-{
-	__u32 sum = (__u32)csum;
-	sum = (sum & 0xffff) + (sum >> 16);
-	sum = (sum & 0xffff) + (sum >> 16);
-	return (__sum16)~sum;
-}
-
-static inline __wsum csum_unfold(__sum16 n)
-{
-	return (__wsum)n;
-}
-
-static inline __wsum csum_add(__wsum csum, __wsum addend)
-{
-	__u32 res = (__u32)csum;
-	res += (__u32)addend;
-	return (__wsum)(res + (res < (__u32)addend));
-}
+#define get_hash(ctx)			({ 0; })
+#define get_hash_recalc(ctx)		get_hash(ctx)
 
 static __always_inline __maybe_unused void
 __csum_replace_by_diff(__sum16 *sum, __wsum diff)
@@ -125,19 +112,29 @@ __csum_replace_by_diff(__sum16 *sum, __wsum diff)
 	*sum = csum_fold(csum_add(diff, ~csum_unfold(*sum)));
 }
 
+static __always_inline __maybe_unused void
+__csum_replace_by_4(__sum16 *sum, __wsum from, __wsum to)
+{
+	__csum_replace_by_diff(sum, csum_add(~from, to));
+}
+
 static __always_inline __maybe_unused int
-l3_csum_replace(struct xdp_md *ctx, __u64 off, const __u32 from, __u32 to,
+l3_csum_replace(const struct xdp_md *ctx, __u64 off, const __u32 from,
+		__u32 to,
 		__u32 flags)
 {
+	__u32 size = flags & BPF_F_HDR_FIELD_MASK;
 	__sum16 *sum;
 	int ret;
 
-	if (unlikely(from != 0 || flags != 0))
+	if (unlikely(flags & ~(BPF_F_HDR_FIELD_MASK)))
+		return -EINVAL;
+	if (unlikely(size != 0 && size != 2))
 		return -EINVAL;
 	/* See xdp_load_bytes(). */
 	asm volatile("r1 = *(u32 *)(%[ctx] +0)\n\t"
 		     "r2 = *(u32 *)(%[ctx] +4)\n\t"
-		     "if %[off] > %[offmax] goto +6\n\t"
+		     "%[off] &= %[offmax]\n\t"
 		     "r1 += %[off]\n\t"
 		     "%[sum] = r1\n\t"
 		     "r1 += 2\n\t"
@@ -150,28 +147,31 @@ l3_csum_replace(struct xdp_md *ctx, __u64 off, const __u32 from, __u32 to,
 		       [offmax]"i"(__CTX_OFF_MAX), [errno]"i"(-EINVAL)
 		     : "r1", "r2");
 	if (!ret)
-		__csum_replace_by_diff(sum, to);
+		from ? __csum_replace_by_4(sum, from, to) :
+		       __csum_replace_by_diff(sum, to);
 	return ret;
 }
 
 #define CSUM_MANGLED_0		((__sum16)0xffff)
 
 static __always_inline __maybe_unused int
-l4_csum_replace(struct xdp_md *ctx, __u64 off, __u32 from, __u32 to,
+l4_csum_replace(const struct xdp_md *ctx, __u64 off, __u32 from, __u32 to,
 		__u32 flags)
 {
 	bool is_mmzero = flags & BPF_F_MARK_MANGLED_0;
+	__u32 size = flags & BPF_F_HDR_FIELD_MASK;
 	__sum16 *sum;
 	int ret;
 
-	if (unlikely(flags & ~(BPF_F_MARK_MANGLED_0 | BPF_F_PSEUDO_HDR)))
+	if (unlikely(flags & ~(BPF_F_MARK_MANGLED_0 | BPF_F_PSEUDO_HDR |
+			       BPF_F_HDR_FIELD_MASK)))
 		return -EINVAL;
-	if (unlikely(from != 0))
+	if (unlikely(size != 0 && size != 2))
 		return -EINVAL;
 	/* See xdp_load_bytes(). */
 	asm volatile("r1 = *(u32 *)(%[ctx] +0)\n\t"
 		     "r2 = *(u32 *)(%[ctx] +4)\n\t"
-		     "if %[off] > %[offmax] goto +6\n\t"
+		     "%[off] &= %[offmax]\n\t"
 		     "r1 += %[off]\n\t"
 		     "%[sum] = r1\n\t"
 		     "r1 += 2\n\t"
@@ -186,62 +186,123 @@ l4_csum_replace(struct xdp_md *ctx, __u64 off, __u32 from, __u32 to,
 	if (!ret) {
 		if (is_mmzero && !*sum)
 			return 0;
-		__csum_replace_by_diff(sum, to);
+		from ? __csum_replace_by_4(sum, from, to) :
+		       __csum_replace_by_diff(sum, to);
 		if (is_mmzero && !*sum)
 			*sum = CSUM_MANGLED_0;
 	}
 	return ret;
 }
 
-#define redirect			redirect__stub
-
 static __always_inline __maybe_unused int
-ctx_redirect(struct xdp_md *ctx, int ifindex, const __u32 flags)
+ctx_adjust_troom(struct xdp_md *ctx, const __s32 len_diff)
 {
-	if (unlikely(flags))
-		return -ENOTSUPP;
-	if (ifindex != ctx->ingress_ifindex)
-		return -ENOTSUPP;
-	return XDP_TX;
+	return xdp_adjust_tail(ctx, len_diff);
 }
 
-static __always_inline __maybe_unused __u32
-ctx_full_len(struct xdp_md *ctx)
+static __always_inline __maybe_unused int
+ctx_adjust_hroom(struct xdp_md *ctx, const __s32 len_diff, const __u32 mode,
+		 const __u64 flags __maybe_unused)
+{
+	const __u32 move_len_v4 = 14 + 20;
+	const __u32 move_len_v6 = 14 + 40;
+	void *data, *data_end;
+	int ret;
+
+	build_bug_on(len_diff <= 0 || len_diff >= 64);
+	build_bug_on(mode != BPF_ADJ_ROOM_NET);
+
+	ret = xdp_adjust_head(ctx, -len_diff);
+
+	/* XXX: Note, this hack is currently tailored to NodePort DSR
+	 * requirements and not a generic helper. If needed elsewhere,
+	 * this must be made more generic.
+	 */
+	if (!ret) {
+		data_end = ctx_data_end(ctx);
+		data = ctx_data(ctx);
+		switch (len_diff) {
+		case 28: /* struct {iphdr + icmphdr} */
+			break;
+		case 20: /* struct iphdr */
+		case 8:  /* __u32 opt[2] */
+			if (data + move_len_v4 + len_diff <= data_end)
+				__bpf_memmove_fwd(data, data + len_diff,
+						  move_len_v4);
+			else
+				ret = -EFAULT;
+			break;
+		case 48: /* struct {ipv6hdr + icmp6hdr} */
+			break;
+		case 40: /* struct ipv6hdr */
+		case 24: /* struct dsr_opt_v6 */
+			if (data + move_len_v6 + len_diff <= data_end)
+				__bpf_memmove_fwd(data, data + len_diff,
+						  move_len_v6);
+			else
+				ret = -EFAULT;
+			break;
+		default:
+			__throw_build_bug();
+		}
+	}
+	return ret;
+}
+
+static __always_inline __maybe_unused int
+ctx_redirect(const struct xdp_md *ctx, int ifindex, const __u32 flags)
+{
+	if ((__u32)ifindex == ctx->ingress_ifindex)
+		return XDP_TX;
+
+	return redirect(ifindex, flags);
+}
+
+static __always_inline __maybe_unused __u64
+ctx_full_len(const struct xdp_md *ctx)
 {
 	/* No non-linear section in XDP. */
 	return ctx_data_end(ctx) - ctx_data(ctx);
 }
 
-static __always_inline __maybe_unused void
-ctx_store_meta(struct xdp_md *ctx, const __u64 off, __u32 datum)
+static __always_inline __maybe_unused __u32
+ctx_wire_len(const struct xdp_md *ctx)
 {
-	__u32 *data_meta = ctx_data_meta(ctx);
-	void *data = ctx_data(ctx);
+	return ctx_full_len(ctx);
+}
 
-	if (!ctx_no_room(data_meta + off + 1, data)) {
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, int);
+	__uint(value_size, META_PIVOT);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, 1);
+} cilium_xdp_scratch __section_maps_btf;
+
+static __always_inline __maybe_unused void
+ctx_store_meta(struct xdp_md *ctx __maybe_unused, const __u64 off, __u32 datum)
+{
+	__u32 zero = 0, *data_meta = map_lookup_elem(&cilium_xdp_scratch, &zero);
+
+	if (always_succeeds(data_meta))
 		data_meta[off] = datum;
-	} else {
-		build_bug_on((off + 1) * sizeof(__u32) > META_PIVOT);
-	}
+	build_bug_on((off + 1) * sizeof(__u32) > META_PIVOT);
 }
 
 static __always_inline __maybe_unused __u32
-ctx_load_meta(struct xdp_md *ctx, const __u64 off)
+ctx_load_meta(const struct xdp_md *ctx __maybe_unused, const __u64 off)
 {
-	__u32 *data_meta = ctx_data_meta(ctx);
-	void *data = ctx_data(ctx);
+	__u32 zero = 0, *data_meta = map_lookup_elem(&cilium_xdp_scratch, &zero);
 
-	if (!ctx_no_room(data_meta + off + 1, data)) {
+	if (always_succeeds(data_meta))
 		return data_meta[off];
-	} else {
-		build_bug_on((off + 1) * sizeof(__u32) > META_PIVOT);
-		return 0;
-	}
+	build_bug_on((off + 1) * sizeof(__u32) > META_PIVOT);
+	return 0;
 }
 
 //自报文中提取protocol
 static __always_inline __maybe_unused __u32
-ctx_get_protocol(struct xdp_md *ctx)
+ctx_get_protocol(const struct xdp_md *ctx)
 {
 	void *data_end = ctx_data_end(ctx);
 	struct ethhdr *eth = ctx_data(ctx);
@@ -253,7 +314,7 @@ ctx_get_protocol(struct xdp_md *ctx)
 }
 
 static __always_inline __maybe_unused __u32
-ctx_get_ifindex(struct xdp_md *ctx)
+ctx_get_ifindex(const struct xdp_md *ctx)
 {
 	return ctx->ingress_ifindex;
 }

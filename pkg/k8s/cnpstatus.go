@@ -1,31 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8s
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"path"
 	"strings"
 	"time"
 
+	"github.com/cilium/cilium/pkg/inctimer"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/types"
-	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
@@ -101,10 +87,9 @@ func (c *cnpEventMap) delete(cnpKey string) {
 }
 
 // NewCNPStatusEventHandler returns a new CNPStatusEventHandler.
-func NewCNPStatusEventHandler(cnpStore *store.SharedStore, k8sStore cache.Store, updateInterval time.Duration) *CNPStatusEventHandler {
+func NewCNPStatusEventHandler(k8sStore cache.Store, updateInterval time.Duration) *CNPStatusEventHandler {
 	return &CNPStatusEventHandler{
 		eventMap:       newCNPEventMap(),
-		cnpStore:       cnpStore,
 		k8sStore:       k8sStore,
 		updateInterval: updateInterval,
 	}
@@ -116,85 +101,70 @@ type NodeStatusUpdate struct {
 	*cilium_v2.CiliumNetworkPolicyNodeStatus
 }
 
-// WatchForCNPStatusEvents starts a watcher for all the CNP update from the
-// key-value store.
-func (c *CNPStatusEventHandler) WatchForCNPStatusEvents() {
-	watcher := kvstore.Client().ListAndWatch(context.TODO(), "cnpStatusWatcher", CNPStatusesPath, 512)
-
-	// Loop and block for the watcher
-	for {
-		c.watchForCNPStatusEvents(watcher)
-	}
+// UpdateCNPStore updates the CNP store for the status event handler
+// This must be called before before Starting the status handler using
+// StartStatusHandler method.
+func (c *CNPStatusEventHandler) UpdateCNPStore(cnpStore *store.SharedStore) {
+	c.cnpStore = cnpStore
 }
 
-// watchForCNPStatusEvents starts responds to the events from the watcher of
-// the key-value store.
-func (c *CNPStatusEventHandler) watchForCNPStatusEvents(watcher *kvstore.Watcher) {
-	for {
+// OnDelete is called when a delete event is called on the CNP status key.
+// It is a NoOp
+func (c *CNPStatusEventHandler) OnDelete(_ store.NamedKey) {
+	return
+}
+
+// OnUpdate is called when a CNPStatus object is modified in the KVStore.
+func (c *CNPStatusEventHandler) OnUpdate(key store.Key) {
+	cnpStatusUpdate, ok := key.(*CNPNSWithMeta)
+	if !ok {
+		log.WithFields(logrus.Fields{"kvstore-event": "update", "key": key.GetKeyName()}).
+			Error("Not updating CNP Status; error converting key to CNPNSWithMeta")
+		return
+	}
+
+	cnpKey := getKeyFromObject(cnpStatusUpdate)
+
+	log.WithFields(logrus.Fields{
+		"uid":       cnpStatusUpdate.UID,
+		"name":      cnpStatusUpdate.Name,
+		"namespace": cnpStatusUpdate.Namespace,
+		"node":      cnpStatusUpdate.Node,
+		"key":       cnpKey,
+	}).Debug("received update event from kvstore")
+
+	// Send the update to the corresponding controller for the
+	// CNP which sends all status updates to the K8s apiserver.
+	// If the namespace is empty for the status update then the cnpKey
+	// will correspond to the ccnpKey.
+	updater, ok := c.eventMap.lookup(cnpKey)
+	if !ok {
+		log.WithField("cnp", cnpKey).Debug("received event from kvstore for cnp for which we do not have any updater goroutine")
+		return
+	}
+	nsu := &NodeStatusUpdate{node: cnpStatusUpdate.Node}
+	nsu.CiliumNetworkPolicyNodeStatus = &(cnpStatusUpdate.CiliumNetworkPolicyNodeStatus)
+
+	// Given that select is not deterministic, ensure that we check
+	// for shutdown first. If not shut down, then try to send on
+	// channel, or wait for shutdown so that we don't block forever
+	// in case the channel is full and the updater is stopped.
+	select {
+	case <-updater.stopChan:
+		// This goroutine is the only sender on this channel; we can
+		// close safely if the stop channel is closed.
+		close(updater.updateChan)
+
+	default:
 		select {
-		case event, ok := <-watcher.Events:
-			if !ok {
-				log.Debugf("%s closed, restarting watch", watcher.String())
-				time.Sleep(500 * time.Millisecond)
-				return
-			}
-
-			switch event.Typ {
-			case kvstore.EventTypeListDone, kvstore.EventTypeDelete:
-			case kvstore.EventTypeCreate, kvstore.EventTypeModify:
-				var cnpStatusUpdate CNPNSWithMeta
-				err := json.Unmarshal(event.Value, &cnpStatusUpdate)
-				if err != nil {
-					log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key}).
-						WithError(err).Error("Not updating CNP Status; error unmarshaling data from key-value store")
-					continue
-				}
-
-				log.WithFields(logrus.Fields{
-					"uid":       cnpStatusUpdate.UID,
-					"name":      cnpStatusUpdate.Name,
-					"namespace": cnpStatusUpdate.Namespace,
-					"node":      cnpStatusUpdate.Node,
-					"key":       event.Key,
-					"type":      event.Typ,
-				}).Debug("received event from kvstore")
-
-				// Send the update to the corresponding controller for the
-				// CNP which sends all status updates to the K8s apiserver.
-				// If the namespace is empty for the status update then the cnpKey
-				// will correspond to the ccnpKey.
-				cnpKey := getKeyFromObject(cnpStatusUpdate)
-				updater, ok := c.eventMap.lookup(cnpKey)
-				if !ok {
-					log.WithField("cnp", cnpKey).Debug("received event from kvstore for cnp for which we do not have any updater goroutine")
-					continue
-				}
-				nsu := &NodeStatusUpdate{node: cnpStatusUpdate.Node}
-				nsu.CiliumNetworkPolicyNodeStatus = &(cnpStatusUpdate.CiliumNetworkPolicyNodeStatus)
-
-				// Given that select is not deterministic, ensure that we check
-				// for shutdown first. If not shut down, then try to send on
-				// channel, or wait for shutdown so that we don't block forever
-				// in case the channel is full and the updater is stopped.
-				select {
-				case <-updater.stopChan:
-					// This goroutine is the only sender on this channel; we can
-					// close safely if the stop channel is closed.
-					close(updater.updateChan)
-
-				default:
-					select {
-					// If the update is sent and we shut down after, the event
-					// is 'lost'; we don't care because this means the CNP
-					// was deleted anyway.
-					case updater.updateChan <- nsu:
-					case <-updater.stopChan:
-						// This goroutine is the only sender on this channel; we can
-						// close safely if the stop channel is closed.
-						close(updater.updateChan)
-					}
-				}
-			}
+		// If the update is sent and we shut down after, the event
+		// is 'lost'; we don't care because this means the CNP
+		// was deleted anyway.
+		case updater.updateChan <- nsu:
+		case <-updater.stopChan:
+			// This goroutine is the only sender on this channel; we can
+			// close safely if the stop channel is closed.
+			close(updater.updateChan)
 		}
 	}
 }
@@ -246,11 +216,14 @@ func (c *CNPStatusEventHandler) runStatusHandler(cnpKey string, cnp *types.SlimC
 			nodeStatusMap[cnpns.Node] = cnpns.CiliumNetworkPolicyNodeStatus
 		}
 	}
+	updateTimer, updateDone := inctimer.New()
+	defer updateDone()
+
 	for {
 		// Allow for a bunch of different node status updates to come before
 		// we break out to avoid jitter in updates across the cluster
 		// to affect batching on our end.
-		limit := time.After(c.updateInterval)
+		limit := updateTimer.After(c.updateInterval)
 
 		// Collect any other events that have come in, but bail out after the
 		// above limit is hit so that we can send the updates we have received.
@@ -288,27 +261,10 @@ func (c *CNPStatusEventHandler) runStatusHandler(cnpKey string, cnp *types.SlimC
 		default:
 		}
 
-		var (
-			cnp *types.SlimCNP
-			err error
-		)
-
-		switch {
-		// Patching doesn't need us to get the CNP from
-		// the store because we can perform patches without
-		// needing the actual CNP object itself.
-		case k8sversion.Capabilities().Patch:
-		default:
-			cnp, err = getUpdatedCNPFromStore(c.k8sStore, namespace, name)
-			if err != nil {
-				scopedLog.WithError(err).Error("error getting updated cnp from store")
-			}
-		}
-
 		// Now that we have collected all events for
 		// the given CNP, update the status for all nodes
 		// which have sent us updates.
-		if err = updateStatusesByCapabilities(CiliumClient(), k8sversion.Capabilities(), cnp, namespace, name, nodeStatusMap); err != nil {
+		if err := updateStatusesByCapabilities(CiliumClient(), namespace, name, nodeStatusMap); err != nil {
 			scopedLog.WithError(err).Error("error updating status for CNP")
 		}
 	}
@@ -337,26 +293,4 @@ func getKeyFromObject(t K8sMetaObject) string {
 		return path.Join(string(t.GetUID()), ns, t.GetName())
 	}
 	return path.Join(string(t.GetUID()), t.GetName())
-}
-
-func getUpdatedCNPFromStore(ciliumStore cache.Store, namespace, name string) (*types.SlimCNP, error) {
-	nameNamespace := name
-	if namespace != "" {
-		nameNamespace = fmt.Sprintf("%s/%s", namespace, name)
-	}
-
-	serverRuleStore, exists, err := ciliumStore.GetByKey(nameNamespace)
-	if err != nil {
-		return nil, fmt.Errorf("unable to find v2.CiliumNetworkPolicy in local cache: %s", err)
-	}
-	if !exists {
-		return nil, errors.New("v2.CiliumNetworkPolicy does not exist in local cache")
-	}
-
-	serverRule, ok := serverRuleStore.(*types.SlimCNP)
-	if !ok {
-		return nil, errors.New("received object of unknown type from API server, expecting v2.CiliumNetworkPolicy")
-	}
-
-	return serverRule, nil
 }

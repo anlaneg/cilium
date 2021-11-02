@@ -2,7 +2,9 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
+
+.. _generic_veth_cni_chaining:
 
 *********************
 Generic Veth Chaining
@@ -12,6 +14,8 @@ The generic veth chaining plugin enables CNI chaining on top of any CNI plugin
 that is using a veth device model. The majority of CNI plugins use such a
 model.
 
+.. include:: cni-chaining-limitations.rst
+
 Validate that the current CNI plugin is using veth
 ==================================================
 
@@ -20,7 +24,7 @@ Validate that the current CNI plugin is using veth
    able spot network devices representing the pods running on that node.
 3. A network device might look something like this:
 
-   .. code:: bash
+   .. code-block:: shell-session
 
        103: lxcb3901b7f9c02@if102: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000
            link/ether 3a:39:92:17:75:6f brd ff:ff:ff:ff:ff:ff link-netnsid 18 promiscuity 0
@@ -39,7 +43,7 @@ Create a ``chaining.yaml`` file based on the following template to specify the
 desired CNI chaining configuration:
 
 
-.. code:: yaml
+.. code-block:: yaml
 
     apiVersion: v1
     kind: ConfigMap
@@ -64,7 +68,7 @@ desired CNI chaining configuration:
 
 Deploy the `ConfigMap`:
 
-.. code:: bash
+.. code-block:: shell-session
 
    kubectl apply -f chaining.yaml
 
@@ -79,8 +83,8 @@ Deploy Cilium release via Helm:
 
     helm install cilium |CHART_RELEASE| \\
       --namespace=kube-system \\
-      --set global.cni.chainingMode=generic-veth \\
-      --set global.cni.customConf=true \\
-      --set global.cni.configMap=cni-configuration \\
-      --set global.tunnel=disabled \\
-      --set global.masquerade=false
+      --set cni.chainingMode=generic-veth \\
+      --set cni.customConf=true \\
+      --set cni.configMap=cni-configuration \\
+      --set tunnel=disabled \\
+      --set enableIPv4Masquerade=false

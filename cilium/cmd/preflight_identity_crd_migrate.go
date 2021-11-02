@@ -1,16 +1,5 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
 package cmd
 
@@ -25,6 +14,8 @@ import (
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/idpool"
 	"github.com/cilium/cilium/pkg/k8s"
+	ciliumClient "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/client"
+	k8sconfig "github.com/cilium/cilium/pkg/k8s/config"
 	"github.com/cilium/cilium/pkg/k8s/identitybackend"
 	"github.com/cilium/cilium/pkg/kvstore"
 	kvstoreallocator "github.com/cilium/cilium/pkg/kvstore/allocator"
@@ -103,7 +94,6 @@ func migrateIdentities() {
 	listCancel()
 
 	log.Info("Migrating identities to CRD")
-	badKeys := make([]allocator.AllocatorKey, 0)                       // keys that have real errors
 	alreadyAllocatedKeys := make(map[idpool.ID]allocator.AllocatorKey) // IDs that are already allocated, maybe with different labels
 
 	for id, key := range kvstoreIDs {
@@ -119,8 +109,7 @@ func migrateIdentities() {
 			alreadyAllocatedKeys[id] = key
 
 		case err != nil:
-			scopedLog.WithError(err).Error("Cannot allocate CRD ID. This key will be allocated with a new numeric identity")
-			badKeys = append(badKeys, key)
+			scopedLog.WithField(logfields.Key, key).WithError(err).Error("Cannot allocate CRD ID. This key will be allocated with a new numeric identity")
 
 		default:
 			scopedLog.Info("Migrated identity")
@@ -166,7 +155,7 @@ func migrateIdentities() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		defer cancel()
-		newID, actuallyAllocated, err := crdAllocator.Allocate(ctx, key)
+		newID, actuallyAllocated, _, err := crdAllocator.Allocate(ctx, key)
 		switch {
 		case err != nil:
 			log.WithError(err).Errorf("Cannot allocate new CRD ID for %v", key)
@@ -194,12 +183,16 @@ func initK8s(ctx context.Context) (crdBackend allocator.Backend, crdAllocator *a
 
 	k8s.Configure(k8sAPIServer, k8sKubeConfigPath, float32(k8sClientQPSLimit), k8sClientBurst)
 
-	if err := k8s.Init(); err != nil {
+	if err := k8s.Init(k8sconfig.NewDefaultConfiguration()); err != nil {
 		log.WithError(err).Fatal("Unable to connect to Kubernetes apiserver")
 	}
 
+	if err := k8s.WaitForNodeInformation(ctx, k8s.Client()); err != nil {
+		log.WithError(err).Fatal("Unable to connect to get node spec from apiserver")
+	}
+
 	// Update CRDs to ensure ciliumIdentity is present
-	k8s.RegisterCRDs()
+	ciliumClient.RegisterCRDs()
 
 	// Create a CRD Backend
 	crdBackend, err := identitybackend.NewCRDBackend(identitybackend.CRDBackendConfiguration{

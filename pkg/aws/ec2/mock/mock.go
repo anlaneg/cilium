@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package mock
 
@@ -25,9 +14,9 @@ import (
 	"github.com/cilium/cilium/pkg/aws/types"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/uuid"
 
 	"github.com/cilium/ipam/service/ipallocator"
+	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 )
 
@@ -95,8 +84,9 @@ func NewAPI(subnets []*ipamTypes.Subnet, vpcs []*ipamTypes.VirtualNetwork, secur
 // UpdateSubnets replaces the subents which the mock API will return
 func (e *API) UpdateSubnets(subnets []*ipamTypes.Subnet) {
 	e.mutex.Lock()
+	e.subnets = map[string]*ipamTypes.Subnet{}
 	for _, s := range subnets {
-		e.subnets[s.ID] = s
+		e.subnets[s.ID] = s.DeepCopy()
 	}
 	e.mutex.Unlock()
 }
@@ -104,8 +94,9 @@ func (e *API) UpdateSubnets(subnets []*ipamTypes.Subnet) {
 // UpdateSecurityGroups replaces the security groups which the mock API will return
 func (e *API) UpdateSecurityGroups(securityGroups []*types.SecurityGroup) {
 	e.mutex.Lock()
+	e.securityGroups = map[string]*types.SecurityGroup{}
 	for _, sg := range securityGroups {
-		e.securityGroups[sg.ID] = sg
+		e.securityGroups[sg.ID] = sg.DeepCopy()
 	}
 	e.mutex.Unlock()
 }
@@ -113,7 +104,13 @@ func (e *API) UpdateSecurityGroups(securityGroups []*types.SecurityGroup) {
 // UpdateENIs replaces the ENIs which the mock API will return
 func (e *API) UpdateENIs(enis map[string]ENIMap) {
 	e.mutex.Lock()
-	e.enis = enis
+	e.enis = map[string]ENIMap{}
+	for instanceID, m := range enis {
+		e.enis[instanceID] = ENIMap{}
+		for eniID, eni := range m {
+			e.enis[instanceID][eniID] = eni.DeepCopy()
+		}
+	}
 	e.mutex.Unlock()
 }
 
@@ -158,7 +155,10 @@ func (e *API) rateLimit() {
 	}
 }
 
-func (e *API) CreateNetworkInterface(ctx context.Context, toAllocate int64, subnetID, desc string, groups []string) (string, *eniTypes.ENI, error) {
+// CreateNetworkInterface mocks the interface creation. As with the upstream
+// EC2 API, the number of IP addresses in toAllocate are the number of
+// secondary IPs, a primary IP is always allocated.
+func (e *API) CreateNetworkInterface(ctx context.Context, toAllocate int32, subnetID, desc string, groups []string) (string, *eniTypes.ENI, error) {
 	e.rateLimit()
 	e.delaySim.Delay(CreateNetworkInterface)
 
@@ -174,11 +174,12 @@ func (e *API) CreateNetworkInterface(ctx context.Context, toAllocate int64, subn
 		return "", nil, fmt.Errorf("subnet %s not found", subnetID)
 	}
 
-	if int(toAllocate) > subnet.AvailableAddresses {
+	numAddresses := int(toAllocate) + 1 // include primary IP
+	if numAddresses > subnet.AvailableAddresses {
 		return "", nil, fmt.Errorf("subnet %s has not enough addresses available", subnetID)
 	}
 
-	eniID := uuid.NewUUID().String()
+	eniID := uuid.New().String()
 	eni := &eniTypes.ENI{
 		ID:          eniID,
 		Description: desc,
@@ -188,18 +189,23 @@ func (e *API) CreateNetworkInterface(ctx context.Context, toAllocate int64, subn
 		SecurityGroups: groups,
 	}
 
-	for i := int64(0); i < toAllocate; i++ {
+	primaryIP, err := e.allocator.AllocateNext()
+	if err != nil {
+		panic("Unable to allocate primary IP from allocator")
+	}
+	eni.IP = primaryIP.String()
+
+	for i := int32(0); i < toAllocate; i++ {
 		ip, err := e.allocator.AllocateNext()
 		if err != nil {
 			panic("Unable to allocate IP from allocator")
 		}
 		eni.Addresses = append(eni.Addresses, ip.String())
 	}
-
-	subnet.AvailableAddresses -= int(toAllocate)
+	subnet.AvailableAddresses -= numAddresses
 
 	e.unattached[eniID] = eni
-	return eniID, eni, nil
+	return eniID, eni.DeepCopy(), nil
 }
 
 func (e *API) DeleteNetworkInterface(ctx context.Context, eniID string) error {
@@ -223,7 +229,7 @@ func (e *API) DeleteNetworkInterface(ctx context.Context, eniID string) error {
 	return fmt.Errorf("ENI ID %s not found", eniID)
 }
 
-func (e *API) AttachNetworkInterface(ctx context.Context, index int64, instanceID, eniID string) (string, error) {
+func (e *API) AttachNetworkInterface(ctx context.Context, index int32, instanceID, eniID string) (string, error) {
 	e.rateLimit()
 	e.delaySim.Delay(AttachNetworkInterface)
 
@@ -266,7 +272,7 @@ func (e *API) ModifyNetworkInterface(ctx context.Context, eniID, attachmentID st
 	return nil
 }
 
-func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addresses int64) error {
+func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addresses int32) error {
 	e.rateLimit()
 	e.delaySim.Delay(AssignPrivateIpAddresses)
 
@@ -288,7 +294,7 @@ func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addres
 				return fmt.Errorf("subnet %s has not enough addresses available", eni.Subnet.ID)
 			}
 
-			for i := int64(0); i < addresses; i++ {
+			for i := int32(0); i < addresses; i++ {
 				ip, err := e.allocator.AllocateNext()
 				if err != nil {
 					panic("Unable to allocate IP from allocator")
@@ -351,8 +357,8 @@ func (e *API) UnassignPrivateIpAddresses(ctx context.Context, eniID string, addr
 	return fmt.Errorf("Unable to find ENI with ID %s", eniID)
 }
 
-func (e *API) GetInstances(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap, subnets ipamTypes.SubnetMap) (types.InstanceMap, error) {
-	instances := types.InstanceMap{}
+func (e *API) GetInstances(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap, subnets ipamTypes.SubnetMap) (*ipamTypes.InstanceMap, error) {
+	instances := ipamTypes.NewInstanceMap()
 
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
@@ -360,18 +366,20 @@ func (e *API) GetInstances(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap
 	for instanceID, enis := range e.enis {
 		for _, eni := range enis {
 			if subnets != nil {
-				if subnet, ok := subnets[eni.Subnet.ID]; ok {
-					eni.Subnet.CIDR = subnet.CIDR
+				if subnet, ok := subnets[eni.Subnet.ID]; ok && subnet.CIDR != nil {
+					eni.Subnet.CIDR = subnet.CIDR.String()
 				}
 			}
 
 			if vpcs != nil {
 				if vpc, ok := vpcs[eni.VPC.ID]; ok {
 					eni.VPC.PrimaryCIDR = vpc.PrimaryCIDR
+					eni.VPC.CIDRs = vpc.CIDRs
 				}
 			}
 
-			instances.Add(instanceID, eni)
+			eniRevision := ipamTypes.InterfaceRevision{Resource: eni.DeepCopy()}
+			instances.Update(instanceID, eniRevision)
 		}
 	}
 
@@ -385,7 +393,7 @@ func (e *API) GetVpcs(ctx context.Context) (ipamTypes.VirtualNetworkMap, error) 
 	defer e.mutex.RUnlock()
 
 	for _, v := range e.vpcs {
-		vpcs[v.ID] = v
+		vpcs[v.ID] = v.DeepCopy()
 	}
 	return vpcs, nil
 }
@@ -397,7 +405,7 @@ func (e *API) GetSubnets(ctx context.Context) (ipamTypes.SubnetMap, error) {
 	defer e.mutex.RUnlock()
 
 	for _, s := range e.subnets {
-		subnets[s.ID] = s
+		subnets[s.ID] = s.DeepCopy()
 	}
 	return subnets, nil
 }
@@ -423,7 +431,7 @@ func (e *API) GetSecurityGroups(ctx context.Context) (types.SecurityGroupMap, er
 	defer e.mutex.RUnlock()
 
 	for _, sg := range e.securityGroups {
-		securityGroups[sg.ID] = sg
+		securityGroups[sg.ID] = sg.DeepCopy()
 	}
 	return securityGroups, nil
 }

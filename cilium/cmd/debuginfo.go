@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -19,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +21,7 @@ import (
 	pkg "github.com/cilium/cilium/pkg/client"
 	"github.com/cilium/cilium/pkg/command"
 
-	"github.com/russross/blackfriday"
+	"github.com/russross/blackfriday/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -78,7 +66,6 @@ var debuginfoCmd = &cobra.Command{
 
 var (
 	outputToFile   bool
-	html           string
 	filePerCommand bool
 	outputOpts     []string
 	outputDir      string
@@ -96,6 +83,7 @@ var sections = map[string]addSection{
 	"cilium-policy":           addCiliumPolicy,
 	"cilium-memory-map":       addCiliumMemoryMap,
 	"cilium-subsystems":       addSubsystems,
+	"cilium-encryption":       addEncryption,
 }
 
 func init() {
@@ -115,7 +103,6 @@ func validateInput() []outputType {
 }
 
 func validateOutputOpts() []outputType {
-
 	var outputTypes []outputType
 	for _, outputOpt := range outputOpts {
 		switch strings.ToLower(outputOpt) {
@@ -180,7 +167,6 @@ func rootWarningMessage() {
 }
 
 func runDebugInfo(cmd *cobra.Command, args []string) {
-
 	outputTypes := validateInput()
 
 	resp, err := client.Daemon.GetDebuginfo(nil)
@@ -263,7 +249,6 @@ func runDebugInfo(cmd *cobra.Command, args []string) {
 		section(w, p)
 	}
 	writeToOutput(buf, STDOUT, "", "")
-
 }
 
 func addHeader(w *tabwriter.Writer) {
@@ -281,7 +266,7 @@ func addKernelVersion(w *tabwriter.Writer, p *models.DebugInfo) {
 func addCiliumStatus(w *tabwriter.Writer, p *models.DebugInfo) {
 	printMD(w, "Cilium status", "")
 	printTicks(w)
-	pkg.FormatStatusResponse(w, p.CiliumStatus, true, true, true, true, true)
+	pkg.FormatStatusResponse(w, p.CiliumStatus, pkg.StatusAllDetails)
 	printTicks(w)
 }
 
@@ -334,6 +319,30 @@ func addCiliumMemoryMap(w *tabwriter.Writer, p *models.DebugInfo) {
 	}
 }
 
+func addEncryption(w *tabwriter.Writer, p *models.DebugInfo) {
+	printMD(w, "Cilium encryption\n", "")
+
+	if p.Encryption != nil && p.Encryption.Wireguard != nil {
+		fmt.Fprint(w, "##### Wireguard\n\n")
+		printTicks(w)
+		for _, wg := range p.Encryption.Wireguard.Interfaces {
+			fmt.Fprintf(w, "interface: %s\n", wg.Name)
+			fmt.Fprintf(w, "  public key: %s\n", wg.PublicKey)
+			fmt.Fprintf(w, "  listening port: %d\n", wg.ListenPort)
+			for _, peer := range wg.Peers {
+				fmt.Fprintf(w, "\npeer: %s\n", peer.PublicKey)
+				fmt.Fprintf(w, "  endpoint: %s\n", peer.Endpoint)
+				fmt.Fprintf(w, "  allowed ips: %s\n", strings.Join(peer.AllowedIps, ", "))
+				fmt.Fprintf(w, "  latest handshake: %s\n", peer.LastHandshakeTime)
+				fmt.Fprintf(w, "  transfer: %d B received, %d B sent\n", peer.TransferRx, peer.TransferTx)
+			}
+			fmt.Fprint(w, "\n")
+		}
+		printTicks(w)
+	}
+
+}
+
 func writeJSONPathToOutput(buf bytes.Buffer, path string, suffix string, jsonPath string) {
 	data := buf.Bytes()
 	db := &models.DebugInfo{}
@@ -341,22 +350,21 @@ func writeJSONPathToOutput(buf bytes.Buffer, path string, suffix string, jsonPat
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error unmarshaling binary: %s\n", err)
 	}
-	jsonBytes, err := command.DumpJSONToSlice(db, jsonPath)
+	jsonStr, err := command.DumpJSONToString(db, jsonPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error printing JSON: %s\n", err)
 	}
 
 	if path == "" {
-		fmt.Println(string(jsonBytes[:]))
+		fmt.Println(jsonStr)
 		return
 	}
 
 	fileName := fileName(path, suffix)
-	writeFile(jsonBytes, fileName)
+	writeFile([]byte(jsonStr), fileName)
 
 	fmt.Printf("%s output at %s\n", jsonpathOutput, fileName)
 	return
-
 }
 
 func writeToOutput(buf bytes.Buffer, output outputType, path string, suffix string) {
@@ -438,8 +446,8 @@ func printTicks(w io.Writer) {
 }
 
 func writeHTML(data []byte, path string) {
-	output := blackfriday.MarkdownCommon(data)
-	if err := ioutil.WriteFile(path, output, 0644); err != nil {
+	output := blackfriday.Run(data)
+	if err := os.WriteFile(path, output, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error while writing HTML file %s", err)
 		return
 	}
@@ -485,5 +493,4 @@ func writeJSON(data []byte, path string) {
 		os.Exit(1)
 	}
 	f.Write(result)
-
 }

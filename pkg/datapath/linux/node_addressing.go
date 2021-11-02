@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package linux
 
@@ -30,7 +19,7 @@ import (
 // code should really move into this package.
 
 func listLocalAddresses(family int) ([]net.IP, error) {
-	ipsToExclude := ip.GetExcludedIPs()
+	ipsToExclude := node.GetExcludedIPs()
 	addrs, err := netlink.AddrList(nil, family)
 	if err != nil {
 		return nil, err
@@ -70,11 +59,11 @@ func listLocalAddresses(family int) ([]net.IP, error) {
 type addressFamilyIPv4 struct{}
 
 func (a *addressFamilyIPv4) Router() net.IP {
-	return node.GetInternalIPv4()
+	return node.GetInternalIPv4Router()
 }
 
 func (a *addressFamilyIPv4) PrimaryExternal() net.IP {
-	return node.GetExternalIPv4()
+	return node.GetIPv4()
 }
 
 func (a *addressFamilyIPv4) AllocationCIDR() *cidr.CIDR {
@@ -88,7 +77,9 @@ func (a *addressFamilyIPv4) LocalAddresses() ([]net.IP, error) {
 // LoadBalancerNodeAddresses returns all IPv4 node addresses on which the
 // loadbalancer should implement HostPort and NodePort services.
 func (a *addressFamilyIPv4) LoadBalancerNodeAddresses() []net.IP {
-	return []net.IP{net.IPv4(0, 0, 0, 0), node.GetNodePortIPv4(), node.GetInternalIPv4()}
+	addrs := node.GetNodePortIPv4Addrs()
+	addrs = append(addrs, net.IPv4zero)
+	return addrs
 }
 
 type addressFamilyIPv6 struct{}
@@ -112,7 +103,9 @@ func (a *addressFamilyIPv6) LocalAddresses() ([]net.IP, error) {
 // LoadBalancerNodeAddresses returns all IPv6 node addresses on which the
 // loadbalancer should implement HostPort and NodePort services.
 func (a *addressFamilyIPv6) LoadBalancerNodeAddresses() []net.IP {
-	return []net.IP{net.IPv6zero, node.GetNodePortIPv6(), node.GetIPv6Router()}
+	addrs := node.GetNodePortIPv6Addrs()
+	addrs = append(addrs, net.IPv6zero)
+	return addrs
 }
 
 type linuxNodeAddressing struct {

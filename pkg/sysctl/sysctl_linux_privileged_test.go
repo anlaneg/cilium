@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build linux && privileged_tests
 // +build linux,privileged_tests
 
 package sysctl
@@ -34,8 +24,7 @@ var _ = Suite(&SysctlLinuxPrivilegedTestSuite{})
 func (s *SysctlLinuxPrivilegedTestSuite) TestWriteSysctl(c *C) {
 	testCases := []struct {
 		name        string
-		value       []byte
-		oldValue    []byte
+		value       string
 		expectedErr bool
 	}{
 		{
@@ -113,6 +102,72 @@ func (s *SysctlLinuxPrivilegedTestSuite) TestDisableEnable(c *C) {
 			val, err := Read(tc.name)
 			c.Assert(err, IsNil)
 			c.Assert(val, Equals, "0")
+		}
+	}
+}
+
+func (s *SysctlLinuxPrivilegedTestSuite) TestApplySettings(c *C) {
+	testCases := []struct {
+		settings    []Setting
+		expectedErr bool
+	}{
+		{
+			settings: []Setting{
+				{
+					Name:      "net.ipv4.ip_forward",
+					Val:       "1",
+					IgnoreErr: false,
+				},
+				{
+					Name:      "net.ipv4.conf.all.forwarding",
+					Val:       "1",
+					IgnoreErr: false,
+				},
+				{
+					Name:      "net.ipv6.conf.all.forwarding",
+					Val:       "1",
+					IgnoreErr: false,
+				},
+			},
+			expectedErr: false,
+		},
+		{
+			settings: []Setting{
+				{
+					Name:      "net.ipv4.ip_forward",
+					Val:       "1",
+					IgnoreErr: false,
+				},
+				{
+					Name:      "foo.bar",
+					Val:       "1",
+					IgnoreErr: false,
+				},
+			},
+			expectedErr: true,
+		},
+		{
+			settings: []Setting{
+				{
+					Name:      "net.ipv4.ip_forward",
+					Val:       "1",
+					IgnoreErr: false,
+				},
+				{
+					Name:      "foo.bar",
+					Val:       "1",
+					IgnoreErr: true,
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		err := ApplySettings(tc.settings)
+		if tc.expectedErr {
+			c.Assert(err, NotNil)
+		} else {
+			c.Assert(err, IsNil)
 		}
 	}
 }

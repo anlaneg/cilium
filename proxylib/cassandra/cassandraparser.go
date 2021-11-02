@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cassandra
 
@@ -106,12 +95,14 @@ func (rule *CassandraRule) Matches(data interface{}) bool {
 // CassandraRuleParser parses protobuf L7 rules to enforcement objects
 // May panic
 func CassandraRuleParser(rule *cilium.PortNetworkPolicyRule) []L7NetworkPolicyRule {
-	var rules []L7NetworkPolicyRule
 	l7Rules := rule.GetL7Rules()
 	if l7Rules == nil {
-		return rules
+		return nil
 	}
-	for _, l7Rule := range l7Rules.GetL7Rules() {
+
+	allowRules := l7Rules.GetL7AllowRules()
+	rules := make([]L7NetworkPolicyRule, 0, len(allowRules))
+	for _, l7Rule := range allowRules {
 		var cr CassandraRule
 		for k, v := range l7Rule.Rule {
 			switch k {
@@ -154,7 +145,6 @@ func init() {
 
 type CassandraParser struct {
 	connection *Connection
-	inserted   bool
 	keyspace   string // stores current keyspace name from 'use' command
 
 	// stores prepared query string while
@@ -168,7 +158,7 @@ type CassandraParser struct {
 	preparedQueryPathByPreparedID map[string]string // stores query string based on prepared-id,
 }
 
-func (pf *CassandraParserFactory) Create(connection *Connection) Parser {
+func (pf *CassandraParserFactory) Create(connection *Connection) interface{} {
 	log.Debugf("CassandraParserFactory: Create: %v", connection)
 
 	p := CassandraParser{connection: connection}

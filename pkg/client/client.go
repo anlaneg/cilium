@@ -1,20 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package client
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -32,11 +23,10 @@ import (
 
 	runtime_client "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
-	"golang.org/x/net/context"
 )
 
 type Client struct {
-	clientapi.Cilium
+	clientapi.CiliumAPI
 }
 
 // DefaultSockPath returns default UNIX domain socket path or
@@ -148,7 +138,7 @@ func Hint(err error) error {
 		return err
 	}
 
-	if err == context.DeadlineExceeded {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("Cilium API client timeout exceeded")
 	}
 
@@ -162,11 +152,8 @@ func Hint(err error) error {
 func timeSince(since time.Time) string {
 	out := "never"
 	if !since.IsZero() {
-		// Poor man's implementtion of time.Truncate(). Can be refined
-		// when we rebase to go 1.9
 		t := time.Since(since)
-		t -= t % time.Second
-		out = t.String() + " ago"
+		out = t.Truncate(time.Second).String() + " ago"
 	}
 
 	return out
@@ -240,13 +227,46 @@ func numReadyClusters(clustermesh *models.ClusterMeshStatus) int {
 	return numReady
 }
 
-// FormatStatusResponse writes a StatusResponse as a string to the writer.
-//
-// The parameters 'allAddresses', 'allControllers', 'allNodes', respectively,
-// cause all details about that aspect of the status to be printed to the
-// terminal. For each of these, if they are false then only a summary will be
-// printed, with perhaps some detail if there are errors.
-func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, allControllers, allNodes, allRedirects, allClusters bool) {
+type StatusDetails struct {
+	// AllAddress causes all addresses to be printed by FormatStatusResponse.
+	AllAddresses bool
+	// AllControllers causes all controllers to be printed by FormatStatusResponse.
+	AllControllers bool
+	// AllNodes causes all nodes to be printed by FormatStatusResponse.
+	AllNodes bool
+	// AllRedirects causes all redirects to be printed by FormatStatusResponse.
+	AllRedirects bool
+	// AllClusters causes all clusters to be printed by FormatStatusResponse.
+	AllClusters bool
+	// BPFMapDetails causes BPF map details to be printed by FormatStatusResponse.
+	BPFMapDetails bool
+	// KubeProxyReplacementDetails causes BPF kube-proxy details to be printed by FormatStatusResponse.
+	KubeProxyReplacementDetails bool
+	// ClockSourceDetails causes BPF time-keeping internals to be printed by FormatStatusResponse.
+	ClockSourceDetails bool
+}
+
+var (
+	// StatusAllDetails causes no additional status details to be printed by
+	// FormatStatusResponse.
+	StatusNoDetails = StatusDetails{}
+	// StatusAllDetails causes all status details to be printed by FormatStatusResponse.
+	StatusAllDetails = StatusDetails{
+		AllAddresses:                true,
+		AllControllers:              true,
+		AllNodes:                    true,
+		AllRedirects:                true,
+		AllClusters:                 true,
+		BPFMapDetails:               true,
+		KubeProxyReplacementDetails: true,
+		ClockSourceDetails:          true,
+	}
+)
+
+// FormatStatusResponse writes a StatusResponse as a string to the writer. The bit mask sd controls
+// whether a additional details are printed about a certain aspect of the status. In case there are
+// errors, some details may be printed regardless of the value of sd.
+func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetails) {
 	if sr.Kvstore != nil {
 		fmt.Fprintf(w, "KVStore:\t%s\t%s\n", sr.Kvstore.State, sr.Kvstore.Msg)
 	}
@@ -254,39 +274,44 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, 
 		fmt.Fprintf(w, "ContainerRuntime:\t%s\t%s\n",
 			sr.ContainerRuntime.State, sr.ContainerRuntime.Msg)
 	}
+
+	kubeProxyDevices := ""
 	if sr.Kubernetes != nil {
 		fmt.Fprintf(w, "Kubernetes:\t%s\t%s\n", sr.Kubernetes.State, sr.Kubernetes.Msg)
 		if sr.Kubernetes.State != models.K8sStatusStateDisabled {
 			sort.Strings(sr.Kubernetes.K8sAPIVersions)
 			fmt.Fprintf(w, "Kubernetes APIs:\t[\"%s\"]\n", strings.Join(sr.Kubernetes.K8sAPIVersions, "\", \""))
 		}
-		if sr.KubeProxyReplacement != nil {
-			features := []string{}
 
-			if np := sr.KubeProxyReplacement.Features.NodePort; np.Enabled {
-				mode := np.Mode
-				if mode == models.KubeProxyReplacementFeaturesNodePortModeHYBRID {
-					mode = strings.Title(mode)
+	}
+	if sr.KubeProxyReplacement != nil {
+		devices := ""
+		if sr.KubeProxyReplacement.Mode != models.KubeProxyReplacementModeDisabled {
+			for i, dev := range sr.KubeProxyReplacement.DeviceList {
+				kubeProxyDevices += fmt.Sprintf("%s %s", dev.Name, strings.Join(dev.IP, " "))
+				if dev.Name == sr.KubeProxyReplacement.DirectRoutingDevice {
+					kubeProxyDevices += " (Direct Routing)"
 				}
-				features = append(features,
-					fmt.Sprintf("NodePort (%s, %d-%d)", mode, np.PortMin, np.PortMax))
+				if i+1 != len(sr.KubeProxyReplacement.Devices) {
+					kubeProxyDevices += ", "
+				}
 			}
-
-			if sr.KubeProxyReplacement.Features.ExternalIPs.Enabled {
-				features = append(features, "ExternalIPs")
+			if len(sr.KubeProxyReplacement.DeviceList) > 0 {
+				devices = "[" + kubeProxyDevices + "]"
 			}
-
-			if hs := sr.KubeProxyReplacement.Features.HostReachableServices; hs.Enabled {
-				features = append(features, fmt.Sprintf("HostReachableServices (%s)",
-					strings.Join(hs.Protocols, ", ")))
-			}
-
-			fmt.Fprintf(w, "KubeProxyReplacement:\t%s\t[%s]\n",
-				sr.KubeProxyReplacement.Mode, strings.Join(features, ", "))
 		}
+		fmt.Fprintf(w, "KubeProxyReplacement:\t%s\t%s\n",
+			sr.KubeProxyReplacement.Mode, devices)
+	}
+	if sr.HostFirewall != nil {
+		fmt.Fprintf(w, "Host firewall:\t%s", sr.HostFirewall.Mode)
+		if sr.HostFirewall.Mode != models.HostFirewallModeDisabled {
+			fmt.Fprintf(w, "\t[%s]", strings.Join(sr.HostFirewall.Devices, ", "))
+		}
+		fmt.Fprintf(w, "\n")
 	}
 	if sr.Cilium != nil {
-		fmt.Fprintf(w, "Cilium:\t%s\t%s\n", sr.Cilium.State, sr.Cilium.Msg)
+		fmt.Fprintf(w, "Cilium:\t%s   %s\n", sr.Cilium.State, sr.Cilium.Msg)
 	}
 
 	if sr.Stale != nil {
@@ -323,7 +348,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, 
 
 	if sr.Ipam != nil {
 		fmt.Fprintf(w, "IPAM:\t%s\n", sr.Ipam.Status)
-		if allAddresses {
+		if sd.AllAddresses {
 			fmt.Fprintf(w, "Allocated addresses:\n")
 			out := []string{}
 			for ip, owner := range sr.Ipam.Allocations {
@@ -341,13 +366,84 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, 
 			numReadyClusters(sr.ClusterMesh), len(sr.ClusterMesh.Clusters), sr.ClusterMesh.NumGlobalServices)
 
 		for _, cluster := range sr.ClusterMesh.Clusters {
-			if allClusters || !cluster.Ready {
-				fmt.Fprintf(w, "   %s: %s, %d nodes, %d identities, %d services\n",
+			if sd.AllClusters || !cluster.Ready {
+				fmt.Fprintf(w, "   %s: %s, %d nodes, %d identities, %d services, %d failures (last: %s)\n",
 					cluster.Name, clusterReadiness(cluster), cluster.NumNodes,
-					cluster.NumIdentities, cluster.NumSharedServices)
+					cluster.NumIdentities, cluster.NumSharedServices,
+					cluster.NumFailures, timeSince(time.Time(cluster.LastFailure)))
 				fmt.Fprintf(w, "   └  %s\n", cluster.Status)
 			}
 		}
+	}
+
+	if sr.BandwidthManager != nil {
+		var status string
+		if !sr.BandwidthManager.Enabled {
+			status = "Disabled"
+		} else {
+			status = fmt.Sprintf("EDT with BPF\t[%s]",
+				strings.Join(sr.BandwidthManager.Devices, ", "))
+		}
+		fmt.Fprintf(w, "BandwidthManager:\t%s\n", status)
+	}
+
+	if sr.HostRouting != nil {
+		fmt.Fprintf(w, "Host Routing:\t%s\n", sr.HostRouting.Mode)
+	}
+
+	if sr.Masquerading != nil {
+		var status string
+
+		enabled := func(enabled bool) string {
+			if enabled {
+				return "Enabled"
+			}
+			return "Disabled"
+		}
+
+		if sr.Masquerading.EnabledProtocols == nil {
+			status = enabled(sr.Masquerading.Enabled)
+		} else if !sr.Masquerading.EnabledProtocols.IPV4 && !sr.Masquerading.EnabledProtocols.IPV6 {
+			status = enabled(false)
+		} else {
+			if sr.Masquerading.Mode == models.MasqueradingModeBPF {
+				if sr.Masquerading.IPMasqAgent {
+					status = "BPF (ip-masq-agent)"
+				} else {
+					status = "BPF"
+				}
+				if sr.KubeProxyReplacement != nil {
+					// When BPF Masquerading is enabled we don't do any masquerading for IPv6
+					// traffic so no SNAT Exclusion IPv6 CIDR is listed in status output.
+					devStr := ""
+					for i, dev := range sr.KubeProxyReplacement.DeviceList {
+						devStr += dev.Name
+						if i+1 != len(sr.KubeProxyReplacement.DeviceList) {
+							devStr += ", "
+						}
+					}
+					status += fmt.Sprintf("\t[%s]\t%s",
+						devStr,
+						sr.Masquerading.SnatExclusionCidrV4)
+				}
+
+			} else if sr.Masquerading.Mode == models.MasqueradingModeIptables {
+				status = "IPTables"
+			}
+
+			status = fmt.Sprintf("%s [IPv4: %s, IPv6: %s]", status,
+				enabled(sr.Masquerading.EnabledProtocols.IPV4), enabled(sr.Masquerading.EnabledProtocols.IPV6))
+		}
+		fmt.Fprintf(w, "Masquerading:\t%s\n", status)
+	}
+
+	if sd.ClockSourceDetails && sr.ClockSource != nil {
+		status := sr.ClockSource.Mode
+		if sr.ClockSource.Mode == models.ClockSourceModeJiffies {
+			status = fmt.Sprintf("%s\t[%d Hz]",
+				sr.ClockSource.Mode, sr.ClockSource.Hertz)
+		}
+		fmt.Fprintf(w, "Clock Source for BPF:\t%s\n", status)
 	}
 
 	if sr.Controllers != nil {
@@ -360,7 +456,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, 
 
 			if status.ConsecutiveFailureCount > 0 {
 				nFailing++
-			} else if !allControllers {
+			} else if !sd.AllControllers {
 				continue
 			}
 
@@ -392,7 +488,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, 
 	if sr.Proxy != nil {
 		fmt.Fprintf(w, "Proxy Status:\tOK, ip %s, %d redirects active on ports %s\n",
 			sr.Proxy.IP, sr.Proxy.TotalRedirects, sr.Proxy.PortRange)
-		if allRedirects && sr.Proxy.TotalRedirects > 0 {
+		if sd.AllRedirects && sr.Proxy.TotalRedirects > 0 {
 			out := make([]string, 0, len(sr.Proxy.Redirects)+1)
 			for _, r := range sr.Proxy.Redirects {
 				out = append(out, fmt.Sprintf("  %s\t%s\t%d\n", r.Proxy, r.Name, r.ProxyPort))
@@ -407,5 +503,134 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, allAddresses, 
 		}
 	} else {
 		fmt.Fprintf(w, "Proxy Status:\tNo managed proxy redirect\n")
+	}
+
+	if sr.Hubble != nil {
+		var fields []string
+
+		state := sr.Hubble.State
+		if sr.Hubble.Msg != "" {
+			state = fmt.Sprintf("%s %s", state, sr.Hubble.Msg)
+		}
+		fields = append(fields, state)
+
+		if o := sr.Hubble.Observer; o != nil {
+			var observer []string
+
+			if o.MaxFlows > 0 {
+				observer = append(observer, fmt.Sprintf("Current/Max Flows: %d/%d (%.2f%%)",
+					o.CurrentFlows, o.MaxFlows, (float64(o.CurrentFlows)/float64(o.MaxFlows))*100))
+			}
+			if o.Uptime > 0 {
+				observer = append(observer, fmt.Sprintf("Flows/s: %.2f",
+					float64(o.SeenFlows)/time.Duration(o.Uptime).Seconds()))
+			}
+
+			fields = append(fields, strings.Join(observer, ", "))
+		}
+
+		if sr.Hubble.Metrics != nil {
+			fields = append(fields, fmt.Sprintf("Metrics: %s", sr.Hubble.Metrics.State))
+		}
+
+		fmt.Fprintf(w, "Hubble:\t%s\n", strings.Join(fields, "\t"))
+	}
+
+	if sd.KubeProxyReplacementDetails && sr.Kubernetes != nil && sr.KubeProxyReplacement != nil {
+		var selection, mode, xdp string
+
+		lb := "Disabled"
+		cIP := "Enabled"
+		nPort := "Disabled"
+		if np := sr.KubeProxyReplacement.Features.NodePort; np.Enabled {
+			selection = np.Algorithm
+			if selection == models.KubeProxyReplacementFeaturesNodePortAlgorithmMaglev {
+				selection = fmt.Sprintf("%s (Table Size: %d)", np.Algorithm, np.LutSize)
+			}
+			xdp = np.Acceleration
+			mode = np.Mode
+			nPort = fmt.Sprintf("Enabled (Range: %d-%d)", np.PortMin, np.PortMax)
+			lb = "Enabled"
+		}
+
+		affinity := "Disabled"
+		if sr.KubeProxyReplacement.Features.SessionAffinity.Enabled {
+			affinity = "Enabled"
+		}
+
+		hPort := "Disabled"
+		if sr.KubeProxyReplacement.Features.HostPort.Enabled {
+			hPort = "Enabled"
+		}
+
+		eIP := "Disabled"
+		if sr.KubeProxyReplacement.Features.ExternalIPs.Enabled {
+			eIP = "Enabled"
+		}
+
+		protocols := ""
+		if hs := sr.KubeProxyReplacement.Features.HostReachableServices; hs.Enabled {
+			protocols = strings.Join(hs.Protocols, ", ")
+		}
+
+		fmt.Fprintf(w, "KubeProxyReplacement Details:\n")
+		tab := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+		fmt.Fprintf(tab, "  Status:\t%s\n", sr.KubeProxyReplacement.Mode)
+		if protocols != "" {
+			fmt.Fprintf(tab, "  Socket LB Protocols:\t%s\n", protocols)
+		}
+		if kubeProxyDevices != "" {
+			fmt.Fprintf(tab, "  Devices:\t%s\n", kubeProxyDevices)
+		}
+		if mode != "" {
+			fmt.Fprintf(tab, "  Mode:\t%s\n", mode)
+		}
+		if selection != "" {
+			fmt.Fprintf(tab, "  Backend Selection:\t%s\n", selection)
+		}
+		fmt.Fprintf(tab, "  Session Affinity:\t%s\n", affinity)
+		if xdp != "" {
+			fmt.Fprintf(tab, "  XDP Acceleration:\t%s\n", xdp)
+		}
+		fmt.Fprintf(tab, "  Services:\n")
+		fmt.Fprintf(tab, "  - ClusterIP:\t%s\n", cIP)
+		fmt.Fprintf(tab, "  - NodePort:\t%s \n", nPort)
+		fmt.Fprintf(tab, "  - LoadBalancer:\t%s \n", lb)
+		fmt.Fprintf(tab, "  - externalIPs:\t%s \n", eIP)
+		fmt.Fprintf(tab, "  - HostPort:\t%s\n", hPort)
+		tab.Flush()
+	}
+
+	if sd.BPFMapDetails && sr.BpfMaps != nil {
+		dynamicSizingStatus := "off"
+		ratio := sr.BpfMaps.DynamicSizeRatio
+		if 0.0 < ratio && ratio <= 1.0 {
+			dynamicSizingStatus = fmt.Sprintf("on (ratio: %f)", ratio)
+		}
+		fmt.Fprintf(w, "BPF Maps:\tdynamic sizing: %s\n", dynamicSizingStatus)
+		tab := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+		fmt.Fprintf(tab, "  Name\tSize\n")
+		for _, m := range sr.BpfMaps.Maps {
+			fmt.Fprintf(tab, "  %s\t%d\n", m.Name, m.Size)
+		}
+		tab.Flush()
+	}
+
+	if sr.Encryption != nil {
+		fields := []string{sr.Encryption.Mode}
+
+		if sr.Encryption.Msg != "" {
+			fields = append(fields, sr.Encryption.Msg)
+		} else if wg := sr.Encryption.Wireguard; wg != nil {
+			ifaces := make([]string, 0, len(wg.Interfaces))
+			for _, i := range wg.Interfaces {
+				iface := fmt.Sprintf("%s (Pubkey: %s, Port: %d, Peers: %d)",
+					i.Name, i.PublicKey, i.ListenPort, i.PeerCount)
+				ifaces = append(ifaces, iface)
+			}
+			fields = append(fields, fmt.Sprintf("[%s]", strings.Join(ifaces, ", ")))
+		}
+
+		fmt.Fprintf(w, "Encryption:\t%s\n", strings.Join(fields, "\t"))
 	}
 }

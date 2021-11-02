@@ -1,93 +1,123 @@
-# Minimal makefile for Sphinx documentation
-#
+# Copyright 2017-2020 Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
+include ../Makefile.defs
 include ../Makefile.quiet
 
-# You can set these variables from the command line.
-SPHINXOPTS    =
-SPHINXBUILD   = sphinx-build
-SPHINXPROJ    = Cilium
-IGNOREDWARNINGS := -e "tabs assets" -e "misspelled words" -e "RemovedInSphinx20Warning"
-SOURCEDIR     = .
-BUILDDIR      = _build
-CMDREFDIR     = cmdref
-CILIUMDIR     = ../cilium
-AGENTDIR      = ../daemon
-BUGTOOLDIR    = ../bugtool
-HEALTHDIR     = ../cilium-health
-OPERATORDIR   = ../operator
-SPELLING_LIST = spelling_wordlist.txt
+HELM_VALUES := helm-values.rst
 
-# Put it first so that "make" without argument is like "make help".
-help:
-	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+.PHONY: default clean builder-image cilium-build cmdref epub latex html run-server stop-server
 
-PIP_REQUIREMENTS = $(shell cat requirements.txt | sed -e 's/==.*//g' -e 's/\n/ /g')
+default: html
 
-check-requirements:
-	@set -e;								\
-	$(ECHO_CHECK) documentation dependencies...;				\
-	PYPKGS=$$(pip3 freeze);							\
-	for pkg in ${PIP_REQUIREMENTS}; do					\
-		echo $${PYPKGS} | grep -q $${pkg}				\
-		|| (echo "Documentation dependency '$${pkg}' not found.";	\
-		    echo "Run 'pip3 install --user -r Documentation/requirements.txt'";	\
-		    exit 2);							\
-	done
-
-cmdref:
-	$(QUIET) # We don't know what changed so recreate the directory
-	$(QUIET) -rm -rvf $(CMDREFDIR)/cilium*
-	@$(ECHO_GEN)cmdref/cilium
-	$(QUIET) ${CILIUMDIR}/cilium cmdref -d $(CMDREFDIR)
-	@$(ECHO_GEN)cmdref/cilium-bugtool
-	$(QUIET) ${BUGTOOLDIR}/cilium-bugtool cmdref -d $(CMDREFDIR)
-	@$(ECHO_GEN)cmdref/cilium-agent
-	$(QUIET) ${AGENTDIR}/cilium-agent --cmdref $(CMDREFDIR)
-	@$(ECHO_GEN)cmdref/cilium-health
-	$(QUIET) ${HEALTHDIR}/cilium-health --cmdref $(CMDREFDIR)
-	@$(ECHO_GEN)cmdref/cilium-operator
-	$(QUIET) ${OPERATORDIR}/cilium-operator --cmdref $(CMDREFDIR)
-
-# Touch "$@.ok" if the docs build succeeds. Fail if there are errors
-# or output other than those including the following phrases:
-# "tabs assets" - These are always printed by the spelling check.
-# "misspelled words" - These will be explicitly checked below.
-# Finally, fail out if we can't remove the file that marks success.
-check-build: check-requirements
-	@$(ECHO_CHECK) documentation build...
-	@mkdir -p $(BUILDDIR)
-	$(QUIET)($(SPHINXBUILD) -b spelling -d "$(BUILDDIR)/doctrees" "$(SOURCEDIR)" "$(BUILDDIR)/spelling" -q -E $(SPHINXOPTS) 2>&1 && touch $@.ok) > $(BUILDDIR)/warnings.txt
-	@if grep -q -v $(IGNOREDWARNINGS) $(BUILDDIR)/warnings.txt; then \
-		echo "Please fix the following documentation warnings:"; \
-		grep -v $(IGNOREDWARNINGS) "$(BUILDDIR)/warnings.txt"; \
-		exit 1; \
-	fi
-	@if [ "$$(wc -l < "$(BUILDDIR)/spelling/output.txt")" -ne "0" ]; then \
-	        echo ""; \
-		echo "Please fix the following spelling mistakes:"; \
-		sed 's/^/* Documentation\//' $(BUILDDIR)/spelling/output.txt; \
-		echo "If the words are not misspelled, run:"; \
-		echo -n "Documentation/update-spelling_wordlist.sh "; \
-		echo "`sed -E 's/^([^:]+:){2} \((.*)\)/\2/g' $(BUILDDIR)/spelling/output.txt | sort -u | tr -d '\r\n' | sed "s/'/\\\\\\\\'/g"`"; \
-		echo ""; \
-		exit 1; \
-	fi
-	#                                                                                                               ^^^^^^ replace FOO'bar with FOO\'bar
-	@rm $@.ok 2>/dev/null
-
-# To use checklinks with `make render-docs`,
-# edit the line `%: Makefile check-requirements check-build checklinks`
-checklinks:
-	$(QUIET)$(SPHINXBUILD) -b linkcheck -d "$(BUILDDIR)/doctrees" "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)
-
-.PHONY: clean
-# Removes build directory
 clean:
-	rm -rf $(BUILDDIR)
-.PHONY: help Makefile ../Makefile.quiet check-requirements cmdref
+	-$(QUIET)rm -rf _build _api _exts/__pycache__ _preview Pipfile Pipfile.lock
 
-# Catch-all target: route all unknown targets to Sphinx using the new
-# "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
-%: Makefile check-requirements check-build
+builder-image: Dockerfile requirements.txt
+	# Pre-pull FROM docker images due to Buildkit sometimes failing to pull them.
+	grep "^FROM " $< | cut -d ' ' -f2 | xargs -n1 docker pull
+	$(QUIET)tar c requirements.txt Dockerfile \
+	  | $(CONTAINER_ENGINE) build --tag cilium/docs-builder -
+
+# cilium must have all build artifacts present for
+# documentation to be generated correctly.
+cilium-build:
+	make -C ../ build
+
+READTHEDOCS_VERSION:=$(READTHEDOCS_VERSION)
+DOCKER_CTR_ROOT_DIR := /src
+DOCKER_CTR := $(CONTAINER_ENGINE) container run --rm \
+		--workdir $(DOCKER_CTR_ROOT_DIR)/Documentation \
+		--volume $(CURDIR)/..:$(DOCKER_CTR_ROOT_DIR) \
+		--env READTHEDOCS_VERSION=$(READTHEDOCS_VERSION) \
+		--env SKIP_LINT=$(SKIP_LINT) \
+		--user "$(shell id -u):$(shell id -g)"
+DOCKER_RUN := $(DOCKER_CTR) cilium/docs-builder
+
+update-cmdref: builder-image cilium-build
+	@$(ECHO_GEN)cmdref
+	-$(QUIET)rm -rf cmdref/cilium*.md
+	$(QUIET)$(DOCKER_RUN) ./update-cmdref.sh
+
+check: builder-image update-cmdref update-helm-values
+	@$(ECHO_CHECK) cmdref
+	$(QUIET) ./check-cmdref.sh
+	@$(ECHO_CHECK) $(HELM_VALUES)
+	$(QUIET) ./check-helmvalues.sh
+	@$(ECHO_CHECK) examples
+	$(QUIET)$(DOCKER_RUN) ./check-examples.sh
+
+ifeq ($(V),0)
+SPHINX_OPTS += -q
+endif
+
+copy-api:
+	@$(ECHO_GEN)_api
+	$(QUIET)cp -r ../api _api
+
+# $(HELM_DOCS_IMAGE), necessary to update the reference for Helm values,
+# attempts to run a Go binary compiled for x86_64. Skip the update on other
+# architectures by making update-helm-values an empty target, unless the user
+# passes a compatible image.
+HELM_VALUES_DEP := $(HELM_VALUES)
+ifneq ($(shell uname -m),x86_64)
+  ifeq ($(origin HELM_DOCS_IMAGE), file)
+    $(info Documentation: skipping update for the Helm reference (image needs x86_64))
+    HELM_VALUES_DEP :=
+  endif
+endif
+update-helm-values: $(HELM_VALUES_DEP)
+
+HELM_DOCS_ROOT_PATH := $(DOCKER_CTR_ROOT_DIR)
+HELM_DOCS_CHARTS_DIR := $(HELM_DOCS_ROOT_PATH)/install/kubernetes
+HELM_DOCS_OUTPUT_DIR := $(HELM_DOCS_ROOT_PATH)/Documentation
+HELM_DOCS := $(DOCKER_CTR) $(HELM_DOCS_IMAGE)
+
+M2R_VERSION := 0.2.1
+M2R_SHA := a3dc2c3fcdc31260dcb7cd42e39763281a6fdce4ca59b4c150fb3bfff5be9eb7
+M2R_IMAGE := docker.io/bmcustodio/m2r:$(M2R_VERSION)@sha256:$(M2R_SHA)
+M2R := $(DOCKER_CTR) $(M2R_IMAGE) m2r
+
+.PHONY: update-helm-values FORCE
+$(HELM_VALUES): TMP_FILE_1 := helm-values.tmp
+$(HELM_VALUES): TMP_FILE_2 := helm-values.awk
+$(HELM_VALUES): FORCE
+	$(QUIET)$(HELM_DOCS) -d -c $(HELM_DOCS_CHARTS_DIR) -t $(HELM_DOCS_OUTPUT_DIR)/$(TMP_FILE_1).tmpl > $(TMP_FILE_1)
+	$(QUIET)awk -F'|' '{print "|"$$2"|"$$5"|"$$3"|"$$4"|"}' $(TMP_FILE_1) > $(TMP_FILE_2)
+	$(QUIET)$(M2R) --overwrite $(TMP_FILE_2)
+	$(QUIET)printf '..\n  %s\n\n%s\n' "AUTO-GENERATED. Please DO NOT edit manually." "$$(cat $@)" > $@
+	$(QUIET)$(RM) -- $(TMP_FILE_1) $(TMP_FILE_2)
+
+epub latex html: builder-image copy-api update-helm-values
 	@$(ECHO_GEN)_build/$@
-	$(QUIET)$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+	$(QUIET)$(DOCKER_RUN) ./check-build.sh $(@) $(SPHINX_OPTS)
+
+html-netlify: copy-api
+	@$(ECHO_GEN)_build/$@
+	$(QUIET) SKIP_LINT=1 ./check-build.sh html $(SPHINX_OPTS)
+
+DOCS_PORT = 9081
+
+run-server: stop-server
+	# Work around Docker issue where this directory is created as root in
+	# the `--volume` parameter below. See also GH-10869.
+	$(QUIET)mkdir -p $(CURDIR)/_build/html/
+	$(QUIET)$(CONTAINER_ENGINE) container run --rm \
+		--detach \
+		--interactive \
+		--tty \
+		--name docs-cilium \
+		--publish $(DOCS_PORT):80 \
+		--volume $(CURDIR)/_build/html/:/usr/local/apache2/htdocs/ \
+			httpd:2.4
+	@echo "$$(tput setaf 2)Running at http://localhost:$(DOCS_PORT)$$(tput sgr0)"
+
+stop-server:
+	-$(QUIET)$(CONTAINER_ENGINE) container rm --force --volumes docs-cilium 2>/dev/null
+
+live-preview: stop-server
+	@echo "$$(tput setaf 2)Running at http://localhost:$(DOCS_PORT)$$(tput sgr0)"
+	$(QUIET)$(DOCKER_CTR) \
+		--publish $(DOCS_PORT):8000 \
+			cilium/docs-builder \
+		sphinx-autobuild -B -H 0.0.0.0 $(SPHINX_OPTS) -i *.swp -Q . _preview

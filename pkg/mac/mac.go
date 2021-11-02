@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package mac
 
@@ -20,7 +9,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+
+	"github.com/vishvananda/netlink"
 )
+
+// Untagged ethernet (IEEE 802.3) frame header len
+const EthHdrLen = 14
 
 // MAC address is an net.HardwareAddr encapsulation to force cilium to only use MAC-48.
 type MAC net.HardwareAddr
@@ -34,10 +28,10 @@ func (m MAC) String() string {
 func ParseMAC(s string) (MAC, error) {
 	ha, err := net.ParseMAC(s)
 	if err != nil {
-		return MAC{}, err
+		return nil, err
 	}
 	if len(ha) != 6 {
-		return MAC{}, fmt.Errorf("invalid MAC address %s", s)
+		return nil, fmt.Errorf("invalid MAC address %s", s)
 	}
 
 	return MAC(ha), nil
@@ -105,4 +99,39 @@ func GenerateRandMAC() (MAC, error) {
 	buf[0] = (buf[0] | 0x02) & 0xfe
 
 	return MAC(buf), nil
+}
+
+// HasMacAddr returns true if the given network interface has L2 addr.
+func HasMacAddr(iface string) bool {
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return false
+	}
+	return LinkHasMacAddr(link)
+}
+
+// LinkHasMacAddr returns true if the given network interface has L2 addr.
+func LinkHasMacAddr(link netlink.Link) bool {
+	return len(link.Attrs().HardwareAddr) != 0
+}
+
+// HaveMACAddrs returns true if all given network interfaces have L2 addr.
+func HaveMACAddrs(ifaces []string) bool {
+	for _, iface := range ifaces {
+		if !HasMacAddr(iface) {
+			return false
+		}
+	}
+	return true
+}
+
+// CArrayString returns a string which can be used for assigning the given
+// MAC addr to "union macaddr" in C.
+func CArrayString(m net.HardwareAddr) string {
+	if m == nil || len(m) == 0 {
+		return "{0x0,0x0,0x0,0x0,0x0,0x0}"
+	}
+
+	return fmt.Sprintf("{0x%x,0x%x,0x%x,0x%x,0x%x,0x%x}",
+		m[0], m[1], m[2], m[3], m[4], m[5])
 }

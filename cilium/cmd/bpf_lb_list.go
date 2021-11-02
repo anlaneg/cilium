@@ -1,25 +1,14 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2021 Authors of Cilium
 
 package cmd
 
 import (
 	"fmt"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 
@@ -52,12 +41,12 @@ func dumpSVC(serviceList map[string][]string) {
 
 	parseBackendEntry := func(key bpf.MapKey, value bpf.MapValue) {
 		id := key.(lbmap.BackendKey).GetID()
-		backendMap[id] = value.DeepCopyMapValue().(lbmap.BackendValue)
+		backendMap[id] = value.DeepCopyMapValue().(lbmap.BackendValue).ToHost()
 	}
-	if err := lbmap.Backend4Map.DumpWithCallbackIfExists(parseBackendEntry); err != nil {
+	if err := lbmap.Backend4MapV2.DumpWithCallbackIfExists(parseBackendEntry); err != nil {
 		Fatalf("Unable to dump IPv4 backends table: %s", err)
 	}
-	if err := lbmap.Backend6Map.DumpWithCallbackIfExists(parseBackendEntry); err != nil {
+	if err := lbmap.Backend6MapV2.DumpWithCallbackIfExists(parseBackendEntry); err != nil {
 		Fatalf("Unable to dump IPv6 backends table: %s", err)
 	}
 
@@ -65,13 +54,14 @@ func dumpSVC(serviceList map[string][]string) {
 		var entry string
 
 		svcKey := key.(lbmap.ServiceKey)
-		svcVal := value.(lbmap.ServiceValue)
+		svcVal := value.(lbmap.ServiceValue).ToHost()
 		svc := svcKey.String()
+		svcKey = svcKey.ToHost()
 		revNATID := svcVal.GetRevNat()
 		backendID := svcVal.GetBackendID()
 		flags := loadbalancer.ServiceFlags(svcVal.GetFlags())
 
-		if backendID == 0 {
+		if svcKey.GetBackendSlot() == 0 {
 			ip := "0.0.0.0"
 			if svcKey.IsIPv6() {
 				ip = "[::]"
@@ -99,13 +89,20 @@ func dumpSVC(serviceList map[string][]string) {
 	}
 }
 
-// bpfCtListCmd represents the bpf_ct_list command
+// bpfLBListCmd represents the bpf_lb_list command
 var bpfLBListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List load-balancing configuration",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf lb list")
+
+		// Ensure that the BPF map objects have been initialized before trying
+		// to list them. Note, this is _not_ creating a new map, but rather
+		// initializing the Go object representing the map. We don't need to
+		// pass the correct sizes here because once the maps are opened, their
+		// size will be read.
+		lbmap.Init(lbmap.InitParams{IPv4: true, IPv6: true})
 
 		var firstTitle string
 		serviceList := make(map[string][]string)

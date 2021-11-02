@@ -1,16 +1,5 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2020 Authors of Cilium
 
 package helpers
 
@@ -22,7 +11,7 @@ import (
 
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/versioncheck"
-	"github.com/cilium/cilium/test/ginkgo-ext"
+	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 )
 
 var (
@@ -68,6 +57,15 @@ const (
 	Private  = "private"
 	Name     = "Name"
 
+	// CiliumAgentLabel is the label used for Cilium
+	CiliumAgentLabel = "k8s-app=cilium"
+
+	// CiliumOperatorLabel is the label used in the Cilium Operator deployment
+	CiliumOperatorLabel = "io.cilium/app=operator"
+
+	// HubbleRelayLabel is the label used for the Hubble Relay deployment
+	HubbleRelayLabel = "k8s-app=hubble-relay"
+
 	// PolicyEnforcement represents the PolicyEnforcement configuration option
 	// for the Cilium agent.
 	PolicyEnforcement = "PolicyEnforcement"
@@ -92,16 +90,22 @@ const (
 	// HostDockerNetwork is the name of the host network driver.
 	HostDockerNetwork = "host"
 
+	// WorldDockerNetwork is the name of the docker network that is *not*
+	// managed by Cilium, intended to be treated as "world" for identity
+	// purposes (for policy tests).
+	WorldDockerNetwork = "world"
+
 	// Names of commonly used containers in tests.
-	Httpd1 = "httpd1"
-	Httpd2 = "httpd2"
-	Httpd3 = "httpd3"
-	App1   = "app1"
-	App2   = "app2"
-	App3   = "app3"
-	Client = "client"
-	Server = "server"
-	Host   = "host"
+	Httpd1      = "httpd1"
+	Httpd2      = "httpd2"
+	Httpd3      = "httpd3"
+	App1        = "app1"
+	App2        = "app2"
+	App3        = "app3"
+	Client      = "client"
+	Server      = "server"
+	Host        = "host"
+	WorldHttpd1 = "WorldHttpd1"
 	// Container lifecycle actions.
 	Create = "create"
 	Delete = "delete"
@@ -136,7 +140,8 @@ const (
 	StateTerminating = "Terminating"
 	StateRunning     = "Running"
 
-	PingCount = 5
+	PingCount   = 5
+	PingTimeout = 5
 
 	// CurlConnectTimeout is the timeout for the connect() call that curl
 	// invokes
@@ -147,12 +152,11 @@ const (
 	// connecting or transferring data. CurlMaxTimeout should be at least 5
 	// seconds longer than CurlConnectTimeout to provide some time to
 	// actually transfer data.
-	CurlMaxTimeout = 8
+	CurlMaxTimeout = 20
 
 	DefaultNamespace       = "default"
 	KubeSystemNamespace    = "kube-system"
 	CiliumNamespaceDefault = KubeSystemNamespace
-	CiliumNamespaceGKE     = "cilium"
 
 	TestResultsPath = "test_results/"
 	RunDir          = "/var/run/cilium"
@@ -163,10 +167,6 @@ const (
 	CiliumDockerDaemonName = "cilium-docker"
 	AgentDaemon            = "cilium-agent"
 
-	GeneratedHTMLManifest   = "html.yaml"
-	GeneratedServerManifest = "server.yaml"
-	GeneratedClientManifest = "client.yaml"
-
 	KubectlCreate = ResourceLifeCycleAction("create")
 	KubectlDelete = ResourceLifeCycleAction("delete")
 	KubectlApply  = ResourceLifeCycleAction("apply")
@@ -176,16 +176,23 @@ const (
 
 	// CiliumStableHelmChartVersion should be the chart version that points
 	// to the v1.X branch
-	CiliumStableHelmChartVersion = "1.7-dev"
-	CiliumStableVersion          = "v1.7"
-	CiliumLatestHelmChartVersion = "1.7.90"
-	CiliumLatestImageVersion     = "latest"
+	CiliumStableHelmChartVersion = "1.10"
+	CiliumStableVersion          = "v" + CiliumStableHelmChartVersion
+	CiliumLatestHelmChartVersion = "1.10.90"
 
 	MonitorLogFileName = "monitor.log"
 
 	// CiliumTestLog is the filename where the cilium logs that happens during
 	// the test are saved.
 	CiliumTestLog = "cilium-test.log"
+
+	// HubbleRelayTestLog is the filename where the hubble relay logs that happens during
+	// the test are saved.
+	HubbleRelayTestLog = "hubble-relay-test.log"
+
+	// CiliumOperatorTestLog is the filename where the cilium operator logs that happens during
+	// the test are saved.
+	CiliumOperatorTestLog = "cilium-operator-test.log"
 
 	// FakeIPv4WorldAddress is an IP which is used in some datapath tests
 	// for simulating external IPv4 connectivity.
@@ -198,17 +205,46 @@ const (
 	// DockerBridgeIP is the IP on the docker0 bridge
 	DockerBridgeIP = "172.17.0.1"
 
-	// Logs messages that should not be in the cilium logs.
-	panicMessage      = "panic:"
-	deadLockHeader    = "POTENTIAL DEADLOCK:"                  // from github.com/sasha-s/go-deadlock/deadlock.go:header
-	segmentationFault = "segmentation fault"                   // from https://github.com/cilium/cilium/issues/3233
-	NACKreceived      = "NACK received for version"            // from https://github.com/cilium/cilium/issues/4003
-	RunInitFailed     = "JoinEP: "                             // from https://github.com/cilium/cilium/pull/5052
-	sizeMismatch      = "size mismatch for BPF map"            // from https://github.com/cilium/cilium/issues/7851
-	emptyBPFInitArg   = "empty argument passed to bpf/init.sh" // from https://github.com/cilium/cilium/issues/10228
+	// SecondaryIface is the name of the secondary iface which can be used to
+	// communicate between nodes. The iface is used to attach bpf_netdev.o
+	// to test NodePort with multiple devices.
+	// Because the name is hardcoded, it cannot be used in tests which run on
+	// on EKS/GKE or any other env which hasn't been provisioned with
+	// test/Vagrantfile.
+	SecondaryIface = "enp0s9"
+
+	// Logs messages that should not be in the cilium logs...
+	panicMessage        = "panic:"
+	deadLockHeader      = "POTENTIAL DEADLOCK:"                                      // from github.com/sasha-s/go-deadlock/deadlock.go:header
+	segmentationFault   = "segmentation fault"                                       // from https://github.com/cilium/cilium/issues/3233
+	NACKreceived        = "NACK received for version"                                // from https://github.com/cilium/cilium/issues/4003
+	RunInitFailed       = "JoinEP: "                                                 // from https://github.com/cilium/cilium/pull/5052
+	sizeMismatch        = "size mismatch for BPF map"                                // from https://github.com/cilium/cilium/issues/7851
+	emptyBPFInitArg     = "empty argument passed to bpf/init.sh"                     // from https://github.com/cilium/cilium/issues/10228
+	RemovingMapMsg      = "Removing map to allow for property upgrade"               // from https://github.com/cilium/cilium/pull/10626
+	logBufferMessage    = "Log buffer too small to dump verifier log"                // from https://github.com/cilium/cilium/issues/10517
+	ClangErrorsMsg      = " errors generated."                                       // from https://github.com/cilium/cilium/issues/10857
+	ClangErrorMsg       = "1 error generated."                                       // from https://github.com/cilium/cilium/issues/10857
+	symbolSubstitution  = "Skipping symbol substitution"                             //
+	uninitializedRegen  = "Uninitialized regeneration level"                         // from https://github.com/cilium/cilium/pull/10949
+	unstableStat        = "BUG: stat() has unstable behavior"                        // from https://github.com/cilium/cilium/pull/11028
+	removeTransientRule = "Unable to process chain CILIUM_TRANSIENT_FORWARD with ip" // from https://github.com/cilium/cilium/issues/11276
+	missingIptablesWait = "Missing iptables wait arg (-w):"
+
+	// ...and their exceptions.
+	lrpExists          = "local-redirect service exists for frontend"                         // cf. https://github.com/cilium/cilium/issues/16400
+	opCantBeFulfilled  = "Operation cannot be fulfilled on leases.coordination.k8s.io"        // cf. https://github.com/cilium/cilium/issues/16402
+	initLeaderElection = "error initially creating leader election record: leases."           // cf. https://github.com/cilium/cilium/issues/16402#issuecomment-861544964
+	globalDataSupport  = "kernel doesn't support global data"                                 // cf. https://github.com/cilium/cilium/issues/16418
+	removeInexistentID = "removing identity not added to the identity manager!"               // cf. https://github.com/cilium/cilium/issues/16419
+	failedToListCRDs   = "the server could not find the requested resource"                   // cf. https://github.com/cilium/cilium/issues/16425
+	retrieveResLock    = "retrieving resource lock kube-system/cilium-operator-resource-lock" // cf. https://github.com/cilium/cilium/issues/16402#issuecomment-871155492
 
 	// HelmTemplate is the location of the Helm templates to install Cilium
 	HelmTemplate = "../install/kubernetes/cilium"
+
+	// ServiceSuffix is the Kubernetes service suffix
+	ServiceSuffix = "svc.cluster.local"
 )
 
 var (
@@ -226,39 +262,48 @@ var (
 const (
 	// ReservedIdentityHealth is equivalent to pkg/identity.ReservedIdentityHealth
 	ReservedIdentityHealth = 4
+
+	// ReservedIdentityHost is equivalent to pkg/identity.ReservedIdentityHost
+	ReservedIdentityHost = 1
 )
 
 // NightlyStableUpgradesFrom maps the cilium image versions to the helm charts
 // that will be used to run update tests in the Nightly test.
-var NightlyStableUpgradesFrom = map[string]string{"v1.6": "1.6-dev", "v1.7": "1.7-dev"}
+var NightlyStableUpgradesFrom = map[string]string{
+	"v1.8": "1.8-dev",
+	"v1.9": "1.9-dev",
+}
 
 var (
-	IsCiliumV1_5 = versioncheck.MustCompile(">=1.4.90 <1.6.0")
-	IsCiliumV1_6 = versioncheck.MustCompile(">=1.5.90 <1.7.0")
-	IsCiliumV1_7 = versioncheck.MustCompile(">=1.6.90 <1.8.0")
-	IsCiliumV1_8 = versioncheck.MustCompile(">=1.7.90 <1.9.0")
+	IsCiliumV1_8  = versioncheck.MustCompile(">=1.7.90 <1.9.0")
+	IsCiliumV1_9  = versioncheck.MustCompile(">=1.8.90 <1.10.0")
+	IsCiliumV1_10 = versioncheck.MustCompile(">=1.9.90 <1.11.0")
+	IsCiliumV1_11 = versioncheck.MustCompile(">=1.10.90 <1.12.0")
 )
-
-// CiliumDefaultDSPatch is the default Cilium DaemonSet patch to be used in all tests.
-const CiliumDefaultDSPatch = "cilium-ds-patch.yaml"
-
-// CiliumConfigMapPatch is the default Cilium ConfigMap patch to be used in all tests.
-const CiliumConfigMapPatch = "cilium-cm-patch.yaml"
-
-// CiliumConfigMapPatchKvstoreAllocator is equivalent to CiliumConfigMapPatch
-// except it uses the kvstore-based allocator instead of the CRD-based allocator.
-const CiliumConfigMapPatchKvstoreAllocator = "cilium-cm-kvstore-allocator-patch.yaml"
 
 // badLogMessages is a map which key is a part of a log message which indicates
 // a failure if the message does not contain any part from value list.
 var badLogMessages = map[string][]string{
-	panicMessage:      nil,
-	deadLockHeader:    nil,
-	segmentationFault: nil,
-	NACKreceived:      nil,
-	RunInitFailed:     {"signal: terminated", "signal: killed"},
-	sizeMismatch:      nil,
-	emptyBPFInitArg:   nil,
+	panicMessage:        nil,
+	deadLockHeader:      nil,
+	segmentationFault:   nil,
+	NACKreceived:        nil,
+	RunInitFailed:       {"signal: terminated", "signal: killed"},
+	sizeMismatch:        nil,
+	emptyBPFInitArg:     nil,
+	RemovingMapMsg:      nil,
+	logBufferMessage:    nil,
+	ClangErrorsMsg:      nil,
+	ClangErrorMsg:       nil,
+	symbolSubstitution:  nil,
+	uninitializedRegen:  nil,
+	unstableStat:        nil,
+	removeTransientRule: nil,
+	missingIptablesWait: nil,
+	"DATA RACE":         nil,
+	// Exceptions for level=error should only be added as a last resort, if the
+	// error cannot be fixed in Cilium or in the test.
+	"level=error": {lrpExists, opCantBeFulfilled, initLeaderElection, globalDataSupport, removeInexistentID, failedToListCRDs, retrieveResLock},
 }
 
 var ciliumCLICommands = map[string]string{
@@ -271,6 +316,8 @@ var ciliumCLICommands = map[string]string{
 	"cilium policy get":                     "policy_get.txt",
 	"cilium status --all-controllers":       "status.txt",
 	"cilium kvstore get cilium --recursive": "kvstore_get.txt",
+
+	"hubble observe --since 4h -o jsonpb": "hubble_observe.json",
 }
 
 // ciliumKubCLICommands these commands are the same as `ciliumCLICommands` but
@@ -284,6 +331,8 @@ var ciliumKubCLICommands = map[string]string{
 	"cilium bpf tunnel list":          "bpf_tunnel_list.txt",
 	"cilium policy get":               "policy_get.txt",
 	"cilium status --all-controllers": "status.txt",
+
+	"hubble observe --since 4h -o jsonpb": "hubble_observe.json",
 }
 
 // ciliumKubCLICommandsKVStore contains commands related to querying the kvstore.
@@ -294,12 +343,6 @@ var ciliumKubCLICommandsKVStore = map[string]string{
 	"cilium kvstore get cilium --recursive": "kvstore_get.txt",
 }
 
-const (
-	ciliumEtcdOperatorSA   = "cilium-etcd-operator-sa.yaml"
-	ciliumEtcdOperatorRBAC = "cilium-etcd-operator-rbac.yaml"
-	ciliumEtcdOperator     = "cilium-etcd-operator.yaml"
-)
-
 // K8s1VMName is the name of the Kubernetes master node when running K8s tests.
 func K8s1VMName() string {
 	return fmt.Sprintf("k8s1-%s", GetCurrentK8SEnv())
@@ -308,4 +351,16 @@ func K8s1VMName() string {
 // K8s2VMName is the name of the Kubernetes worker node when running K8s tests.
 func K8s2VMName() string {
 	return fmt.Sprintf("k8s2-%s", GetCurrentK8SEnv())
+}
+
+// GetBadLogMessages returns a deep copy of badLogMessages to allow removing
+// messages for specific tests.
+func GetBadLogMessages() map[string][]string {
+	mapCopy := make(map[string][]string, len(badLogMessages))
+	for badMsg, exceptions := range badLogMessages {
+		exceptionsCopy := make([]string, len(exceptions))
+		copy(exceptionsCopy, exceptions)
+		mapCopy[badMsg] = exceptionsCopy
+	}
+	return mapCopy
 }

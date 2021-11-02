@@ -1,16 +1,5 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2020 Authors of Cilium
 
 package k8s
 
@@ -20,14 +9,13 @@ import (
 	"github.com/cilium/cilium/pkg/annotation"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	k8sCiliumUtils "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
+	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
-
-	networkingv1 "k8s.io/api/networking/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -35,16 +23,16 @@ const (
 )
 
 var (
-	allowAllNamespacesRequirement = v1.LabelSelectorRequirement{
+	allowAllNamespacesRequirement = slim_metav1.LabelSelectorRequirement{
 		Key:      k8sConst.PodNamespaceLabel,
-		Operator: v1.LabelSelectorOpExists,
+		Operator: slim_metav1.LabelSelectorOpExists,
 	}
 )
 
 // GetPolicyLabelsv1 extracts the name of np. It uses the name  from the Cilium
 // annotation if present. If the policy's annotations do not contain
 // the Cilium annotation, the policy's name field is used instead.
-func GetPolicyLabelsv1(np *networkingv1.NetworkPolicy) labels.LabelArray {
+func GetPolicyLabelsv1(np *slim_networkingv1.NetworkPolicy) labels.LabelArray {
 	if np == nil {
 		log.Warningf("unable to extract policy labels because provided NetworkPolicy is nil")
 		return nil
@@ -65,7 +53,7 @@ func GetPolicyLabelsv1(np *networkingv1.NetworkPolicy) labels.LabelArray {
 	return k8sCiliumUtils.GetPolicyLabels(ns, policyName, policyUID, resourceTypeNetworkPolicy)
 }
 
-func parseNetworkPolicyPeer(namespace string, peer *networkingv1.NetworkPolicyPeer) *api.EndpointSelector {
+func parseNetworkPolicyPeer(namespace string, peer *slim_networkingv1.NetworkPolicyPeer) *api.EndpointSelector {
 	if peer == nil {
 		return nil
 	}
@@ -92,7 +80,7 @@ func parseNetworkPolicyPeer(namespace string, peer *networkingv1.NetworkPolicyPe
 		// Empty namespace selector selects all namespaces (i.e., a namespace
 		// label exists).
 		if len(peer.NamespaceSelector.MatchLabels) == 0 && len(peer.NamespaceSelector.MatchExpressions) == 0 {
-			peer.NamespaceSelector.MatchExpressions = []v1.LabelSelectorRequirement{allowAllNamespacesRequirement}
+			peer.NamespaceSelector.MatchExpressions = []slim_metav1.LabelSelectorRequirement{allowAllNamespacesRequirement}
 		}
 
 		selector := api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, labelSelector, peer.PodSelector)
@@ -114,7 +102,7 @@ func parseNetworkPolicyPeer(namespace string, peer *networkingv1.NetworkPolicyPe
 	return retSel
 }
 
-func hasV1PolicyType(pTypes []networkingv1.PolicyType, typ networkingv1.PolicyType) bool {
+func hasV1PolicyType(pTypes []slim_networkingv1.PolicyType, typ slim_networkingv1.PolicyType) bool {
 	for _, pType := range pTypes {
 		if pType == typ {
 			return true
@@ -126,7 +114,7 @@ func hasV1PolicyType(pTypes []networkingv1.PolicyType, typ networkingv1.PolicyTy
 // ParseNetworkPolicy parses a k8s NetworkPolicy. Returns a list of
 // Cilium policy rules that can be added, along with an error if there was an
 // error sanitizing the rules.
-func ParseNetworkPolicy(np *networkingv1.NetworkPolicy) (api.Rules, error) {
+func ParseNetworkPolicy(np *slim_networkingv1.NetworkPolicy) (api.Rules, error) {
 
 	if np == nil {
 		return nil, fmt.Errorf("cannot parse NetworkPolicy because it is nil")
@@ -233,8 +221,8 @@ func ParseNetworkPolicy(np *networkingv1.NetworkPolicy) (api.Rules, error) {
 	// Since k8s 1.7 doesn't contain any PolicyTypes, we default deny
 	// if podSelector is empty and the policyTypes is not egress
 	if len(ingresses) == 0 &&
-		(hasV1PolicyType(np.Spec.PolicyTypes, networkingv1.PolicyTypeIngress) ||
-			!hasV1PolicyType(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)) {
+		(hasV1PolicyType(np.Spec.PolicyTypes, slim_networkingv1.PolicyTypeIngress) ||
+			!hasV1PolicyType(np.Spec.PolicyTypes, slim_networkingv1.PolicyTypeEgress)) {
 		ingresses = []api.IngressRule{{}}
 	}
 
@@ -243,7 +231,7 @@ func ParseNetworkPolicy(np *networkingv1.NetworkPolicy) (api.Rules, error) {
 	//  podSelector: {}
 	//  policyTypes:
 	//	  - Egress
-	if len(egresses) == 0 && hasV1PolicyType(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress) {
+	if len(egresses) == 0 && hasV1PolicyType(np.Spec.PolicyTypes, slim_networkingv1.PolicyTypeEgress) {
 		egresses = []api.EgressRule{{}}
 	}
 
@@ -266,7 +254,7 @@ func ParseNetworkPolicy(np *networkingv1.NetworkPolicy) (api.Rules, error) {
 	return api.Rules{rule}, nil
 }
 
-func ipBlockToCIDRRule(block *networkingv1.IPBlock) api.CIDRRule {
+func ipBlockToCIDRRule(block *slim_networkingv1.IPBlock) api.CIDRRule {
 	cidrRule := api.CIDRRule{}
 	cidrRule.Cidr = api.CIDR(block.CIDR)
 	for _, v := range block.Except {
@@ -276,19 +264,15 @@ func ipBlockToCIDRRule(block *networkingv1.IPBlock) api.CIDRRule {
 }
 
 // parsePorts converts list of K8s NetworkPolicyPorts to Cilium PortRules.
-func parsePorts(ports []networkingv1.NetworkPolicyPort) []api.PortRule {
+func parsePorts(ports []slim_networkingv1.NetworkPolicyPort) []api.PortRule {
 	portRules := []api.PortRule{}
 	for _, port := range ports {
-		if port.Protocol == nil && port.Port == nil {
-			continue
-		}
-
 		protocol := api.ProtoTCP
 		if port.Protocol != nil {
 			protocol, _ = api.ParseL4Proto(string(*port.Protocol))
 		}
 
-		portStr := ""
+		portStr := "0"
 		if port.Port != nil {
 			portStr = port.Port.String()
 		}

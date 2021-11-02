@@ -1,16 +1,5 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package cmd
 
@@ -19,13 +8,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/cilium/cilium/api/v1/client/daemon"
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/defaults"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/maps/policymap"
@@ -77,6 +71,16 @@ func requireEndpointIDorGlobal(cmd *cobra.Command, args []string) {
 	}
 }
 
+func requireRecorderID(cmd *cobra.Command, args []string) {
+	if len(args) < 1 {
+		Usagef(cmd, "Missing recorder id argument")
+	}
+
+	if args[0] == "" {
+		Usagef(cmd, "Empty recorder id argument")
+	}
+}
+
 func requirePath(cmd *cobra.Command, args []string) {
 	if len(args) < 1 {
 		Usagef(cmd, "Missing path argument")
@@ -102,7 +106,7 @@ func requireServiceID(cmd *cobra.Command, args []string) {
 func TablePrinter(firstTitle, secondTitle string, data map[string][]string) {
 	w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
 
-	fmt.Fprintf(w, "%s\t%s\t\n", firstTitle, secondTitle)
+	fmt.Fprintf(w, "%s\t%s\n", firstTitle, secondTitle)
 
 	for key, value := range data {
 		for k, v := range value {
@@ -208,6 +212,8 @@ type PolicyUpdateArgs struct {
 	// protocols represents the set of protocols associated with the
 	// command, if specified.
 	protocols []uint8
+
+	isDeny bool
 }
 
 // parseTrafficString converts the provided string to its corresponding
@@ -224,19 +230,18 @@ func parseTrafficString(td string) (trafficdirection.TrafficDirection, error) {
 	default:
 		return trafficdirection.Invalid, fmt.Errorf("invalid direction %q provided", td)
 	}
-
 }
 
 // parsePolicyUpdateArgs parses the arguments to a bpf policy {add,delete}
 // command, provided as a list containing the endpoint ID, traffic direction,
 // identity and optionally, a list of ports.
 // Returns a parsed representation of the command arguments.
-func parsePolicyUpdateArgs(cmd *cobra.Command, args []string) *PolicyUpdateArgs {
+func parsePolicyUpdateArgs(cmd *cobra.Command, args []string, isDeny bool) *PolicyUpdateArgs {
 	if len(args) < 3 {
 		Usagef(cmd, "<endpoint id>, <traffic-direction>, and <identity> required")
 	}
 
-	pa, err := parsePolicyUpdateArgsHelper(args)
+	pa, err := parsePolicyUpdateArgsHelper(args, isDeny)
 	if err != nil {
 		Fatalf("%s", err)
 	}
@@ -250,9 +255,9 @@ func endpointToPolicyMapPath(endpointID string) (string, error) {
 	}
 
 	var mapName string
-	id, err := strconv.Atoi(endpointID)
+	idUint64, err := strconv.ParseUint(endpointID, 10, 16)
 	if err == nil {
-		mapName = bpf.LocalMapName(policymap.MapName, uint16(id))
+		mapName = bpf.LocalMapName(policymap.MapName, uint16(idUint64))
 	} else if numericIdentity := identity.GetReservedID(endpointID); numericIdentity != identity.IdentityUnknown {
 		mapSuffix := "reserved_" + strconv.FormatUint(uint64(numericIdentity), 10)
 		mapName = fmt.Sprintf("%s%s", policymap.MapName, mapSuffix)
@@ -263,7 +268,7 @@ func endpointToPolicyMapPath(endpointID string) (string, error) {
 	return bpf.MapPath(mapName), nil
 }
 
-func parsePolicyUpdateArgsHelper(args []string) (*PolicyUpdateArgs, error) {
+func parsePolicyUpdateArgsHelper(args []string, isDeny bool) (*PolicyUpdateArgs, error) {
 	trafficDirection := args[1]
 	parsedTd, err := parseTrafficString(trafficDirection)
 	if err != nil {
@@ -310,6 +315,7 @@ func parsePolicyUpdateArgsHelper(args []string) (*PolicyUpdateArgs, error) {
 		label:            label,
 		port:             port,
 		protocols:        protos,
+		isDeny:           isDeny,
 	}
 
 	return pa, nil
@@ -332,8 +338,16 @@ func updatePolicyKey(pa *PolicyUpdateArgs, add bool) {
 		u8p := u8proto.U8proto(proto)
 		entry := fmt.Sprintf("%d %d/%s", pa.label, pa.port, u8p.String())
 		if add {
-			var proxyPort uint16
-			if err := policyMap.Allow(pa.label, pa.port, u8p, pa.trafficDirection, proxyPort); err != nil {
+			var (
+				proxyPort uint16
+				err       error
+			)
+			if pa.isDeny {
+				err = policyMap.Deny(pa.label, pa.port, u8p, pa.trafficDirection)
+			} else {
+				err = policyMap.Allow(pa.label, pa.port, u8p, pa.trafficDirection, proxyPort)
+			}
+			if err != nil {
 				Fatalf("Cannot add policy key '%s': %s\n", entry, err)
 			}
 		} else {
@@ -345,7 +359,7 @@ func updatePolicyKey(pa *PolicyUpdateArgs, add bool) {
 }
 
 // dumpConfig pretty prints boolean options
-func dumpConfig(Opts map[string]string) {
+func dumpConfig(Opts map[string]string, indented bool) {
 	opts := []string{}
 	for k := range Opts {
 		opts = append(opts, k)
@@ -355,13 +369,69 @@ func dumpConfig(Opts map[string]string) {
 	for _, k := range opts {
 		// XXX: Reuse the format function from *option.Library
 		value = Opts[k]
+		formatStr := "%-34s: %s\n"
+		if indented {
+			formatStr = "\t%-26s: %s\n"
+		}
 		if enabled, err := option.NormalizeBool(value); err != nil {
 			// If it cannot be parsed as a bool, just format the value.
-			fmt.Printf("%-24s %s\n", k, value)
+			fmt.Printf(formatStr, k, value)
 		} else if enabled == option.OptionDisabled {
-			fmt.Printf("%-24s %s\n", k, "Disabled")
+			fmt.Printf(formatStr, k, "Disabled")
 		} else {
-			fmt.Printf("%-24s %s\n", k, "Enabled")
+			fmt.Printf(formatStr, k, "Enabled")
 		}
 	}
+}
+
+func mapKeysToLowerCase(s map[string]interface{}) map[string]interface{} {
+	m := make(map[string]interface{})
+	for k, v := range s {
+		if reflect.ValueOf(v).Kind() == reflect.Map {
+			for i, j := range v.(map[string]interface{}) {
+				m[strings.ToLower(i)] = j
+			}
+		}
+		m[strings.ToLower(k)] = v
+	}
+	return m
+}
+
+// getIpv6EnableStatus api returns the EnableIPv6 status
+// by consulting the cilium-agent otherwise reads from the
+// runtime system config
+func getIpv6EnableStatus() bool {
+	params := daemon.NewGetHealthzParamsWithTimeout(5 * time.Second)
+	brief := true
+	params.SetBrief(&brief)
+	// If cilium-agent is running get the ipv6 enable status
+	if _, err := client.Daemon.GetHealthz(params); err == nil {
+		if resp, err := client.ConfigGet(); err == nil {
+			if resp.Status != nil {
+				return resp.Status.Addressing.IPV6 != nil && resp.Status.Addressing.IPV6.Enabled == true
+			}
+		}
+	} else { // else read the EnableIPv6 status from the file-system
+		agentConfigFile := filepath.Join(defaults.RuntimePath, defaults.StateDir,
+			"agent-runtime-config.json")
+
+		if byteValue, err := os.ReadFile(agentConfigFile); err == nil {
+			if err = json.Unmarshal(byteValue, &option.Config); err == nil {
+				return option.Config.EnableIPv6
+			}
+		}
+	}
+	// returning the EnableIPv6 default status
+	return defaults.EnableIPv6
+}
+
+func mergeMaps(m1, m2 map[string]interface{}) map[string]interface{} {
+	m3 := make(map[string]interface{})
+	for k, v := range m1 {
+		m3[k] = v
+	}
+	for k, v := range m2 {
+		m3[k] = v
+	}
+	return m3
 }

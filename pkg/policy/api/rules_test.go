@@ -1,17 +1,7 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package api
@@ -20,20 +10,22 @@ import (
 	. "gopkg.in/check.v1"
 )
 
-// TestRulesDeepEquals tests that individual rules (via Rule.DeepEquals()) and
-// a collection of rules (via Rules.DeepEquals()) correctly validates the
+// TestRulesDeepEqual tests that individual rules (via Rule.DeepEqual()) and
+// a collection of rules (via Rules.DeepEqual()) correctly validates the
 // equality of the rule or rules.
-func (s *PolicyAPITestSuite) TestRulesDeepEquals(c *C) {
-	var invalidRules Rules
+func (s *PolicyAPITestSuite) TestRulesDeepEqual(c *C) {
+	var invalidRules *Rules
 
-	c.Assert(invalidRules.DeepEquals(nil), Equals, true)
-	c.Assert(invalidRules.DeepEquals(invalidRules), Equals, true)
+	c.Assert(invalidRules.DeepEqual(nil), Equals, true)
+	c.Assert(invalidRules.DeepEqual(invalidRules), Equals, true)
 
 	wcSelector1 := WildcardEndpointSelector
 	validPortRules := Rules{
 		NewRule().WithEndpointSelector(wcSelector1).
 			WithIngressRules([]IngressRule{{
-				FromEndpoints: []EndpointSelector{WildcardEndpointSelector},
+				IngressCommonRule: IngressCommonRule{
+					FromEndpoints: []EndpointSelector{WildcardEndpointSelector},
+				},
 				ToPorts: []PortRule{{
 					Ports: []PortProtocol{
 						{Port: "80", Protocol: ProtoTCP},
@@ -48,10 +40,10 @@ func (s *PolicyAPITestSuite) TestRulesDeepEquals(c *C) {
 			}}),
 	}
 
-	c.Assert(invalidRules.DeepEquals(validPortRules), Equals, false)
-	c.Assert(validPortRules.DeepEquals(invalidRules), Equals, false)
-	c.Assert(validPortRules.DeepEquals(nil), Equals, false)
-	c.Assert(validPortRules.DeepEquals(validPortRules), Equals, true)
+	c.Assert(invalidRules.DeepEqual(&validPortRules), Equals, false)
+	c.Assert(validPortRules.DeepEqual(invalidRules), Equals, false)
+	c.Assert(validPortRules.DeepEqual(nil), Equals, false)
+	c.Assert(validPortRules.DeepEqual(&validPortRules), Equals, true)
 
 	// Same as WildcardEndpointSelector, but different pointer.
 	wcSelector2 := NewESFromLabels()
@@ -60,5 +52,5 @@ func (s *PolicyAPITestSuite) TestRulesDeepEquals(c *C) {
 	}
 	validPortRulesClone[0].EndpointSelector = wcSelector2
 
-	c.Assert(validPortRules.DeepEquals(validPortRulesClone), Equals, true)
+	c.Assert(validPortRules.DeepEqual(&validPortRulesClone), Equals, true)
 }

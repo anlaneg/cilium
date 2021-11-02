@@ -1,26 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -98,14 +91,20 @@ func (w *walker) walkPath(path string, info os.FileInfo, err error) error {
 	return err
 }
 
-func createArchive(dbgDir string) (string, error) {
+func createArchive(dbgDir string, sendArchiveToStdout bool) (string, error) {
 	// Based on http://blog.ralch.com/tutorial/golang-working-with-tar-and-gzip/
-	archivePath := fmt.Sprintf("%s.tar", dbgDir)
-	file, err := os.Create(archivePath)
-	if err != nil {
-		return "", err
+	file := os.Stdout
+	archivePath := "STDOUT"
+
+	if !sendArchiveToStdout {
+		archivePath = fmt.Sprintf("%s.tar", dbgDir)
+		var err error
+		file, err = os.Create(archivePath)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
 	}
-	defer file.Close()
 
 	writer := tar.NewWriter(file)
 	defer writer.Close()
@@ -122,9 +121,9 @@ func createArchive(dbgDir string) (string, error) {
 	return archivePath, filepath.Walk(dbgDir, walker.walkPath)
 }
 
-func createGzip(dbgDir string) (string, error) {
+func createGzip(dbgDir string, sendArchiveToStdout bool) (string, error) {
 	// Based on http://blog.ralch.com/tutorial/golang-working-with-tar-and-gzip/
-	source, err := createArchive(dbgDir)
+	source, err := createArchive(dbgDir, false)
 	if err != nil {
 		return "", err
 	}
@@ -134,13 +133,19 @@ func createGzip(dbgDir string) (string, error) {
 		return "", err
 	}
 
-	filename := filepath.Base(source)
-	target := fmt.Sprintf("%s.gz", source)
-	writer, err := os.Create(target)
-	if err != nil {
-		return "", err
+	writer := os.Stdout
+	filename := "STDOUT"
+	target := filename
+
+	if !sendArchiveToStdout {
+		filename = filepath.Base(source)
+		target = fmt.Sprintf("%s.gz", source)
+		writer, err = os.Create(target)
+		if err != nil {
+			return "", err
+		}
+		defer writer.Close()
 	}
-	defer writer.Close()
 
 	archiver := gzip.NewWriter(writer)
 	archiver.Name = filename
@@ -152,4 +157,48 @@ func createGzip(dbgDir string) (string, error) {
 	}
 
 	return target, nil
+}
+
+// Note that `auth-trunc` is also a relevant pattern, but we already match on the more generic
+// `auth` pattern.
+var isEncryptionKey = regexp.MustCompile("(auth|enc|aead|comp)(.*[[:blank:]](0[xX][[:xdigit:]]+))?")
+
+// hashEncryptionKeys processes the buffer containing the output of `ip -s xfrm state`.
+// It searches for IPsec keys in the output and replaces them by their hash.
+func hashEncryptionKeys(output []byte) []byte {
+	var b bytes.Buffer
+	lines := bytes.Split(output, []byte("\n"))
+	// Search for lines containing encryption keys.
+	for i, line := range lines {
+		// isEncryptionKey.FindStringSubmatchIndex(line) will return:
+		// - [], if the global pattern is not found
+		// - a slice of integers, if the global pattern is found. The
+		//   first two integers are the start and end offsets of the
+		//   global pattern. The remaining integers are the start and
+		//   end offset of each submatch group (delimited in the
+		//   regular expressions by parenthesis).
+		//
+		// If the global pattern is found, the start and end offset of
+		// the hexadecimal string (the third submatch) will be at index
+		// 6 and 7 in the slice. They may be equal to -1 if the
+		// submatch, marked as optional ('?'), is not found.
+		matched := isEncryptionKey.FindSubmatchIndex(line)
+		if matched != nil && matched[6] > 0 {
+			key := line[matched[6]:matched[7]]
+			h := sha256.New()
+			h.Write(key)
+			sum := h.Sum(nil)
+			hashedKey := make([]byte, hex.EncodedLen(len(sum)))
+			hex.Encode(hashedKey, sum)
+			fmt.Fprintf(&b, "%s[hash:%s]%s", line[:matched[6]], hashedKey, line[matched[7]:])
+		} else if matched != nil && matched[6] < 0 {
+			b.WriteString("[redacted]")
+		} else {
+			b.Write(line)
+		}
+		if i < len(lines)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.Bytes()
 }

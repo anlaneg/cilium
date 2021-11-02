@@ -1,25 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package proxy
 
 import (
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/envoy"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/revert"
 )
@@ -41,12 +32,19 @@ func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServe
 	envoyOnce.Do(func() {
 		// Start Envoy on first invocation
 		envoyProxy = envoy.StartEnvoy(stateDir, option.Config.EnvoyLogPath, 0)
+
+		// Add Prometheus listener if the port is (properly) configured
+		if option.Config.ProxyPrometheusPort < 0 || option.Config.ProxyPrometheusPort > 65535 {
+			log.WithField(logfields.Port, option.Config.ProxyPrometheusPort).Error("Envoy: Invalid configured proxy-prometheus-port")
+		} else if option.Config.ProxyPrometheusPort != 0 {
+			xdsServer.AddMetricsListener(uint16(option.Config.ProxyPrometheusPort), wg)
+		}
 	})
 
 	l := r.listener
 	if envoyProxy != nil {
 		redir := &envoyRedirect{
-			listenerName: fmt.Sprintf("%s:%d", l.name, l.proxyPort),
+			listenerName: net.JoinHostPort(l.name, fmt.Sprintf("%d", l.proxyPort)),
 			xdsServer:    xdsServer,
 		}
 		// Only use original source address for egress

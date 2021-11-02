@@ -1,22 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package idpool
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -38,7 +29,7 @@ func (s *IDPoolTestSuite) TestLeaseAvailableID(c *C) {
 	minID, maxID := 1, 5
 	p := NewIDPool(ID(minID), ID(maxID))
 
-	leaseAllIDs(p, minID, maxID, c)
+	leaseAllIDs(&p, minID, maxID, c)
 }
 
 func (s *IDPoolTestSuite) TestInsertIDs(c *C) {
@@ -51,7 +42,7 @@ func (s *IDPoolTestSuite) TestInsertIDs(c *C) {
 		c.Assert(p.Insert(ID(i)), Equals, false)
 	}
 
-	leaseAllIDs(p, minID-1, maxID+1, c)
+	leaseAllIDs(&p, minID-1, maxID+1, c)
 }
 
 func (s *IDPoolTestSuite) TestInsertRemoveIDs(c *C) {
@@ -119,7 +110,7 @@ func (s *IDPoolTestSuite) TestReleaseID(c *C) {
 
 	// Lease all ids. This time, remove them before
 	// releasing them.
-	leaseAllIDs(p, minID, maxID, c)
+	leaseAllIDs(&p, minID, maxID, c)
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p.Remove(ID(i)), Equals, false)
 	}
@@ -134,40 +125,40 @@ func (s *IDPoolTestSuite) TestOperationsOnAvailableIDs(c *C) {
 
 	// Leasing available IDs should move its state to leased.
 	p0 := NewIDPool(ID(minID), ID(maxID))
-	leaseAllIDs(p0, minID, maxID, c)
+	leaseAllIDs(&p0, minID, maxID, c)
 	// Check all IDs are in leased state.
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p0.Release(ID(i)), Equals, true)
 	}
-	leaseAllIDs(p0, minID, maxID, c)
+	leaseAllIDs(&p0, minID, maxID, c)
 
 	// Releasing available IDs should not have any effect.
 	p1 := NewIDPool(ID(minID), ID(maxID))
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p1.Release(ID(i)), Equals, false)
 	}
-	leaseAllIDs(p1, minID, maxID, c)
+	leaseAllIDs(&p1, minID, maxID, c)
 
 	// Using available IDs should not have any effect.
 	p2 := NewIDPool(ID(minID), ID(maxID))
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p2.Use(ID(i)), Equals, false)
 	}
-	leaseAllIDs(p2, minID, maxID, c)
+	leaseAllIDs(&p2, minID, maxID, c)
 
 	// Inserting available IDs should not have any effect.
 	p3 := NewIDPool(ID(minID), ID(maxID))
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p3.Insert(ID(i)), Equals, false)
 	}
-	leaseAllIDs(p3, minID, maxID, c)
+	leaseAllIDs(&p3, minID, maxID, c)
 
 	// Removing available IDs should make them unavailable.
 	p4 := NewIDPool(ID(minID), ID(maxID))
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p4.Remove(ID(i)), Equals, true)
 	}
-	leaseAllIDs(p4, minID, minID-1, c)
+	leaseAllIDs(&p4, minID, minID-1, c)
 	for i := minID; i <= maxID; i++ {
 		c.Assert(p4.Release(ID(i)), Equals, false)
 	}
@@ -177,8 +168,8 @@ func (s *IDPoolTestSuite) TestOperationsOnLeasedIDs(c *C) {
 	minID, maxID := 1, 5
 	var poolWithAllIDsLeased = func() *IDPool {
 		p := NewIDPool(ID(minID), ID(maxID))
-		leaseAllIDs(p, minID, maxID, c)
-		return p
+		leaseAllIDs(&p, minID, maxID, c)
+		return &p
 	}
 
 	// Releasing leased IDs should make it available again.
@@ -228,7 +219,7 @@ func (s *IDPoolTestSuite) TestOperationsOnUnavailableIDs(c *C) {
 		for i := minID; i <= maxID; i++ {
 			c.Assert(p.Remove(ID(i)), Equals, true)
 		}
-		return p
+		return &p
 	}
 
 	// Releasing unavailable IDs should not have any effect.
@@ -319,19 +310,28 @@ func (s *IDPoolTestSuite) BenchmarkUseAndRelease(c *C) {
 	}
 }
 
-func (s *IDPoolTestSuite) TestAllocateID(c *C) {
+func (s *IDPoolTestSuite) testAllocatedID(c *C, nGoRoutines int) {
+	bufferChannelSize := 100
 	minID, maxID := 1, 6000
+	if maxID-minID < nGoRoutines+bufferChannelSize {
+		panic(fmt.Sprintf("Number of go routines and size of the buffered channel (%d) "+
+			"should be lower than the number of IDs to be tested (%d)",
+			nGoRoutines+bufferChannelSize, maxID-minID))
+	}
+
 	p := NewIDPool(ID(minID), ID(maxID))
 
-	allocated := make(chan ID, 100)
+	allocated := make(chan ID, bufferChannelSize)
 	var allocators sync.WaitGroup
 
-	for i := 0; i < 256; i++ {
+	for i := 0; i < nGoRoutines; i++ {
 		allocators.Add(1)
 		go func() {
 			for i := 1; i <= maxID; i++ {
 				id := p.AllocateID()
-				c.Assert(id, Not(Equals), NoID)
+				if id == NoID {
+					c.Error("ID expected to be allocated")
+				}
 				allocated <- id
 			}
 			allocators.Done()
@@ -344,6 +344,8 @@ func (s *IDPoolTestSuite) TestAllocateID(c *C) {
 	}()
 
 	for id := range allocated {
-		c.Assert(p.Insert(id), Equals, true)
+		if p.Insert(id) != true {
+			c.Error("ID insertion failed")
+		}
 	}
 }

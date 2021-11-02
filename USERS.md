@@ -55,28 +55,78 @@ Users (Alphabetically)
       U: L3/L4/L7 policies
       L: https://youtu.be/39FLsSc2P-Y
 
+    * N: Alibaba Cloud
+      D: Alibaba Cloud is using Cilium together with Terway CNI as the high-performance ENI dataplane
+      U: Networking, NetworkPolicy, Services, IPVLAN
+      L: https://www.alibabacloud.com/blog/how-does-alibaba-cloud-build-high-performance-cloud-native-pod-networks-in-production-environments_596590
+
+    * N: Amazon Web Services (AWS)
+      D: AWS uses Cilium as the default CNI for EKS Anywhere
+      U: Networking, NetworkPolicy, Services
+      L: https://isovalent.com/blog/post/2021-09-aws-eks-anywhere-chooses-cilium
+
+    * N: ArangoDB Oasis
+      D: ArangoDB Oasis is using Cilium in to separate database deployments in our multi-tenant cloud environment
+      U: Networking, CiliumNetworkPolicy(cluster & local), Hubble, IPAM
+      L: https://cloud.arangodb.com
+      Q: @ewoutp @Robert-Stam
+
+    * N: Canonical
+      D: Canonical's Kubernetes distribution microk8s uses Cilium as CNI plugin
+      U: Networking, NetworkPolicy, and Kubernetes services
+      L: https://microk8s.io/
+
     * N: CENGN - Centre of Excellence in Next Generation Networks
       D: CENGN is using Cilium in multiple clusters including production and development clusters (self-hosted k8s, On-premises)
       U: L3/L4/L7 network policies, Monitoring via Prometheus metrics & Hubble
       L: https://www.youtube.com/watch?v=yXm7yZE2rk4
       Q: @rmaika @mohahmed13
 
+    * N: Cognite
+      D: Cognite is an industrial DataOps provider and uses Cilium as the CNI plugin
+      Q: @Robert Collins
+
     * N: Datadog
       D: Datadog is using Cilium in AWS (self-hosted k8s)
       U: ENI Networking, Service load-balancing, Encryption
       Q: @lbernail, @roboll
+
+    * N: DigitalOcean
+      D: DigitalOcean is using Cilium as the CNI for Digital Ocean's managed Kubernetes Services (DOKS)
+      U: Networking and network policy
+      L: https://github.com/digitalocean/DOKS
+
+    * N: finleap connect
+      D: finleap connect is using Cilium in their production clusters (self-hosted, bare-metal, private cloud)
+      U: CNI, NetworkPolicies
+      Q: @chue
+      
+    * N: Form3
+      D: Form3 is using Cilium in their production clusters (self-hosted, bare-metal, private cloud) 
+      U: Service load-balancing, Encryption, CNI, NetworkPolicies
+      Q: @kevholditch-f3, samo-f3, ewilde-form3  
 
     * N: GitLab
       D: GitLab is using Cilium to implement network policies inside Auto DevOps deployed clusters for customers using k8s
       U: Network policies
       L: https://docs.gitlab.com/ee/user/clusters/applications.html#install-cilium-using-gitlab-ci
       Q: @ap4y @whaber
+
+    * N: Google
+      D: Google is using Cilium in Anthos and Google Kubernetes Engine (GKE) as Dataplane V2
+      U: Networking, network policy, and network visibility
+      L: https://cloud.google.com/blog/products/containers-kubernetes/bringing-ebpf-and-cilium-to-google-kubernetes-engine
      
     * N: Palantir Technologies Inc.
       D: Palantir is using Cilium as their main CNI plugin in AWS (self hosted k8s).
       U: ENI networking, L3/L4 policies, FQDN based policy, FQDN filtering
       Q: ungureanuvladvictor
-      
+
+    * N: PostFinance AG
+      D: PostFinance is using Cilium as their CNI for all mission critical, on premise k8s clusters
+      U: Networking, network policies, kube-proxy replacement
+      L: https://github.com/postfinance
+  
     * N: Radio France
       D: Radio France is using Cilium in their production clusters (self-hosted k8s with kops on AWS)
       U: Mainly Service load-balancing
@@ -87,6 +137,21 @@ Users (Alphabetically)
       U: CiliumNetworkPolicy, Hubble, Service Load Balancing.
       Q: @Gowtham
 
+    * N: SAP Concur
+      D: SAP Concur is using Cilium in production clusters (self-hosted k8s on AWS)
+      U: CNI
+      Q: @dale
+
+    * N: SmileDirectClub
+      D: SmileDirectClub is using Cilium in manufacturing clusters (self-hosted on vSphere and AWS EC2)
+      U: CNI
+      Q: @joey, @onur.gokkocabas
+
+    * N: Sphere Knowledge
+      D: Sphere Knowledge is using Cilium in AWS (self-hosted k8s & EKS)
+      U: ENI Networking, Network policies, Service load-balancing, Hubble
+      Q: @mvisonneau
+
     * N: Sportradar
       D: Sportradar is using Cilium as their main CNI plugin in AWS (using kops)
       U: L3/L4 policies, Hubble, BPF NodePort, CiliumClusterwideNetworkPolicy
@@ -96,9 +161,29 @@ Users (Alphabetically)
       D: uSwitch is using Cilium in AWS for all their production clusters (self hosted k8s)
       U: ClusterMesh, CNI-Chaining (with amazon-vpc-cni-k8s)
       Q: @jirving
+      
+    * N: Utmost Software, Inc
+      D: Utmost is using Cilium in all tiers of its Kubernetes ecosystem to implement zero trust
+      U: CNI, DefaultDeny(Zero Trust), Hubble, CiliumNetworkPolicy, CiliumClusterwideNetworkPolicy
+      L: https://blog.utmost.co/zero-trust-security-at-utmost
+      Q: @andrewholt  
 
     * N: Trip.com
       D: Trip.com is using Cilium in their production clusters (self-hosted k8s, On-premises and AWS)
       U: ENI Networking, Service load-balancing, Direct routing (via Bird)
       L: https://ctripcloud.github.io/cilium/network/2020/01/19/trip-first-step-towards-cloud-native-networking.html
       Q: @ArthurChiao
+      
+    * N: Tailor Brands
+      D: Tailor Brands is using Cilium in their production, staging, and development clusters (AWS EKS)
+      U: CNI (instead of amazon-vpc-cni-k8s), Hubble, Datadog Integration for Prometheus metrics
+      Q: @liorrozen
+
+    * N: Wildlife Studios
+      D: Wildlife Studios is using Cilium in AWS for all their game production clusters (self hosted k8s)
+      U: ClusterMesh, Global Service Load Balancing.
+      Q: @Oki @luanguimaraesla
+
+    * N: Yahoo!
+      D: Yahoo is using Cilium for L4 North-South Load Balancing for Kubernetes Services
+      L: https://www.youtube.com/watch?v=-C86fBMcp5Q

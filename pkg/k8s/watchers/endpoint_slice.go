@@ -1,16 +1,5 @@
-// Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
 package watchers
 
@@ -19,102 +8,140 @@ import (
 
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/informer"
+	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/serializer"
+	"github.com/cilium/cilium/pkg/option"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/api/discovery/v1beta1"
+	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
 // endpointSlicesInit returns true if the cluster contains endpoint slices.
-func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, serEps *serializer.FunctionQueue, swgEps *lock.StoppableWaitGroup) bool {
+func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *lock.StoppableWaitGroup) bool {
 	var (
 		hasEndpointSlices = make(chan struct{})
 		once              sync.Once
+		esClient          rest.Interface
+		objType           runtime.Object
+		addFunc, delFunc  func(obj interface{})
+		updateFunc        func(oldObj, newObj interface{})
+		apiGroup          string
 	)
+
+	if k8s.SupportsEndpointSliceV1() {
+		apiGroup = K8sAPIGroupEndpointSliceV1Discovery
+		esClient = k8sClient.DiscoveryV1().RESTClient()
+		objType = &slim_discover_v1.EndpointSlice{}
+		addFunc = func(obj interface{}) {
+			once.Do(func() {
+				// signalize that we have received an endpoint slice
+				// so it means the cluster has endpoint slices enabled.
+				close(hasEndpointSlices)
+			})
+			var valid, equal bool
+			defer func() { k.K8sEventReceived(metricEndpointSlice, metricCreate, valid, equal) }()
+			if k8sEP := k8s.ObjToV1EndpointSlice(obj); k8sEP != nil {
+				valid = true
+				k.updateK8sEndpointSliceV1(k8sEP, swgEps)
+				k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
+			}
+		}
+		updateFunc = func(oldObj, newObj interface{}) {
+			var valid, equal bool
+			defer func() { k.K8sEventReceived(metricEndpointSlice, metricUpdate, valid, equal) }()
+			if oldk8sEP := k8s.ObjToV1EndpointSlice(oldObj); oldk8sEP != nil {
+				if newk8sEP := k8s.ObjToV1EndpointSlice(newObj); newk8sEP != nil {
+					valid = true
+					if oldk8sEP.DeepEqual(newk8sEP) {
+						equal = true
+						return
+					}
+
+					k.updateK8sEndpointSliceV1(newk8sEP, swgEps)
+					k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
+				}
+			}
+		}
+		delFunc = func(obj interface{}) {
+			var valid, equal bool
+			defer func() { k.K8sEventReceived(metricEndpointSlice, metricDelete, valid, equal) }()
+			k8sEP := k8s.ObjToV1EndpointSlice(obj)
+			if k8sEP == nil {
+				return
+			}
+			valid = true
+			k.K8sSvcCache.DeleteEndpointSlices(k8sEP, swgEps)
+			k.K8sEventProcessed(metricEndpointSlice, metricDelete, true)
+		}
+	} else {
+		apiGroup = K8sAPIGroupEndpointSliceV1Beta1Discovery
+		esClient = k8sClient.DiscoveryV1beta1().RESTClient()
+		objType = &slim_discover_v1beta1.EndpointSlice{}
+		addFunc = func(obj interface{}) {
+			once.Do(func() {
+				// signalize that we have received an endpoint slice
+				// so it means the cluster has endpoint slices enabled.
+				close(hasEndpointSlices)
+			})
+			var valid, equal bool
+			defer func() { k.K8sEventReceived(metricEndpointSlice, metricCreate, valid, equal) }()
+			if k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj); k8sEP != nil {
+				valid = true
+				k.updateK8sEndpointSliceV1Beta1(k8sEP, swgEps)
+				k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
+			}
+		}
+		updateFunc = func(oldObj, newObj interface{}) {
+			var valid, equal bool
+			defer func() { k.K8sEventReceived(metricEndpointSlice, metricUpdate, valid, equal) }()
+			if oldk8sEP := k8s.ObjToV1Beta1EndpointSlice(oldObj); oldk8sEP != nil {
+				if newk8sEP := k8s.ObjToV1Beta1EndpointSlice(newObj); newk8sEP != nil {
+					valid = true
+					if oldk8sEP.DeepEqual(newk8sEP) {
+						equal = true
+						return
+					}
+
+					k.updateK8sEndpointSliceV1Beta1(newk8sEP, swgEps)
+					k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
+				}
+			}
+		}
+		delFunc = func(obj interface{}) {
+			var valid, equal bool
+			defer func() { k.K8sEventReceived(metricEndpointSlice, metricDelete, valid, equal) }()
+			k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj)
+			if k8sEP == nil {
+				return
+			}
+			valid = true
+			k.K8sSvcCache.DeleteEndpointSlices(k8sEP, swgEps)
+			k.K8sEventProcessed(metricEndpointSlice, metricDelete, true)
+		}
+	}
 
 	_, endpointController := informer.NewInformer(
-		cache.NewListWatchFromClient(k8sClient.DiscoveryV1beta1().RESTClient(),
+		cache.NewListWatchFromClient(esClient,
 			"endpointslices", v1.NamespaceAll, fields.Everything()),
-		&v1beta1.EndpointSlice{},
+		objType,
 		0,
 		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				once.Do(func() {
-					// signalize that we have received an endpoint slice
-					// so it means the cluster has endpoint slices enabled.
-					close(hasEndpointSlices)
-				})
-				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricEndpointSlice, metricCreate, valid, equal) }()
-				if k8sEP := k8s.CopyObjToV1EndpointSlice(obj); k8sEP != nil {
-					valid = true
-					swgEps.Add()
-					serEps.Enqueue(func() error {
-						defer swgEps.Done()
-						k.K8sSvcCache.UpdateEndpointSlices(k8sEP, swgEps)
-						k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
-						return nil
-					}, serializer.NoRetry)
-				}
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricEndpointSlice, metricUpdate, valid, equal) }()
-				if oldk8sEP := k8s.CopyObjToV1EndpointSlice(oldObj); oldk8sEP != nil {
-					valid = true
-					if newk8sEP := k8s.CopyObjToV1EndpointSlice(newObj); newk8sEP != nil {
-						if k8s.EqualV1EndpointSlice(oldk8sEP, newk8sEP) {
-							equal = true
-							return
-						}
-
-						swgEps.Add()
-						serEps.Enqueue(func() error {
-							defer swgEps.Done()
-							k.K8sSvcCache.UpdateEndpointSlices(newk8sEP, swgEps)
-							k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
-							return nil
-						}, serializer.NoRetry)
-					}
-				}
-			},
-			DeleteFunc: func(obj interface{}) {
-				var valid, equal bool
-				defer func() { k.K8sEventReceived(metricEndpointSlice, metricDelete, valid, equal) }()
-				k8sEP := k8s.CopyObjToV1EndpointSlice(obj)
-				if k8sEP == nil {
-					deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
-					if !ok {
-						return
-					}
-					// Delete was not observed by the watcher but is
-					// removed from kube-apiserver. This is the last
-					// known state and the object no longer exists.
-					k8sEP = k8s.CopyObjToV1EndpointSlice(deletedObj.Obj)
-					if k8sEP == nil {
-						return
-					}
-				}
-				valid = true
-				swgEps.Add()
-				serEps.Enqueue(func() error {
-					defer swgEps.Done()
-					k.K8sSvcCache.DeleteEndpointSlices(k8sEP, swgEps)
-					k.K8sEventProcessed(metricEndpointSlice, metricDelete, true)
-					return nil
-				}, serializer.NoRetry)
-			},
+			AddFunc:    addFunc,
+			UpdateFunc: updateFunc,
+			DeleteFunc: delFunc,
 		},
-		k8s.ConvertToK8sEndpointSlice,
+		nil,
 	)
 	ecr := make(chan struct{})
-	k.blockWaitGroupToSyncResources(ecr, swgEps, endpointController, K8sAPIGroupEndpointSliceV1Beta1Discovery)
+	k.blockWaitGroupToSyncResources(ecr, swgEps, endpointController.HasSynced, apiGroup)
 	go endpointController.Run(ecr)
-	k.k8sAPIGroups.addAPI(K8sAPIGroupEndpointSliceV1Beta1Discovery)
+	k.k8sAPIGroups.AddAPI(apiGroup)
 
 	if k8s.HasEndpointSlice(hasEndpointSlices, endpointController) {
 		return true
@@ -122,7 +149,42 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, serEps *
 
 	// K8s is not running with endpoint slices enabled, stop the endpoint slice
 	// controller to avoid watching for unnecessary stuff in k8s.
-	k.k8sAPIGroups.removeAPI(K8sAPIGroupEndpointSliceV1Beta1Discovery)
+	k.k8sAPIGroups.RemoveAPI(apiGroup)
 	close(ecr)
 	return false
+}
+
+func (k *K8sWatcher) updateK8sEndpointSliceV1(eps *slim_discover_v1.EndpointSlice, swgEps *lock.StoppableWaitGroup) {
+	k.K8sSvcCache.UpdateEndpointSlicesV1(eps, swgEps)
+
+	if option.Config.BGPAnnounceLBIP {
+		k.bgpSpeakerManager.OnUpdateEndpointSliceV1(eps)
+	}
+}
+
+func (k *K8sWatcher) updateK8sEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice, swgEps *lock.StoppableWaitGroup) {
+	k.K8sSvcCache.UpdateEndpointSlicesV1Beta1(eps, swgEps)
+
+	if option.Config.BGPAnnounceLBIP {
+		k.bgpSpeakerManager.OnUpdateEndpointSliceV1Beta1(eps)
+	}
+}
+
+// initEndpointsOrSlices initializes either the "Endpoints" or "EndpointSlice"
+// resources for Kubernetes service backends.
+func (k *K8sWatcher) initEndpointsOrSlices(k8sClient kubernetes.Interface, serviceOptModifier func(*v1meta.ListOptions)) {
+	swgEps := lock.NewStoppableWaitGroup()
+	switch {
+	case k8s.SupportsEndpointSlice():
+		// We don't add the service option modifier here, as endpointslices do not
+		// mirror service proxy name label present in the corresponding service.
+		connected := k.endpointSlicesInit(k8sClient, swgEps)
+		// The cluster has endpoint slices so we should not check for v1.Endpoints
+		if connected {
+			break
+		}
+		fallthrough
+	default:
+		k.endpointsInit(k8sClient, swgEps, serviceOptModifier)
+	}
 }

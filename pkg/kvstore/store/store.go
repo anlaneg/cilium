@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package store
 
@@ -65,6 +54,10 @@ type Configuration struct {
 	// are synchronized with the kvstore. This parameter is optional.
 	SynchronizationInterval time.Duration
 
+	// SharedKeyDeleteDelay is the delay before an shared key delete is
+	// handled. This parameter is optional
+	SharedKeyDeleteDelay time.Duration
+
 	// KeyCreator is called to allocate a Key instance when a new shared
 	// key is discovered. This parameter is required.
 	KeyCreator KeyCreator
@@ -92,6 +85,10 @@ func (c *Configuration) validate() error {
 
 	if c.SynchronizationInterval == 0 {
 		c.SynchronizationInterval = option.Config.KVstorePeriodicSync
+	}
+
+	if c.SharedKeyDeleteDelay == 0 {
+		c.SharedKeyDeleteDelay = defaults.NodeDeleteDelay
 	}
 
 	if c.Backend == nil {
@@ -398,36 +395,6 @@ func (s *SharedStore) DeleteLocalKey(ctx context.Context, key NamedKey) {
 	}
 }
 
-// getLocalKeys returns all local keys
-func (s *SharedStore) getLocalKeys() []Key {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	keys := make([]Key, len(s.localKeys))
-	idx := 0
-	for _, key := range s.localKeys {
-		keys[idx] = key
-		idx++
-	}
-
-	return keys
-}
-
-// getSharedKeys returns all shared keys
-func (s *SharedStore) getSharedKeys() []Key {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	keys := make([]Key, len(s.sharedKeys))
-	idx := 0
-	for _, key := range s.sharedKeys {
-		keys[idx] = key
-		idx++
-	}
-
-	return keys
-}
-
 func (s *SharedStore) getLogger() *logrus.Entry {
 	return log.WithFields(logrus.Fields{
 		"storeName": s.name,
@@ -456,13 +423,13 @@ func (s *SharedStore) deleteSharedKey(name string) {
 
 	if ok {
 		go func() {
-			time.Sleep(defaults.NodeDeleteDelay)
+			time.Sleep(s.conf.SharedKeyDeleteDelay)
 			s.mutex.RLock()
 			_, ok := s.sharedKeys[name]
 			s.mutex.RUnlock()
 			if ok {
-				log.Warningf("Received node delete event for node %s which re-appeared within %s",
-					name, defaults.NodeDeleteDelay)
+				s.getLogger().WithFields(logrus.Fields{"key": name, "timeWindow": s.conf.SharedKeyDeleteDelay}).
+					Warning("Received delete event for key which re-appeared within delay time window")
 				return
 			}
 
@@ -475,7 +442,7 @@ func (s *SharedStore) deleteSharedKey(name string) {
 }
 
 func (s *SharedStore) listAndStartWatcher() error {
-	listDone := make(chan bool)
+	listDone := make(chan struct{})
 
 	go s.watcher(listDone)
 
@@ -488,7 +455,7 @@ func (s *SharedStore) listAndStartWatcher() error {
 	return nil
 }
 
-func (s *SharedStore) watcher(listDone chan bool) {
+func (s *SharedStore) watcher(listDone chan struct{}) {
 	s.kvstoreWatcher = s.backend.ListAndWatch(s.conf.Context, s.name+"-watcher", s.conf.Prefix, watcherChanSize)
 
 	for event := range s.kvstoreWatcher.Events {

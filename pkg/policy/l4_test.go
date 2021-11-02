@@ -1,17 +1,7 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2020 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -30,7 +20,7 @@ import (
 
 func (s *PolicyTestSuite) TestCreateL4Filter(c *C) {
 	tuple := api.PortProtocol{Port: "80", Protocol: api.ProtoTCP}
-	portrule := api.PortRule{
+	portrule := &api.PortRule{
 		Ports: []api.PortProtocol{tuple},
 		Rules: &api.L7Rules{
 			HTTP: []api.PortRuleHTTP{
@@ -48,7 +38,7 @@ func (s *PolicyTestSuite) TestCreateL4Filter(c *C) {
 		// Regardless of ingress/egress, we should end up with
 		// a single L7 rule whether the selector is wildcarded
 		// or if it is based on specific labels.
-		filter, err := createL4IngressFilter(testPolicyContext, eps, false, portrule, tuple, tuple.Protocol, nil)
+		filter, err := createL4IngressFilter(testPolicyContext, eps, nil, portrule, tuple, tuple.Protocol, nil)
 		c.Assert(err, IsNil)
 		c.Assert(len(filter.L7RulesPerSelector), Equals, 1)
 		c.Assert(filter.IsEnvoyRedirect(), Equals, true)
@@ -64,7 +54,7 @@ func (s *PolicyTestSuite) TestCreateL4Filter(c *C) {
 
 func (s *PolicyTestSuite) TestCreateL4FilterMissingSecret(c *C) {
 	tuple := api.PortProtocol{Port: "80", Protocol: api.ProtoTCP}
-	portrule := api.PortRule{
+	portrule := &api.PortRule{
 		Ports: []api.PortProtocol{tuple},
 		TerminatingTLS: &api.TLSContext{
 			Secret: &api.Secret{
@@ -87,7 +77,7 @@ func (s *PolicyTestSuite) TestCreateL4FilterMissingSecret(c *C) {
 		// Regardless of ingress/egress, we should end up with
 		// a single L7 rule whether the selector is wildcarded
 		// or if it is based on specific labels.
-		_, err := createL4IngressFilter(testPolicyContext, eps, false, portrule, tuple, tuple.Protocol, nil)
+		_, err := createL4IngressFilter(testPolicyContext, eps, nil, portrule, tuple, tuple.Protocol, nil)
 		c.Assert(err, Not(IsNil))
 
 		_, err = createL4EgressFilter(testPolicyContext, eps, portrule, tuple, tuple.Protocol, nil, nil)

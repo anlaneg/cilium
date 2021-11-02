@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _gsg_ipam_crd:
 
@@ -30,9 +30,9 @@ Enable CRD IPAM mode
 
 #. Validate that the CRD has been registered:
 
-   ::
+   .. code-block:: shell-session
 
-	   kubectl get crds
+	   $ kubectl get crds
 	   NAME                              CREATED AT
 	   [...]
 	   ciliumnodes.cilium.io             2019-06-08T12:26:41Z
@@ -40,7 +40,7 @@ Enable CRD IPAM mode
 Create a CiliumNode CR
 ======================
 
-#. Import the following custom resource to make t
+#. Import the following custom resource to make IPs available in the Cilium agent.
 
    .. code-block:: yaml
 
@@ -50,7 +50,7 @@ Create a CiliumNode CR
              name: "k8s1"
            spec:
              ipam:
-               available:
+               pool:
                  192.168.1.1: {}
                  192.168.1.2: {}
                  192.168.1.3: {}
@@ -58,9 +58,9 @@ Create a CiliumNode CR
 
 #. Validate that Cilium has started up correctly
 
-   ::
+   .. code-block:: shell-session
 
-           cilium status --all-addresses
+           $ cilium status --all-addresses
            KVStore:                Ok   etcd: 1/1 connected, has-quorum=true: https://192.168.33.11:2379 - 3.3.12 (Leader)
            [...]
            IPAM:                   IPv4: 2/4 allocated,
@@ -70,9 +70,9 @@ Create a CiliumNode CR
 
 #. Validate the ``status.IPAM.used`` section:
 
-   ::
+   .. code-block:: shell-session
 
-       kubectl get cn k8s1 -o yaml
+       $ kubectl get cn k8s1 -o yaml
        apiVersion: cilium.io/v2
        kind: CiliumNode
        metadata:
@@ -80,7 +80,7 @@ Create a CiliumNode CR
          [...]
        spec:
          ipam:
-           available:
+           pool:
              192.168.1.1: {}
              192.168.1.2: {}
              192.168.1.3: {}
@@ -92,3 +92,7 @@ Create a CiliumNode CR
                owner: router
              192.168.1.3:
                owner: health
+
+.. note::
+
+    At the moment only single IP addresses are allowed. CIDR's are not supported.

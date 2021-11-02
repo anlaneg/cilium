@@ -1,39 +1,29 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
 package loader
 
 import (
 	"fmt"
-	"reflect"
+	"net"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/mac"
+	"github.com/cilium/cilium/pkg/maps/callsmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 const (
-	CallsMapName = "cilium_calls_"
-
-	templateSecurityID = identity.ReservedIdentityWorld
-	templateLxcID      = uint16(65535)
+	templateSecurityID          = identity.ReservedIdentityWorld
+	templateLxcID               = uint16(65535)
+	templatePolicyVerdictFilter = uint32(0xffff)
 )
 
 var (
@@ -44,7 +34,8 @@ var (
 
 	elfMapPrefixes = []string{
 		policymap.MapName,
-		CallsMapName,
+		callsmap.MapName,
+		callsmap.CustomCallsMapName,
 	}
 	elfCtMapPrefixes = []string{
 		ctmap.MapNameTCP4,
@@ -69,7 +60,10 @@ var (
 // program directly to a device, that there are no unintended consequences such
 // as allowing traffic to leak out with routable addresses.
 type templateCfg struct {
-	datapath.EndpointConfiguration
+	// CompileTimeConfiguration passes through directly to the underlying
+	// endpoint configuration, while the rest of the EndpointConfiguration
+	// interface is implemented directly here through receiver functions.
+	datapath.CompileTimeConfiguration
 	stats *metrics.SpanStat
 }
 
@@ -97,6 +91,13 @@ func (t *templateCfg) GetIdentity() identity.NumericIdentity {
 	return templateSecurityID
 }
 
+// GetIdentityLocked is identical to GetIdentity(). This is a temporary
+// function until WriteEndpointConfig() no longer assumes that the endpoint is
+// locked.
+func (t *templateCfg) GetIdentityLocked() identity.NumericIdentity {
+	return templateSecurityID
+}
+
 // GetNodeMAC returns a well-known dummy MAC address which may be later
 // substituted in the ELF.
 func (t *templateCfg) GetNodeMAC() mac.MAC {
@@ -117,17 +118,24 @@ func (t *templateCfg) IPv6Address() addressing.CiliumIPv6 {
 	return addressing.CiliumIPv6(templateIPv6)
 }
 
+// GetPolicyVerdictLogFilter returns an uint32 filter to ensure
+// that the filter is non-zero as per the requirements
+// described in the structure definition.
+func (t *templateCfg) GetPolicyVerdictLogFilter() uint32 {
+	return templatePolicyVerdictFilter
+}
+
 // wrap takes an endpoint configuration and optional stats tracker and wraps
 // it inside a templateCfg which hides static data from callers that wish to
 // generate header files based on the configuration, substituting it for
 // template data.
-func wrap(cfg datapath.EndpointConfiguration, stats *metrics.SpanStat) *templateCfg {
+func wrap(cfg datapath.CompileTimeConfiguration, stats *metrics.SpanStat) *templateCfg {
 	if stats == nil {
 		stats = &metrics.SpanStat{}
 	}
 	return &templateCfg{
-		EndpointConfiguration: cfg,
-		stats:                 stats,
+		CompileTimeConfiguration: cfg,
+		stats:                    stats,
 	}
 }
 
@@ -136,9 +144,17 @@ func wrap(cfg datapath.EndpointConfiguration, stats *metrics.SpanStat) *template
 // endpoint.
 func elfMapSubstitutions(ep datapath.Endpoint) map[string]string {
 	result := make(map[string]string)
-
 	epID := uint16(ep.GetID())
+
 	for _, name := range elfMapPrefixes {
+		if ep.IsHost() && name == callsmap.MapName {
+			name = callsmap.HostMapName
+		}
+		// Custom calls for hosts are not supported yet.
+		if name == callsmap.CustomCallsMapName &&
+			(!option.Config.EnableCustomCalls || ep.IsHost()) {
+			continue
+		}
 		templateStr := bpf.LocalMapName(name, templateLxcID)
 		desiredStr := bpf.LocalMapName(name, epID)
 		result[templateStr] = desiredStr
@@ -151,7 +167,13 @@ func elfMapSubstitutions(ep datapath.Endpoint) map[string]string {
 		}
 	}
 
-	result[policymap.CallString(templateLxcID)] = policymap.CallString(epID)
+	// The policy map is only used for the host endpoint is per-endpoint
+	// routes and the host firewall are enabled.
+	if !ep.IsHost() ||
+		(option.Config.EnableEndpointRoutes && option.Config.EnableHostFirewall) {
+		result[policymap.CallString(templateLxcID)] = policymap.CallString(epID)
+	}
+
 	return result
 }
 
@@ -164,7 +186,7 @@ func sliceToU16(input []byte) uint16 {
 
 // sliceToBe16 converts the input slice of two bytes to a big-endian uint16.
 func sliceToBe16(input []byte) uint16 {
-	return byteorder.HostToNetwork(sliceToU16(input)).(uint16)
+	return byteorder.HostToNetwork16(sliceToU16(input))
 }
 
 // sliceToU32 converts the input slice of four bytes to a uint32.
@@ -178,7 +200,7 @@ func sliceToU32(input []byte) uint32 {
 
 // sliceToBe32 converts the input slice of four bytes to a big-endian uint32.
 func sliceToBe32(input []byte) uint32 {
-	return byteorder.HostToNetwork(sliceToU32(input)).(uint32)
+	return byteorder.HostToNetwork32(sliceToU32(input))
 }
 
 // elfVariableSubstitutions returns the set of data substitutions that must
@@ -195,17 +217,31 @@ func elfVariableSubstitutions(ep datapath.Endpoint) map[string]uint32 {
 		result["LXC_IP_4"] = sliceToBe32(ipv6[12:16])
 	}
 	if ipv4 := ep.IPv4Address(); ipv4 != nil {
-		result["LXC_IPV4"] = byteorder.HostSliceToNetwork(ipv4, reflect.Uint32).(uint32)
+		result["LXC_IPV4"] = byteorder.NetIPv4ToHost32(net.IP(ipv4))
 	}
 
 	mac := ep.GetNodeMAC()
 	result["NODE_MAC_1"] = sliceToBe32(mac[0:4])
 	result["NODE_MAC_2"] = uint32(sliceToBe16(mac[4:6]))
-	result["LXC_ID"] = uint32(ep.GetID())
+
+	if ep.IsHost() {
+		if option.Config.EnableNodePort {
+			result["NATIVE_DEV_IFINDEX"] = 0
+		}
+		if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
+			if option.Config.EnableIPv4 {
+				result["IPV4_MASQUERADE"] = 0
+			}
+		}
+		result["SECCTX_FROM_IPCACHE"] = uint32(SecctxFromIpcacheDisabled)
+	} else {
+		result["LXC_ID"] = uint32(ep.GetID())
+	}
+
 	identity := ep.GetIdentity().Uint32()
 	result["SECLABEL"] = identity
-	result["SECLABEL_NB"] = byteorder.HostToNetwork(identity).(uint32)
-
+	result["SECLABEL_NB"] = byteorder.HostToNetwork32(identity)
+	result["POLICY_VERDICT_LOG_FILTER"] = ep.GetPolicyVerdictLogFilter()
 	return result
 
 }

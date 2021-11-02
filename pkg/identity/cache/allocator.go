@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cache
 
@@ -237,7 +226,7 @@ func (m *CachingIdentityAllocator) InitIdentityAllocator(client clientset.Interf
 // CachingIdentityAllocator.
 func NewCachingIdentityAllocator(owner IdentityAllocatorOwner) *CachingIdentityAllocator {
 	watcher := identityWatcher{
-		stopChan: make(chan bool),
+		stopChan: make(chan struct{}),
 		owner:    owner,
 	}
 
@@ -300,13 +289,18 @@ func (m *CachingIdentityAllocator) WaitForInitialGlobalIdentities(ctx context.Co
 // re-used and reference counting is performed, otherwise a new identity is
 // allocated via the kvstore.
 func (m *CachingIdentityAllocator) AllocateIdentity(ctx context.Context, lbls labels.Labels, notifyOwner bool) (id *identity.Identity, allocated bool, err error) {
+	isNewLocally := false
+
 	// Notify the owner of the newly added identities so that the
 	// cached identities can be updated ASAP, rather than just
 	// relying on the kv-store update events.
 	defer func() {
-		if err == nil && allocated {
-			metrics.IdentityCount.Inc()
-			if notifyOwner {
+		if err == nil {
+			if allocated || isNewLocally {
+				metrics.Identity.Inc()
+			}
+
+			if allocated && notifyOwner {
 				added := IdentityCache{
 					id.ID: id.LabelArray,
 				}
@@ -349,9 +343,12 @@ func (m *CachingIdentityAllocator) AllocateIdentity(ctx context.Context, lbls la
 		return nil, false, fmt.Errorf("allocator not initialized")
 	}
 
-	idp, isNew, err := m.IdentityAllocator.Allocate(ctx, GlobalIdentity{lbls.LabelArray()})
+	idp, isNew, isNewLocally, err := m.IdentityAllocator.Allocate(ctx, GlobalIdentity{lbls.LabelArray()})
 	if err != nil {
 		return nil, false, err
+	}
+	if idp > identity.MaxNumericIdentity {
+		return nil, false, fmt.Errorf("%d: numeric identity too large", idp)
 	}
 
 	if option.Config.Debug {
@@ -359,6 +356,7 @@ func (m *CachingIdentityAllocator) AllocateIdentity(ctx context.Context, lbls la
 			logfields.Identity:       idp,
 			logfields.IdentityLabels: lbls.String(),
 			"isNew":                  isNew,
+			"isNewLocally":           isNewLocally,
 		}).Debug("Resolved identity")
 	}
 
@@ -371,7 +369,7 @@ func (m *CachingIdentityAllocator) AllocateIdentity(ctx context.Context, lbls la
 func (m *CachingIdentityAllocator) Release(ctx context.Context, id *identity.Identity) (released bool, err error) {
 	defer func() {
 		if released {
-			metrics.IdentityCount.Dec()
+			metrics.Identity.Dec()
 		}
 	}()
 

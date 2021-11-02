@@ -1,17 +1,6 @@
-// Copyright 2019 Authors of Cilium
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 // Copyright 2017 Lyft, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipam
 
@@ -21,8 +10,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/cilium/cilium/pkg/controller"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
-	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/trigger"
 
@@ -30,54 +20,14 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// k8sImplementation defines the interface used to interact with the k8s
+// CiliumNodeGetterUpdater defines the interface used to interact with the k8s
 // apiserver to retrieve and update the CiliumNode custom resource
-type k8sImplementation interface {
+type CiliumNodeGetterUpdater interface {
+	Create(node *v2.CiliumNode) (*v2.CiliumNode, error)
 	Update(origResource, newResource *v2.CiliumNode) (*v2.CiliumNode, error)
 	UpdateStatus(origResource, newResource *v2.CiliumNode) (*v2.CiliumNode, error)
 	Get(name string) (*v2.CiliumNode, error)
-}
-
-// PoolID is the type used to identify an IPAM pool
-type PoolID string
-
-// PoolQuota defines the limits of an IPAM pool
-type PoolQuota struct {
-	// AvailabilityZone is the availability zone in which the IPAM pool resides in
-	AvailabilityZone string
-
-	// AvailableIPs is the number of available IPs in the pool
-	AvailableIPs int
-}
-
-// PoolQuotaMap is a map of pool quotas indexes by pool identifier
-type PoolQuotaMap map[PoolID]PoolQuota
-
-// AllocationLimits defines the pre-allocation limits in which IPAM operations
-// are performed. This defines the size of the buffer a node will maintain to
-// have IPs available for immediate use without requiring to perform IP
-// allocation via an external component.
-type AllocationLimits interface {
-	// GetMaxAboveWatermark returns the maximum number of addresses to
-	// allocate beyond the addresses needed to reach the PreAllocate
-	// watermark.  Going above the watermark can help reduce the number of
-	// API calls to allocate IPs, e.g. when a new interface is allocated,
-	// as many secondary IPs as possible are allocated. Limiting the amount
-	// can help reduce waste of IPs.
-	GetMaxAboveWatermark() int
-
-	// GetPreAllocate returns the number of IP addresses that must be
-	// available for immediate use by the node. It defines the buffer of
-	// addresses available immediately without requiring cilium-operator to
-	// get involved.
-	GetPreAllocate() int
-
-	// GetMinAllocate returns the minimum number of IPs that must be
-	// allocated when the node is first bootstrapped. It defines the
-	// minimum base socket of addresses that must be available. After
-	// reaching this watermark, the PreAllocate and MaxAboveWatermark logic
-	// takes over to continue allocating IPs.
-	GetMinAllocate() int
+	Delete(name string) error
 }
 
 // NodeOperations is the interface an IPAM implementation must provide in order
@@ -88,26 +38,12 @@ type AllocationLimits interface {
 // NodeOperations implementation which performs operations in the context of
 // that node.
 type NodeOperations interface {
-	AllocationLimits
-
 	// UpdateNode is called when an update to the CiliumNode is received.
-	// Node.mutex will remain locked while UpdateNode is being called.
 	UpdatedNode(obj *v2.CiliumNode)
 
 	// PopulateStatusFields is called to give the implementation a chance
 	// to populate any implementation specific fields in CiliumNode.Status.
-	// Node.mutex will remain locked while this function is called.
 	PopulateStatusFields(resource *v2.CiliumNode)
-
-	// PopulateSpecFields is called to give the implementation a chance
-	// to populate any implementation specific fields in CiliumNode.Spec.
-	// Node.mutex will remain locked while this function is called.
-	PopulateSpecFields(resource *v2.CiliumNode)
-
-	// LogFields is called to extend the logrus logger with implementation
-	// specific fields.  Node.mutex will remain locked while this function
-	// is called.
-	LogFields(log *logrus.Entry) *logrus.Entry
 
 	// CreateInterface is called to create a new interface. This is only
 	// done if PrepareIPAllocation indicates that no more IPs are available
@@ -115,21 +51,18 @@ type NodeOperations interface {
 	// interfaces are available for creation
 	// (AllocationAction.AvailableInterfaces > 0). This function must
 	// create the interface *and* allocate up to
-	// AllocationAction.MaxIPsToAllocate.  Node.mutex will remain locked
-	// while this function is called.
+	// AllocationAction.MaxIPsToAllocate.
 	CreateInterface(ctx context.Context, allocation *AllocationAction, scopedLog *logrus.Entry) (int, string, error)
 
 	// ResyncInterfacesAndIPs is called to synchronize the latest list of
 	// interfaces and IPs associated with the node. This function is called
 	// sparingly as this information is kept in sync based on the success
 	// of the functions AllocateIPs(), ReleaseIPs() and CreateInterface().
-	// Node.mutex will remain locked while this function is called.
 	ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, error)
 
 	// PrepareIPAllocation is called to calculate the number of IPs that
 	// can be allocated on the node and whether a new network interface
-	// must be attached to the node. Node.mutex will remain locked while
-	// this function is called.
+	// must be attached to the node.
 	PrepareIPAllocation(scopedLog *logrus.Entry) (*AllocationAction, error)
 
 	// AllocateIPs is called after invoking PrepareIPAllocation and needs
@@ -144,6 +77,14 @@ type NodeOperations interface {
 	// ReleaseIPs is called after invoking PrepareIPRelease and needs to
 	// perform the release of IPs.
 	ReleaseIPs(ctx context.Context, release *ReleaseAction) error
+
+	// GetMaximumAllocatableIPv4 returns the maximum amount of IPv4 addresses
+	// that can be allocated to the instance
+	GetMaximumAllocatableIPv4() int
+
+	// GetMinimumAllocatableIPv4 returns the minimum amount of IPv4 addresses that
+	// must be allocated to the instance.
+	GetMinimumAllocatableIPv4() int
 }
 
 // AllocationImplementation is the interface an implementation must provide.
@@ -158,7 +99,7 @@ type AllocationImplementation interface {
 
 	// GetPoolQuota is called to retrieve the remaining IP addresses in all
 	// IP pools known to the IPAM implementation.
-	GetPoolQuota() PoolQuotaMap
+	GetPoolQuota() ipamTypes.PoolQuotaMap
 
 	// Resync is called periodically to give the IPAM implementation a
 	// chance to resync its own state with external APIs or systems. It is
@@ -186,18 +127,19 @@ type nodeMap map[string]*Node
 
 // NodeManager manages all nodes with ENIs
 type NodeManager struct {
-	mutex            lock.RWMutex
-	nodes            nodeMap
-	instancesAPI     AllocationImplementation
-	k8sAPI           k8sImplementation
-	metricsAPI       MetricsAPI
-	resyncTrigger    *trigger.Trigger
-	parallelWorkers  int64
-	releaseExcessIPs bool
+	mutex              lock.RWMutex
+	nodes              nodeMap
+	instancesAPI       AllocationImplementation
+	k8sAPI             CiliumNodeGetterUpdater
+	metricsAPI         MetricsAPI
+	resyncTrigger      *trigger.Trigger
+	parallelWorkers    int64
+	releaseExcessIPs   bool
+	stableInstancesAPI bool
 }
 
 // NewNodeManager returns a new NodeManager
-func NewNodeManager(instancesAPI AllocationImplementation, k8sAPI k8sImplementation, metrics MetricsAPI, parallelWorkers int64, releaseExcessIPs bool) (*NodeManager, error) {
+func NewNodeManager(instancesAPI AllocationImplementation, k8sAPI CiliumNodeGetterUpdater, metrics MetricsAPI, parallelWorkers int64, releaseExcessIPs bool) (*NodeManager, error) {
 	if parallelWorkers < 1 {
 		parallelWorkers = 1
 	}
@@ -216,8 +158,9 @@ func NewNodeManager(instancesAPI AllocationImplementation, k8sAPI k8sImplementat
 		MinInterval:     10 * time.Millisecond,
 		MetricsObserver: metrics.ResyncTrigger(),
 		TriggerFunc: func(reasons []string) {
-			syncTime := instancesAPI.Resync(context.TODO())
-			mngr.Resync(context.TODO(), syncTime)
+			if syncTime, ok := mngr.instancesAPIResync(context.TODO()); ok {
+				mngr.Resync(context.TODO(), syncTime)
+			}
 		},
 	})
 	if err != nil {
@@ -225,8 +168,61 @@ func NewNodeManager(instancesAPI AllocationImplementation, k8sAPI k8sImplementat
 	}
 
 	mngr.resyncTrigger = resyncTrigger
+	// Assume readiness, the initial blocking resync in Start() will update
+	// the readiness
+	mngr.SetInstancesAPIReadiness(true)
 
 	return mngr, nil
+}
+
+func (n *NodeManager) instancesAPIResync(ctx context.Context) (time.Time, bool) {
+	syncTime := n.instancesAPI.Resync(ctx)
+	success := !syncTime.IsZero()
+	n.SetInstancesAPIReadiness(success)
+	return syncTime, success
+}
+
+// Start kicks of the NodeManager by performing the initial state
+// synchronization and starting the background sync go routine
+func (n *NodeManager) Start(ctx context.Context) error {
+	// Trigger the initial resync in a blocking manner
+	if _, ok := n.instancesAPIResync(ctx); !ok {
+		return fmt.Errorf("Initial synchronization with instances API failed")
+	}
+
+	// Start an interval based  background resync for safety, it will
+	// synchronize the state regularly and resolve eventual deficit if the
+	// event driven trigger fails, and also release excess IP addresses
+	// if release-excess-ips is enabled
+	go func() {
+		mngr := controller.NewManager()
+		mngr.UpdateController("ipam-node-interval-refresh",
+			controller.ControllerParams{
+				RunInterval: time.Minute,
+				DoFunc: func(ctx context.Context) error {
+					if syncTime, ok := n.instancesAPIResync(ctx); ok {
+						n.Resync(ctx, syncTime)
+					}
+					return nil
+				},
+			})
+	}()
+
+	return nil
+}
+
+// SetInstancesAPIReadiness sets the readiness state of the instances API
+func (n *NodeManager) SetInstancesAPIReadiness(ready bool) {
+	n.mutex.Lock()
+	n.stableInstancesAPI = ready
+	n.mutex.Unlock()
+}
+
+// InstancesAPIIsReady returns true if the instances API is stable and ready
+func (n *NodeManager) InstancesAPIIsReady() bool {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	return n.stableInstancesAPI
 }
 
 // GetNames returns the list of all node names
@@ -243,11 +239,22 @@ func (n *NodeManager) GetNames() (allNodeNames []string) {
 	return
 }
 
+func (n *NodeManager) Create(resource *v2.CiliumNode) bool {
+	return n.Update(resource)
+}
+
 // Update is called whenever a CiliumNode resource has been updated in the
 // Kubernetes apiserver
-func (n *NodeManager) Update(resource *v2.CiliumNode) bool {
+func (n *NodeManager) Update(resource *v2.CiliumNode) (nodeSynced bool) {
+	nodeSynced = true
 	n.mutex.Lock()
 	node, ok := n.nodes[resource.Name]
+	defer func() {
+		n.mutex.Unlock()
+		if nodeSynced {
+			nodeSynced = node.UpdatedResource(resource)
+		}
+	}()
 	if !ok {
 		node = &Node{
 			name:    resource.Name,
@@ -271,6 +278,17 @@ func (n *NodeManager) Update(resource *v2.CiliumNode) bool {
 			return false
 		}
 
+		retry, err := trigger.NewTrigger(trigger.Parameters{
+			Name:        fmt.Sprintf("ipam-pool-maintainer-%s-retry", resource.Name),
+			MinInterval: time.Minute, // large minimal interval to not retry too often
+			TriggerFunc: func(reasons []string) { poolMaintainer.Trigger() },
+		})
+		if err != nil {
+			node.logger().WithError(err).Error("Unable to create pool-maintainer-retry trigger")
+			return false
+		}
+		node.retry = retry
+
 		k8sSync, err := trigger.NewTrigger(trigger.Parameters{
 			Name:            fmt.Sprintf("ipam-node-k8s-sync-%s", resource.Name),
 			MinInterval:     10 * time.Millisecond,
@@ -291,9 +309,8 @@ func (n *NodeManager) Update(resource *v2.CiliumNode) bool {
 
 		log.WithField(fieldName, resource.Name).Info("Discovered new CiliumNode custom resource")
 	}
-	n.mutex.Unlock()
 
-	return node.UpdatedResource(resource)
+	return
 }
 
 // Delete is called after a CiliumNode resource has been deleted via the
@@ -361,39 +378,34 @@ type resyncStats struct {
 }
 
 func (n *NodeManager) resyncNode(ctx context.Context, node *Node, stats *resyncStats, syncTime time.Time) {
-	node.mutex.Lock()
-
-	if syncTime.After(node.resyncNeeded) {
-		node.loggerLocked().Debug("Resetting resyncNeeded")
-		node.resyncNeeded = time.Time{}
-	}
-
-	node.recalculateLocked()
+	node.updateLastResync(syncTime)
+	node.recalculate()
 	allocationNeeded := node.allocationNeeded()
 	releaseNeeded := node.releaseNeeded()
 	if allocationNeeded || releaseNeeded {
-		node.waitingForPoolMaintenance = true
+		node.requirePoolMaintenance()
 		node.poolMaintainer.Trigger()
 	}
 
+	nodeStats := node.Stats()
+
 	stats.mutex.Lock()
-	stats.totalUsed += node.stats.UsedIPs
-	availableOnNode := node.stats.AvailableIPs - node.stats.UsedIPs
+	stats.totalUsed += nodeStats.UsedIPs
+	availableOnNode := nodeStats.AvailableIPs - nodeStats.UsedIPs
 	stats.totalAvailable += availableOnNode
-	stats.totalNeeded += node.stats.NeededIPs
-	stats.remainingInterfaces += node.stats.RemainingInterfaces
+	stats.totalNeeded += nodeStats.NeededIPs
+	stats.remainingInterfaces += nodeStats.RemainingInterfaces
 	stats.nodes++
 
 	if allocationNeeded {
 		stats.nodesInDeficit++
 	}
 
-	if node.stats.RemainingInterfaces == 0 && availableOnNode == 0 {
+	if nodeStats.RemainingInterfaces == 0 && availableOnNode == 0 {
 		stats.nodesAtCapacity++
 	}
 
 	stats.mutex.Unlock()
-	node.mutex.Unlock()
 
 	node.k8sSync.Trigger()
 }

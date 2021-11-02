@@ -1,21 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
 import (
 	"fmt"
+	"net"
+	"time"
 
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
@@ -26,8 +17,9 @@ import (
 
 var _ = Describe("RuntimeLB", func() {
 	var (
-		vm          *helpers.SSHMeta
-		monitorStop = func() error { return nil }
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
+		monitorStop   = func() error { return nil }
 	)
 
 	BeforeAll(func() {
@@ -41,11 +33,12 @@ var _ = Describe("RuntimeLB", func() {
 	})
 
 	JustBeforeEach(func() {
-		monitorStop = vm.MonitorStart()
+		_, monitorStop = vm.MonitorStart()
+		testStartTime = time.Now()
 	})
 
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 		Expect(monitorStop()).To(BeNil(), "cannot stop monitor command")
 	})
 
@@ -68,8 +61,7 @@ var _ = Describe("RuntimeLB", func() {
 		for k, v := range images {
 			vm.ContainerCreate(k, v, helpers.CiliumDockerNetwork, fmt.Sprintf("-l id.%s", k))
 		}
-		epStatus := vm.WaitEndpointsReady()
-		Expect(epStatus).Should(BeTrue())
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoint are not ready after timeout")
 	}
 
 	deleteContainers := func() {
@@ -90,7 +82,7 @@ var _ = Describe("RuntimeLB", func() {
 		frontendAddress, err := vm.ServiceGetFrontendAddress(1)
 		Expect(err).Should(BeNil())
 		Expect(frontendAddress).To(ContainSubstring("[::]:80"),
-			"failed to retrieve frontend address: %q", result.Output())
+			"failed to retrieve frontend address: %q", result.GetStdOut())
 
 		//TODO: This need to be with Wait,Timeout
 		helpers.Sleep(5)
@@ -99,8 +91,8 @@ var _ = Describe("RuntimeLB", func() {
 
 		result = vm.ExecCilium("bpf lb list")
 		result.ExpectSuccess("bpf lb map cannot be retrieved correctly")
-		Expect(result.Output()).To(ContainSubstring("[::1]:90"), fmt.Sprintf(
-			"service backends not added to BPF map: %q", result.Output()))
+		Expect(result.Stdout()).To(ContainSubstring("[::1]:90"), fmt.Sprintf(
+			"service backends not added to BPF map: %q", result.GetStdOut()))
 
 		By("Adding services that should not be allowed")
 
@@ -161,8 +153,8 @@ var _ = Describe("RuntimeLB", func() {
 			Expect(err).Should(BeNil())
 
 			status := vm.ServiceAdd(svcID, service, []string{
-				fmt.Sprintf("%s:80", httpd1["IPv4"]),
-				fmt.Sprintf("%s:80", httpd2["IPv4"])})
+				net.JoinHostPort(httpd1["IPv4"], "80"),
+				net.JoinHostPort(httpd2["IPv4"], "80")})
 			status.ExpectSuccess("failed to create service %s=>{httpd1,httpd2}", service)
 
 			By("Making HTTP request via the service before restart")
@@ -190,7 +182,7 @@ var _ = Describe("RuntimeLB", func() {
 				"Service ids %s do not match old service ids %s", svcIds, oldSvcIds)
 			newSvc := vm.ServiceList()
 			newSvc.ExpectSuccess("Cannot retrieve service list after restart")
-			newSvc.ExpectEqual(oldSvc.Output().String(), "Service list does not match")
+			newSvc.ExpectEqual(oldSvc.Stdout(), "Service list does not match")
 
 			By("Checking that BPF LB maps match the service")
 
@@ -228,8 +220,7 @@ var _ = Describe("RuntimeLB", func() {
 		})
 
 		testServicesWithPolicies := func(svcPort int) {
-			ready := vm.WaitEndpointsReady()
-			Expect(ready).To(BeTrue())
+			Expect(vm.WaitEndpointsReady()).To(BeTrue(), "Endpoint are not ready after timeout")
 
 			httpd1, err := vm.ContainerInspectNet(helpers.Httpd1)
 			Expect(err).Should(BeNil())
@@ -238,13 +229,13 @@ var _ = Describe("RuntimeLB", func() {
 
 			By("Configuring services")
 
-			service1 := fmt.Sprintf("2.2.2.100:%d", svcPort)
-			service2 := fmt.Sprintf("[f00d::1:1]:%d", svcPort)
-			service3 := fmt.Sprintf("2.2.2.101:%d", svcPort)
+			service1 := net.JoinHostPort("2.2.2.100", fmt.Sprintf("%d", svcPort))
+			service2 := net.JoinHostPort("f00d::1:1", fmt.Sprintf("%d", svcPort))
+			service3 := net.JoinHostPort("2.2.2.101", fmt.Sprintf("%d", svcPort))
 			services := map[string]string{
-				service1: fmt.Sprintf("%s:80", httpd1[helpers.IPv4]),
-				service2: fmt.Sprintf("[%s]:80", httpd2[helpers.IPv6]),
-				service3: fmt.Sprintf("%s:80", httpd2[helpers.IPv4]),
+				service1: net.JoinHostPort(httpd1[helpers.IPv4], "80"),
+				service2: net.JoinHostPort(httpd2[helpers.IPv6], "80"),
+				service3: net.JoinHostPort(httpd2[helpers.IPv4], "80"),
 			}
 			svc := 100
 			for fe, be := range services {

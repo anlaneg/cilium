@@ -4,10 +4,6 @@
 
 Output shell completion code
 
-### Synopsis
-
-Output shell completion code
-
 ```
 cilium completion [shell] [flags]
 ```
@@ -47,6 +43,11 @@ cilium completion [shell] [flags]
 	  source '$HOME/.cilium/completion.zsh.inc'
 	  " >> $HOME/.zshrc
 	source $HOME/.zshrc
+
+# Installing fish completion on Linux/macOS
+## Write fish completion code to fish specific location
+	cilium completion fish > ~/.config/fish/completions/cilium.fish
+
 ```
 
 ### Options

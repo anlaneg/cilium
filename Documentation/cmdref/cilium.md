@@ -20,21 +20,25 @@ CLI for interacting with the local Cilium Agent
 ### SEE ALSO
 
 * [cilium bpf](../cilium_bpf)	 - Direct access to local BPF maps
-* [cilium cleanup](../cilium_cleanup)	 - Reset the agent state
+* [cilium cleanup](../cilium_cleanup)	 - Remove system state installed by Cilium at runtime
 * [cilium completion](../cilium_completion)	 - Output shell completion code
 * [cilium config](../cilium_config)	 - Cilium configuration options
 * [cilium debuginfo](../cilium_debuginfo)	 - Request available debugging information from agent
+* [cilium encrypt](../cilium_encrypt)	 - Manage transparent encryption
 * [cilium endpoint](../cilium_endpoint)	 - Manage endpoints
 * [cilium fqdn](../cilium_fqdn)	 - Manage fqdn proxy
 * [cilium identity](../cilium_identity)	 - Manage security identities
+* [cilium ip](../cilium_ip)	 - Manage IP addresses and associated information
 * [cilium kvstore](../cilium_kvstore)	 - Direct access to the kvstore
-* [cilium map](../cilium_map)	 - Access BPF maps
+* [cilium lrp](../cilium_lrp)	 - Manage local redirect policies
+* [cilium map](../cilium_map)	 - Access userspace cached content of BPF maps
 * [cilium metrics](../cilium_metrics)	 - Access metric status
 * [cilium monitor](../cilium_monitor)	 - Display BPF program events
 * [cilium node](../cilium_node)	 - Manage cluster nodes
 * [cilium policy](../cilium_policy)	 - Manage security policies
 * [cilium prefilter](../cilium_prefilter)	 - Manage XDP CIDR filters
 * [cilium preflight](../cilium_preflight)	 - cilium upgrade helper
+* [cilium recorder](../cilium_recorder)	 - Introspect or mangle pcap recorder
 * [cilium service](../cilium_service)	 - Manage services & loadbalancers
 * [cilium status](../cilium_status)	 - Display status of daemon
 * [cilium version](../cilium_version)	 - Print version information

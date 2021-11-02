@@ -1,28 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017, 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package envoy
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cilium/cilium/pkg/flowdebug"
+	kafka_api "github.com/cilium/cilium/pkg/policy/api/kafka"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 	"github.com/cilium/cilium/pkg/proxy/logger"
 
@@ -71,8 +62,7 @@ func StartAccessLogServer(stateDir string, xdsServer *XDSServer, endpointInfoReg
 			uc, err := accessLogListener.AcceptUnix()
 			if err != nil {
 				// These errors are expected when we are closing down
-				if strings.Contains(err.Error(), "closed network connection") ||
-					strings.Contains(err.Error(), "invalid argument") {
+				if errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EINVAL) {
 					break
 				}
 				log.WithError(err).Warn("Envoy: Failed to accept access log connection")
@@ -106,7 +96,7 @@ func (s *accessLogServer) accessLogger(conn *net.UnixConn) {
 			log.Warning("Envoy: Discarded truncated access log message")
 			continue
 		}
-		pblog := cilium.LogEntry{} // TODO: Support Kafka.
+		pblog := cilium.LogEntry{}
 		err = proto.Unmarshal(buf[:n], &pblog)
 		if err != nil {
 			log.WithError(err).Warning("Envoy: Discarded invalid access log message")
@@ -124,12 +114,13 @@ func (s *accessLogServer) accessLogger(conn *net.UnixConn) {
 			continue
 		}
 
-		s.logRecord(localEndpoint, &pblog)
+		logRecord(s.endpointInfoRegistry, localEndpoint, &pblog)
 	}
 }
 
-func (s *accessLogServer) logRecord(localEndpoint logger.EndpointUpdater, pblog *cilium.LogEntry) {
-	// TODO: Support Kafka.
+func logRecord(endpointInfoRegistry logger.EndpointInfoRegistry, localEndpoint logger.EndpointUpdater, pblog *cilium.LogEntry) {
+	var kafkaRecord *accesslog.LogRecordKafka
+	var kafkaTopics []string
 
 	var l7tags logger.LogTag
 	if http := pblog.GetHttp(); http != nil {
@@ -142,6 +133,20 @@ func (s *accessLogServer) logRecord(localEndpoint logger.EndpointUpdater, pblog 
 			MissingHeaders:  GetNetHttpHeaders(http.MissingHeaders),
 			RejectedHeaders: GetNetHttpHeaders(http.RejectedHeaders),
 		})
+	} else if kafka := pblog.GetKafka(); kafka != nil {
+		kafkaRecord = &accesslog.LogRecordKafka{
+			ErrorCode:     int(kafka.ErrorCode),
+			APIVersion:    int16(kafka.ApiVersion),
+			APIKey:        kafka_api.ApiKeyToString(int16(kafka.ApiKey)),
+			CorrelationID: kafka.CorrelationId,
+		}
+		if len(kafka.Topics) > 0 {
+			kafkaRecord.Topic.Topic = kafka.Topics[0]
+			if len(kafka.Topics) > 1 {
+				kafkaTopics = kafka.Topics[1:] // Rest of the topics
+			}
+		}
+		l7tags = logger.LogTags.Kafka(kafkaRecord)
 	} else if l7 := pblog.GetGenericL7(); l7 != nil {
 		l7tags = logger.LogTags.L7(&accesslog.LogRecordL7{
 			Proto:  l7.GetProto(),
@@ -158,7 +163,7 @@ func (s *accessLogServer) logRecord(localEndpoint logger.EndpointUpdater, pblog 
 		})
 	}
 
-	r := logger.NewLogRecord(s.endpointInfoRegistry, localEndpoint, GetFlowType(pblog), pblog.IsIngress,
+	r := logger.NewLogRecord(endpointInfoRegistry, localEndpoint, GetFlowType(pblog), pblog.IsIngress,
 		logger.LogTags.Timestamp(time.Unix(int64(pblog.Timestamp/1000000000), int64(pblog.Timestamp%1000000000))),
 		logger.LogTags.Verdict(GetVerdict(pblog), pblog.CiliumRuleRef),
 		logger.LogTags.Addressing(logger.AddressingInfo{
@@ -168,6 +173,12 @@ func (s *accessLogServer) logRecord(localEndpoint logger.EndpointUpdater, pblog 
 		}), l7tags)
 
 	r.Log()
+
+	// Each kafka topic needs to be logged separately, log the rest if any
+	for i := range kafkaTopics {
+		kafkaRecord.Topic.Topic = kafkaTopics[i]
+		r.Log()
+	}
 
 	// Update stats for the endpoint.
 	ingress := r.ObservationPoint == accesslog.Ingress

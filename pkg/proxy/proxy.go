@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package proxy
 
 import (
-	"context"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
@@ -30,6 +17,7 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/logger"
+	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/revert"
 
 	"github.com/sirupsen/logrus"
@@ -41,9 +29,6 @@ var (
 
 // field names used while logging
 const (
-	fieldMarker          = "marker"
-	fieldSocket          = "socket"
-	fieldFd              = "fd"
 	fieldProxyRedirectID = "id"
 
 	// portReuseDelay is the delay until a port is being reused
@@ -55,13 +40,17 @@ const (
 
 type DatapathUpdater interface {
 	InstallProxyRules(proxyPort uint16, ingress bool, name string) error
-	RemoveProxyRules(proxyPort uint16, ingress bool, name string) error
 	SupportsOriginalSourceAddr() bool
 }
 
 type ProxyPort struct {
 	// Listener name (immutable)
 	name string
+	// isStatic is true when the listener on the proxy port is incapable
+	// of stopping and/or being reconfigured with a new proxy port once it has been
+	// first started. Set 'true' by SetProxyPort(), which is only called for
+	// static listeners (currently only DNS proxy).
+	isStatic bool
 	// parser type this port applies to (immutable)
 	parserType policy.L7ParserType
 	// 'true' for ingress, 'false' for egress (immutable)
@@ -144,7 +133,7 @@ var (
 	// allocatedPorts is the map of all allocated proxy ports
 	allocatedPorts = make(map[uint16]struct{})
 
-	portRandomizer = rand.New(rand.NewSource(time.Now().UnixNano()))
+	portRandomizer = rand.NewSafeRand(time.Now().UnixNano())
 
 	// proxyPorts is a slice of all supported proxy ports
 	// The number and order of entries are fixed, and the fields
@@ -159,16 +148,6 @@ var (
 			parserType: policy.ParserTypeHTTP,
 			ingress:    true,
 			name:       "cilium-http-ingress",
-		},
-		{
-			parserType: policy.ParserTypeKafka,
-			ingress:    false,
-			name:       "cilium-kafka-egress",
-		},
-		{
-			parserType: policy.ParserTypeKafka,
-			ingress:    true,
-			name:       "cilium-kafka-ingress",
 		},
 		{
 			parserType: policy.ParserTypeDNS,
@@ -227,8 +206,10 @@ func allocatePort(port, min, max uint16) (uint16, error) {
 
 // Called with proxyPortsMutex held!
 func (pp *ProxyPort) reservePort() {
-	allocatedPorts[pp.proxyPort] = struct{}{}
-	pp.configured = true
+	if !pp.configured {
+		allocatedPorts[pp.proxyPort] = struct{}{}
+		pp.configured = true
+	}
 }
 
 // Called with proxyPortsMutex held!
@@ -239,6 +220,18 @@ func findProxyPort(name string) *ProxyPort {
 		}
 	}
 	return nil
+}
+
+// AckProxyPort() marks the proxy of the given type as successfully
+// created and creates or updates the datapath rules accordingly.
+func (p *Proxy) AckProxyPort(l7Type policy.L7ParserType, ingress bool) error {
+	proxyPortsMutex.Lock()
+	defer proxyPortsMutex.Unlock()
+	pp := getProxyPort(l7Type, ingress)
+	if pp == nil {
+		return proxyNotFoundError(l7Type, ingress)
+	}
+	return p.ackProxyPort(pp) // creates datapath rules, increases the reference count
 }
 
 // ackProxyPort() marks the proxy as successfully created and creates or updates the datapath rules
@@ -257,22 +250,17 @@ func (p *Proxy) ackProxyPort(pp *ProxyPort) error {
 		// in the datapath, but means that the datapath rules may exist even
 		// if the proxy is not currently configured.
 
-		// Remove old rules, if any and for different port
-		if pp.rulesPort != 0 && pp.rulesPort != pp.proxyPort {
-			scopedLog.Debugf("Removing old proxy port rules for %s:%d", pp.name, pp.rulesPort)
-			p.datapathUpdater.RemoveProxyRules(pp.rulesPort, pp.ingress, pp.name)
-			pp.rulesPort = 0
-		}
 		// Add new rules, if needed
 		if pp.rulesPort != pp.proxyPort {
+			// Add rules for the new port
 			// This should always succeed if we have managed to start-up properly
-			scopedLog.Debugf("Adding new proxy port rules for %s:%d", pp.name, pp.proxyPort)
+			scopedLog.Infof("Adding new proxy port rules for %s:%d", pp.name, pp.proxyPort)
 			err := p.datapathUpdater.InstallProxyRules(pp.proxyPort, pp.ingress, pp.name)
 			if err != nil {
-				return fmt.Errorf("Can't install proxy rules for %s: %s", pp.name, err)
+				return fmt.Errorf("Cannot install proxy rules for %s: %s", pp.name, err)
 			}
+			pp.rulesPort = pp.proxyPort
 		}
-		pp.rulesPort = pp.proxyPort
 	}
 	pp.nRedirects++
 	return nil
@@ -291,6 +279,9 @@ func (p *Proxy) releaseProxyPort(name string) error {
 
 	pp.nRedirects--
 	if pp.nRedirects == 0 {
+		if pp.isStatic {
+			return fmt.Errorf("Can't release proxy port: proxy %s on %d has a static listener", name, pp.proxyPort)
+		}
 		delete(allocatedPorts, pp.proxyPort)
 		// Force new port allocation the next time this ProxyPort is used.
 		pp.configured = false
@@ -307,7 +298,7 @@ func (p *Proxy) releaseProxyPort(name string) error {
 func getProxyPort(l7Type policy.L7ParserType, ingress bool) *ProxyPort {
 	portType := l7Type
 	switch l7Type {
-	case policy.ParserTypeDNS, policy.ParserTypeKafka, policy.ParserTypeHTTP:
+	case policy.ParserTypeDNS, policy.ParserTypeHTTP:
 	default:
 		// "Unknown" parsers are assumed to be Proxylib (TCP) parsers, which
 		// is registered with an empty string.
@@ -344,9 +335,10 @@ func GetProxyPort(l7Type policy.L7ParserType, ingress bool) (uint16, string, err
 	return 0, "", proxyNotFoundError(l7Type, ingress)
 }
 
-// SetProxyPort() marks the proxy 'name' as successfully created with proxy port 'port' and creates
-// or updates the datapath rules accordingly.
-// May only be called once per proxy.
+// SetProxyPort() marks the proxy 'name' as successfully created with proxy port 'port'.
+// Another call to AckProxyPort(name) is needed to update the datapath rules accordingly.
+// This should only be called for proxies that have a static listener that is already listening on
+// 'port'. May only be called once per proxy.
 func (p *Proxy) SetProxyPort(name string, port uint16) error {
 	proxyPortsMutex.Lock()
 	defer proxyPortsMutex.Unlock()
@@ -358,8 +350,9 @@ func (p *Proxy) SetProxyPort(name string, port uint16) error {
 		return fmt.Errorf("Can't set proxy port to %d: proxy %s is already configured on %d", port, name, pp.proxyPort)
 	}
 	pp.proxyPort = port
-	pp.configured = true
-	return p.ackProxyPort(pp)
+	pp.isStatic = true // prevents release of the proxy port
+	pp.reservePort()   // marks 'port' as reserved, 'pp' as configured
+	return nil
 }
 
 // ReinstallRules is called by daemon reconfiguration to re-install proxy ports rules that
@@ -372,8 +365,7 @@ func (p *Proxy) ReinstallRules() {
 			// This should always succeed if we have managed to start-up properly
 			err := p.datapathUpdater.InstallProxyRules(pp.rulesPort, pp.ingress, pp.name)
 			if err != nil {
-				proxyPortsMutex.Unlock()
-				panic(fmt.Sprintf("Can't install proxy rules for %s: %s", pp.name, err))
+				log.WithError(err).Errorf("Can't install proxy rules for %s", pp.name)
 			}
 		}
 	}
@@ -386,12 +378,16 @@ func (p *Proxy) ReinstallRules() {
 // The proxy listening port is returned, but proxy configuration on that port
 // may still be ongoing asynchronously. Caller should wait for successful completion
 // on 'wg' before assuming the returned proxy port is listening.
+// Caller must call exactly one of the returned functions:
+// - finalizeFunc to make the changes stick, or
+// - revertFunc to cancel the changes.
+// Called with 'localEndpoint' locked!
 func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEndpoint logger.EndpointUpdater,
 	wg *completion.WaitGroup) (proxyPort uint16, err error, finalizeFunc revert.FinalizeFunc, revertFunc revert.RevertFunc) {
 
 	p.mutex.Lock()
 	defer func() {
-		p.UpdateRedirectMetrics()
+		p.updateRedirectMetrics()
 		p.mutex.Unlock()
 		if err == nil && proxyPort == 0 {
 			panic("Trying to configure zero proxy port")
@@ -412,6 +408,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 			var implUpdateRevertFunc revert.RevertFunc
 			implUpdateRevertFunc, err = redir.implementation.UpdateRules(wg)
 			if err != nil {
+				redir.mutex.Unlock()
 				err = fmt.Errorf("unable to update existing redirect: %s", err)
 				return 0, err, nil, nil
 			}
@@ -472,9 +469,6 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 		case policy.ParserTypeDNS:
 			redir.implementation, err = createDNSRedirect(redir, dnsConfiguration{}, DefaultEndpointInfoRegistry)
 
-		case policy.ParserTypeKafka:
-			redir.implementation, err = createKafkaRedirect(redir, kafkaConfiguration{}, DefaultEndpointInfoRegistry)
-
 		case policy.ParserTypeHTTP:
 			redir.implementation, err = createEnvoyRedirect(redir, p.stateDir, p.XDSServer, p.datapathUpdater.SupportsOriginalSourceAddr(), wg)
 		default:
@@ -490,16 +484,17 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 			pp.reservePort()
 
 			revertStack.Push(func() error {
-				completionCtx, cancel := context.WithCancel(context.Background())
-				proxyWaitGroup := completion.NewWaitGroup(completionCtx)
-				err, finalize, _ := p.RemoveRedirect(id, proxyWaitGroup)
-				// Don't wait for an ACK. This is best-effort. Just clean up the completions.
-				cancel()
-				proxyWaitGroup.Wait() // Ignore the returned error.
-				if err == nil && finalize != nil {
-					finalize()
+				// Proxy port refcount has not been incremented yet, so it must not be decremented
+				// when reverting. Undo what we have done above.
+				p.mutex.Lock()
+				delete(p.redirects, id)
+				p.updateRedirectMetrics()
+				p.mutex.Unlock()
+				implFinalizeFunc, _ := redir.implementation.Close(wg)
+				if implFinalizeFunc != nil {
+					implFinalizeFunc()
 				}
-				return err
+				return nil
 			})
 
 			// Set the proxy port only after an ACK is received.
@@ -513,10 +508,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 				err := p.ackProxyPort(pp)
 				proxyPortsMutex.Unlock()
 				if err != nil {
-					// Finalize functions can't error out. This failure can only
-					// happen if there is an internal Cilium logic error regarding
-					// installation of iptables rules.
-					panic(err)
+					log.WithError(err).Errorf("Datapath proxy redirection cannot be enabled for %s, L7 proxy may be bypassed", pp.name)
 				}
 			}
 			// Must return the proxy port when successful
@@ -531,18 +523,19 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 	return 0, err, nil, nil
 }
 
-// RemoveRedirect removes an existing redirect.
+// RemoveRedirect removes an existing redirect that has been successfully created earlier.
 func (p *Proxy) RemoveRedirect(id string, wg *completion.WaitGroup) (error, revert.FinalizeFunc, revert.RevertFunc) {
 	p.mutex.Lock()
 	defer func() {
-		p.UpdateRedirectMetrics()
+		p.updateRedirectMetrics()
 		p.mutex.Unlock()
 	}()
 	return p.removeRedirect(id, wg)
 }
 
 // removeRedirect removes an existing redirect. p.mutex must be held
-// p.mutex must NOT be held when the returned finalize and revert functions are called!
+// p.mutex must NOT be held when the returned revert function is called!
+// proxyPortsMutex must NOT be held when the returned finalize function is called!
 func (p *Proxy) removeRedirect(id string, wg *completion.WaitGroup) (err error, finalizeFunc revert.FinalizeFunc, revertFunc revert.RevertFunc) {
 	log.WithField(fieldProxyRedirectID, id).
 		Debug("Removing proxy redirect")
@@ -611,7 +604,7 @@ func (p *Proxy) GetStatusModel() *models.ProxyStatus {
 	defer proxyPortsMutex.Unlock()
 
 	result := &models.ProxyStatus{
-		IP:             node.GetInternalIPv4().String(),
+		IP:             node.GetInternalIPv4Router().String(),
 		PortRange:      fmt.Sprintf("%d-%d", p.rangeMin, p.rangeMax),
 		TotalRedirects: int64(len(p.redirects)),
 	}
@@ -630,9 +623,9 @@ func (p *Proxy) GetStatusModel() *models.ProxyStatus {
 	return result
 }
 
-// UpdateRedirectMetrics updates the redirect metrics per application protocol
+// updateRedirectMetrics updates the redirect metrics per application protocol
 // in Prometheus. Lock needs to be held to call this function.
-func (p *Proxy) UpdateRedirectMetrics() {
+func (p *Proxy) updateRedirectMetrics() {
 	result := map[string]int{}
 	for _, redirect := range p.redirects {
 		result[string(redirect.listener.parserType)]++

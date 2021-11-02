@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+
+//go:build linux
 // +build linux
 
 package ipsec
@@ -78,13 +68,14 @@ func ipSecNewPolicy() *netlink.XfrmPolicy {
 	return &policy
 }
 
-func ipSecAttachPolicyTempl(policy *netlink.XfrmPolicy, keys *ipSecKey, srcIP, dstIP net.IP, spi bool) {
+func ipSecAttachPolicyTempl(policy *netlink.XfrmPolicy, keys *ipSecKey, srcIP, dstIP net.IP, spi bool, optional int) {
 	tmpl := netlink.XfrmPolicyTmpl{
-		Proto: netlink.XFRM_PROTO_ESP,
-		Mode:  netlink.XFRM_MODE_TUNNEL,
-		Reqid: keys.ReqID,
-		Dst:   dstIP,
-		Src:   srcIP,
+		Proto:    netlink.XFRM_PROTO_ESP,
+		Mode:     netlink.XFRM_MODE_TUNNEL,
+		Reqid:    keys.ReqID,
+		Dst:      dstIP,
+		Src:      srcIP,
+		Optional: optional,
 	}
 
 	if spi {
@@ -105,7 +96,7 @@ func ipSecJoinState(state *netlink.XfrmState, keys *ipSecKey) {
 	state.Reqid = keys.ReqID
 }
 
-func ipSecReplaceStateIn(remoteIP, localIP net.IP) (uint8, error) {
+func ipSecReplaceStateIn(remoteIP, localIP net.IP, zeroMark bool) (uint8, error) {
 	key := getIPSecKeys(localIP)
 	if key == nil {
 		return 0, fmt.Errorf("IPSec key missing")
@@ -118,7 +109,17 @@ func ipSecReplaceStateIn(remoteIP, localIP net.IP) (uint8, error) {
 		Value: linux_defaults.RouteMarkDecrypt,
 		Mask:  linux_defaults.IPsecMarkMaskIn,
 	}
-	state.OutputMark = linux_defaults.RouteMarkDecrypt
+	if zeroMark != true {
+		state.OutputMark = &netlink.XfrmMark{
+			Value: linux_defaults.RouteMarkDecrypt,
+			Mask:  linux_defaults.RouteMarkMask,
+		}
+	} else {
+		state.OutputMark = &netlink.XfrmMark{
+			Value: 0,
+			Mask:  linux_defaults.RouteMarkMask,
+		}
+	}
 
 	return key.Spi, netlink.XfrmStateAdd(state)
 }
@@ -137,20 +138,15 @@ func ipSecReplaceStateOut(remoteIP, localIP net.IP) (uint8, error) {
 		Value: ((spiWide << 12) | linux_defaults.RouteMarkEncrypt),
 		Mask:  linux_defaults.IPsecMarkMask,
 	}
-	state.OutputMark = linux_defaults.RouteMarkEncrypt
+	state.OutputMark = &netlink.XfrmMark{
+		Value: linux_defaults.RouteMarkEncrypt,
+		Mask:  linux_defaults.RouteMarkMask,
+	}
 	return key.Spi, netlink.XfrmStateAdd(state)
 }
 
-func ipSecReplacePolicyIn(src, dst *net.IPNet) error {
-	if err := ipSecReplacePolicyInFwd(src, dst, netlink.XFRM_DIR_IN); err != nil {
-		if !os.IsExist(err) {
-			return err
-		}
-	}
-	return ipSecReplacePolicyInFwd(src, dst, netlink.XFRM_DIR_FWD)
-}
-
-func ipSecReplacePolicyInFwd(src, dst *net.IPNet, dir netlink.Dir) error {
+func _ipSecReplacePolicyInFwd(src, dst, tmplSrc, tmplDst *net.IPNet, tunnel bool, dir netlink.Dir) error {
+	optional := int(0)
 	key := getIPSecKeys(dst.IP)
 	if key == nil {
 		return fmt.Errorf("IPSec key missing")
@@ -160,12 +156,47 @@ func ipSecReplacePolicyInFwd(src, dst *net.IPNet, dir netlink.Dir) error {
 	policy.Dir = dir
 	policy.Src = &net.IPNet{IP: src.IP.Mask(src.Mask), Mask: src.Mask}
 	policy.Dst = &net.IPNet{IP: dst.IP.Mask(dst.Mask), Mask: dst.Mask}
-	policy.Mark = &netlink.XfrmMark{
-		Value: linux_defaults.RouteMarkDecrypt,
-		Mask:  linux_defaults.IPsecMarkMaskIn,
+	if dir == netlink.XFRM_DIR_IN {
+		policy.Mark = &netlink.XfrmMark{
+			Mask: linux_defaults.IPsecMarkMaskIn,
+		}
+		if tunnel {
+			// Required as this policy with the following mark does not have a
+			// corresponding XFRM state matching it. The XFRM state for Dir=In
+			// has mark for decryption only. If we don't mark this optional,
+			// then we'll get a packet drop with the reason as
+			// XfrmInTmplMismatch.
+			optional = 1
+			policy.Mark.Value = linux_defaults.RouteMarkToProxy
+		} else {
+			policy.Mark.Value = linux_defaults.RouteMarkDecrypt
+		}
 	}
-	ipSecAttachPolicyTempl(policy, key, src.IP, dst.IP, false)
+	// We always make forward rules optional. The only reason we have these
+	// at all is to appease the XFRM route hooks, we don't really care about
+	// policy because Cilium BPF programs do that.
+	if dir == netlink.XFRM_DIR_FWD {
+		optional = 1
+		policy.Priority = linux_defaults.IPsecFwdPriority
+	}
+	ipSecAttachPolicyTempl(policy, key, tmplSrc.IP, tmplDst.IP, false, optional)
 	return netlink.XfrmPolicyUpdate(policy)
+}
+
+func ipSecReplacePolicyIn(src, dst, tmplSrc, tmplDst *net.IPNet, tunnel bool) error {
+	// In the case that Cilium is running in tunneling mode, we insert an
+	// additional In rule. It's for allowing traffic to the proxy in the
+	// case of L7 ingress.
+	if tunnel {
+		if err := _ipSecReplacePolicyInFwd(src, dst, tmplSrc, tmplDst, tunnel, netlink.XFRM_DIR_IN); err != nil {
+			return err
+		}
+	}
+	return _ipSecReplacePolicyInFwd(src, dst, tmplSrc, tmplDst, false, netlink.XFRM_DIR_IN)
+}
+
+func IpSecReplacePolicyFwd(src, dst, tmplSrc, tmplDst *net.IPNet) error {
+	return _ipSecReplacePolicyInFwd(src, dst, tmplSrc, tmplDst, false, netlink.XFRM_DIR_FWD)
 }
 
 func ipSecReplacePolicyOut(src, dst, tmplSrc, tmplDst *net.IPNet, dir IPSecDir) error {
@@ -192,11 +223,7 @@ func ipSecReplacePolicyOut(src, dst, tmplSrc, tmplDst *net.IPNet, dir IPSecDir) 
 		Value: ((spiWide << 12) | linux_defaults.RouteMarkEncrypt),
 		Mask:  linux_defaults.IPsecMarkMask,
 	}
-	if tmplSrc != nil && tmplDst != nil {
-		ipSecAttachPolicyTempl(policy, key, tmplSrc.IP, tmplDst.IP, true)
-	} else {
-		ipSecAttachPolicyTempl(policy, key, src.IP, dst.IP, true)
-	}
+	ipSecAttachPolicyTempl(policy, key, tmplSrc.IP, tmplDst.IP, true, 0)
 	return netlink.XfrmPolicyUpdate(policy)
 }
 
@@ -293,14 +320,11 @@ func ipsecDeleteXfrmPolicy(ip net.IP) {
  * State1(src=*,dst=10.182.0.1,spi=#spi,reqid=#reqid,...)
  * State2(src=*,dst=10.156.0.1,spi=#spi,reqid=#reqid,...)
  *
- * setMark is used to set output-marks and use table 200 post-encryption
- * This only applies to the subnet mode where sip/dip needs to be rewritten
- *
  * Design Note: For newer kernels a BPF xfrm interface would greatly simplify the
  * state space. Basic idea would be to reference a state using any key generated
  * from BPF program allowing for a single state per security ctx.
  */
-func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) {
+func UpsertIPsecEndpoint(local, remote, fwd *net.IPNet, dir IPSecDir, outputMark, tunnel bool) (uint8, error) {
 	var spi uint8
 	var err error
 
@@ -317,14 +341,19 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) 
 	 */
 	if !local.IP.Equal(remote.IP) {
 		if dir == IPSecDirIn || dir == IPSecDirBoth {
-			if spi, err = ipSecReplaceStateIn(local.IP, remote.IP); err != nil {
+			if spi, err = ipSecReplaceStateIn(local.IP, remote.IP, outputMark); err != nil {
 				if !os.IsExist(err) {
 					return 0, fmt.Errorf("unable to replace local state: %s", err)
 				}
 			}
-			if err = ipSecReplacePolicyIn(remote, local); err != nil {
+			if err = ipSecReplacePolicyIn(remote, local, remote, local, tunnel); err != nil {
 				if !os.IsExist(err) {
 					return 0, fmt.Errorf("unable to replace policy in: %s", err)
+				}
+			}
+			if err = IpSecReplacePolicyFwd(remote, fwd, remote, local); err != nil {
+				if !os.IsExist(err) {
+					return 0, fmt.Errorf("unable to replace policy fwd: %s", err)
 				}
 			}
 		}
@@ -336,7 +365,7 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) 
 				}
 			}
 
-			if err = ipSecReplacePolicyOut(local, remote, nil, nil, dir); err != nil {
+			if err = ipSecReplacePolicyOut(local, remote, local, remote, dir); err != nil {
 				if !os.IsExist(err) {
 					return 0, fmt.Errorf("unable to replace policy out: %s", err)
 				}
@@ -348,8 +377,8 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) 
 
 // UpsertIPsecEndpointPolicy adds a policy to the xfrm rules. Used to add a policy when the state
 // rule is already available.
-func UpsertIPsecEndpointPolicy(local, remote, localT, remoteT *net.IPNet, dir IPSecDir) error {
-	if err := ipSecReplacePolicyOut(local, remote, localT, remoteT, dir); err != nil {
+func UpsertIPsecEndpointPolicy(local, remote, localTmpl, remoteTmpl *net.IPNet, dir IPSecDir) error {
+	if err := ipSecReplacePolicyOut(local, remote, localTmpl, remoteTmpl, dir); err != nil {
 		if !os.IsExist(err) {
 			return fmt.Errorf("unable to replace templated policy out: %s", err)
 		}
@@ -365,13 +394,19 @@ func DeleteIPsecEndpoint(remote *net.IPNet) {
 
 func isXfrmPolicyCilium(policy netlink.XfrmPolicy) bool {
 	if policy.Mark == nil {
+		// Check if its our fwd rule, we don't have a mark
+		// on this rule so use priority.
+		if policy.Dir == netlink.XFRM_DIR_FWD &&
+			policy.Priority == linux_defaults.IPsecFwdPriority {
+			return true
+		}
 		return false
 	}
-	if policy.Mark.Mask != linux_defaults.RouteMarkMask {
-		return false
+
+	if (policy.Mark.Value & linux_defaults.RouteMarkDecrypt) != 0 {
+		return true
 	}
-	if policy.Mark.Value == linux_defaults.RouteMarkDecrypt ||
-		policy.Mark.Value == linux_defaults.RouteMarkEncrypt {
+	if (policy.Mark.Value & linux_defaults.RouteMarkEncrypt) != 0 {
 		return true
 	}
 	return false
@@ -381,11 +416,10 @@ func isXfrmStateCilium(state netlink.XfrmState) bool {
 	if state.Mark == nil {
 		return false
 	}
-	if state.Mark.Mask != linux_defaults.RouteMarkMask {
-		return false
+	if (state.Mark.Value & linux_defaults.RouteMarkDecrypt) != 0 {
+		return true
 	}
-	if state.Mark.Value == linux_defaults.RouteMarkDecrypt ||
-		state.Mark.Value == linux_defaults.RouteMarkEncrypt {
+	if (state.Mark.Value & linux_defaults.RouteMarkEncrypt) != 0 {
 		return true
 	}
 	return false
@@ -442,9 +476,7 @@ func LoadIPSecKeysFile(path string) (int, uint8, error) {
 func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 	var spi uint8
 	var keyLen int
-	scopedLog := log.WithFields(logrus.Fields{
-		"spi": spi,
-	})
+	scopedLog := log
 
 	if err := encrypt.MapCreate(); err != nil {
 		return 0, 0, fmt.Errorf("Encrypt map create failed: %v", err)
@@ -476,10 +508,10 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			offset = -1
 		}
 		if spiI > linux_defaults.IPsecMaxKeyVersion {
-			return 0, 0, fmt.Errorf("encryption Key space exhausted, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion, s[0])
+			return 0, 0, fmt.Errorf("encryption Key space exhausted, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[0])
 		}
 		if spiI == 0 {
-			return 0, 0, fmt.Errorf("zero is not a valid key to disable encryption use `--enable-ipsec=false`, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion, s[0])
+			return 0, 0, fmt.Errorf("zero is not a valid key to disable encryption use `--enable-ipsec=false`, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[0])
 		}
 		spi = uint8(spiI)
 
@@ -536,6 +568,11 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			}
 			ipSecKeysGlobal[""] = ipSecKey
 		}
+
+		scopedLog := log.WithFields(logrus.Fields{
+			"oldSPI": oldSpi,
+			"SPI":    spi,
+		})
 
 		// Detect a version change and call cleanup routine to remove old
 		// keys after a timeout period. We also want to ensure on restart

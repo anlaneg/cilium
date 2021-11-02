@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cache
 
@@ -120,8 +109,7 @@ func (l *localIdentityCache) release(id *identity.Identity) bool {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	stringRepresentation := string(id.Labels.SortedList())
-	if id, ok := l.identitiesByLabels[stringRepresentation]; ok {
+	if id, ok := l.identitiesByLabels[string(id.Labels.SortedList())]; ok {
 		switch {
 		case id.ReferenceCount > 1:
 			id.ReferenceCount--
@@ -155,8 +143,7 @@ func (l *localIdentityCache) lookup(lbls labels.Labels) *identity.Identity {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 
-	stringRepresentation := string(lbls.SortedList())
-	if id, ok := l.identitiesByLabels[stringRepresentation]; ok {
+	if id, ok := l.identitiesByLabels[string(lbls.SortedList())]; ok {
 		return id
 	}
 

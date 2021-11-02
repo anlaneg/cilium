@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package status
 
@@ -22,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/defaults"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -141,6 +131,8 @@ func (c *Collector) GetStaleProbes() map[string]time.Time {
 // spawnProbe starts a goroutine which invokes the probe at the particular interval.
 func (c *Collector) spawnProbe(p *Probe) {
 	go func() {
+		timer, stopTimer := inctimer.New()
+		defer stopTimer()
 		for {
 			c.runProbe(p)
 
@@ -148,12 +140,11 @@ func (c *Collector) spawnProbe(p *Probe) {
 			if p.Interval != nil {
 				interval = p.Interval(p.consecutiveFailures)
 			}
-
 			select {
 			case <-c.stop:
 				// collector is closed, stop looping
 				return
-			case <-time.After(interval):
+			case <-timer.After(interval):
 				// keep looping
 			}
 		}

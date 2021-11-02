@@ -1,25 +1,16 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2020 Authors of Cilium
 
 package datapath
 
 import (
 	"io"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/mac"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -37,11 +28,9 @@ type DeviceConfiguration interface {
 	GetOptions() *option.IntOptions
 }
 
-// EndpointConfiguration provides datapath implementations a clean interface
-// to access endpoint-specific configuration when configuring the datapath.
-type EndpointConfiguration interface {
-	DeviceConfiguration
-
+// LoadTimeConfiguration provides datapath implementations a clean interface
+// to access endpoint-specific configuration that can be changed at load time.
+type LoadTimeConfiguration interface {
 	// GetID returns a locally-significant endpoint identification number.
 	GetID() uint64
 	// StringID returns the string-formatted version of the ID from GetID().
@@ -49,9 +38,21 @@ type EndpointConfiguration interface {
 	// GetIdentity returns a globally-significant numeric security identity.
 	GetIdentity() identity.NumericIdentity
 
+	// GetIdentityLocked returns a globally-significant numeric security
+	// identity while assuming that the backing data structure is locked.
+	// This function should be removed in favour of GetIdentity()
+	GetIdentityLocked() identity.NumericIdentity
+
 	IPv4Address() addressing.CiliumIPv4
 	IPv6Address() addressing.CiliumIPv6
 	GetNodeMAC() mac.MAC
+}
+
+// CompileTimeConfiguration provides datapath implementations a clean interface
+// to access endpoint-specific configuration that can only be changed at
+// compile time.
+type CompileTimeConfiguration interface {
+	DeviceConfiguration
 
 	// TODO: Move this detail into the datapath
 	HasIpvlanDataPath() bool
@@ -74,6 +75,23 @@ type EndpointConfiguration interface {
 	// per endpoint route installed in the host's routing table to point to
 	// the endpoint's interface
 	RequireEndpointRoute() bool
+
+	// GetPolicyVerdictLogFilter returns the PolicyVerdictLogFilter for the endpoint
+	GetPolicyVerdictLogFilter() uint32
+
+	// IsHost returns true if the endpoint is the host endpoint.
+	IsHost() bool
+
+	// DisableSIPVerification returns true if the endpoint wishes to skip
+	// source IP verification
+	DisableSIPVerification() bool
+}
+
+// EndpointConfiguration provides datapath implementations a clean interface
+// to access endpoint-specific configuration when configuring the datapath.
+type EndpointConfiguration interface {
+	CompileTimeConfiguration
+	LoadTimeConfiguration
 }
 
 // ConfigWriter is anything which writes the configuration for various datapath
@@ -96,4 +114,23 @@ type ConfigWriter interface {
 	// WriteEndpointConfig writes the implementation-specific configuration
 	// of configurable options for the endpoint to the specified writer.
 	WriteEndpointConfig(w io.Writer, cfg EndpointConfiguration) error
+}
+
+// RemoteSNATDstAddrExclusionCIDRv4 returns a CIDR for SNAT exclusion. Any
+// packet sent from a local endpoint to an IP address belonging to the CIDR
+// should not be SNAT'd.
+func RemoteSNATDstAddrExclusionCIDRv4() *cidr.CIDR {
+	if c := option.Config.GetIPv4NativeRoutingCIDR(); c != nil {
+		// ipv4-native-routing-cidr is set, so use it
+		return c
+	}
+
+	return node.GetIPv4AllocRange()
+}
+
+// RemoteSNATDstAddrExclusionCIDRv6 returns a IPv6 CIDR for SNAT exclusion. Any
+// packet sent from a local endpoint to an IP address belonging to the CIDR
+// should not be SNAT'd.
+func RemoteSNATDstAddrExclusionCIDRv6() *cidr.CIDR {
+	return node.GetIPv6AllocRange()
 }

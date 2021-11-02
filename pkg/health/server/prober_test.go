@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package server
@@ -50,6 +40,26 @@ func makeHealthNode(nodeIdx, healthIdx int) (healthNode, net.IP, net.IP) {
 					Enabled: false,
 				},
 			},
+			HealthEndpointAddress: &models.NodeAddressing{
+				IPV4: &models.NodeAddressingElement{
+					IP:      healthIP,
+					Enabled: true,
+				},
+				IPV6: &models.NodeAddressingElement{
+					Enabled: false,
+				},
+			},
+		},
+	}, net.ParseIP(nodeIP), net.ParseIP(healthIP)
+}
+
+func makeHealthNodeNil(nodeIdx, healthIdx int) (healthNode, net.IP, net.IP) {
+	nodeIP := fmt.Sprintf("192.0.2.%d", nodeIdx)
+	healthIP := fmt.Sprintf("10.0.2.%d", healthIdx)
+	return healthNode{
+		NodeElement: &models.NodeElement{
+			Name:           fmt.Sprintf("node-%d", nodeIdx),
+			PrimaryAddress: nil,
 			HealthEndpointAddress: &models.NodeAddressing{
 				IPV4: &models.NodeAddressingElement{
 					IP:      healthIP,
@@ -171,4 +181,18 @@ func (s *HealthServerTestSuite) TestProbersetNodes(c *check.C) {
 		}},
 	}
 	c.Assert(sortNodes(nodes), checker.DeepEquals, sortNodes(expected))
+
+	// check if primary node is nil (it shouldn't show up)
+	node3, _, node3HealthIP := makeHealthNodeNil(1, 1)
+
+	newNodes3 := nodeMap{
+		ipString(node3.Name): node3,
+	}
+	nodes3 := newProber(&Server{}, newNodes3).getIPsByNode()
+	expected3 := map[string][]*net.IPAddr{
+		node3.Name: {{
+			IP: node3HealthIP,
+		}},
+	}
+	c.Assert(sortNodes(nodes3), checker.DeepEquals, sortNodes(expected3))
 }

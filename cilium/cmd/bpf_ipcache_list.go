@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -18,24 +7,20 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/maps/ipcache"
 
 	"github.com/spf13/cobra"
 )
 
 const (
-	ipAddrTitle          = "IP PREFIX/ADDRESS"
-	identityTitle        = "IDENTITY"
-	ipCacheListUsage     = "List endpoint IPs (local and remote) and their corresponding security identities.\n" + kernelVersionWarning
-	kernelVersionWarning = `
-Note that for Linux kernel versions between 4.11 and 4.15 inclusive, the native
-LPM map type used for implementing the IPCache does not provide the ability to
-walk / dump the entries, so on these kernel versions this tool will never
-return any entries, even if entries exist in the map. You may instead run:
-    cilium map get cilium_ipcache
-`
+	ipAddrTitle   = "IP PREFIX/ADDRESS"
+	identityTitle = "IDENTITY"
+)
+
+var (
+	ipCacheListUsage = "List endpoint IPs (local and remote) and their corresponding security identities.\n" + lpmKernelVersionWarning("cilium_ipcache")
 )
 
 var bpfIPCacheListCmd = &cobra.Command{
@@ -61,7 +46,7 @@ var bpfIPCacheListCmd = &cobra.Command{
 		}
 
 		if len(bpfIPCacheList) == 0 {
-			fmt.Fprintf(os.Stderr, "No entries found.\n%v\n", kernelVersionWarning)
+			fmt.Fprintf(os.Stderr, "No entries found.\n%v\n", lpmKernelVersionWarning("cilium_ipcache"))
 		} else {
 			TablePrinter(ipAddrTitle, identityTitle, bpfIPCacheList)
 		}

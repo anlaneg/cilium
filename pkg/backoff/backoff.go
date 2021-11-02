@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package backoff
 
@@ -18,17 +7,21 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/rand"
 	"time"
 
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/uuid"
+	"github.com/cilium/cilium/pkg/rand"
 
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "backoff")
+var (
+	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "backoff")
+
+	randGen = rand.NewSafeRand(time.Now().UnixNano())
+)
 
 // NodeManager is the interface required to implement cluster size dependent
 // intervals
@@ -78,7 +71,7 @@ func CalculateDuration(min, max time.Duration, factor float64, jitter bool, fail
 	}
 
 	if jitter {
-		t = rand.Float64()*(t-minFloat) + minFloat
+		t = randGen.Float64()*(t-minFloat) + minFloat
 	}
 
 	return time.Duration(t)
@@ -107,7 +100,7 @@ func (b *Exponential) Wait(ctx context.Context) error {
 // Duration returns the wait duration for the nth attempt
 func (b *Exponential) Duration(attempt int) time.Duration {
 	if b.Name == "" {
-		b.Name = uuid.NewUUID().String()
+		b.Name = uuid.New().String()
 	}
 
 	min := time.Duration(1) * time.Second

@@ -1,46 +1,41 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package endpoint
 
 import (
 	"context"
-	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/fake"
-	"github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
+	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
-	pkgLabels "github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/metrics"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/option"
+	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/testutils/allocator"
+
+	"github.com/prometheus/client_golang/prometheus"
 	. "gopkg.in/check.v1"
 )
 
@@ -64,7 +59,10 @@ type EndpointSuite struct {
 	OnQueueEndpointBuild      func(ctx context.Context, epID uint64) (func(), error)
 	OnRemoveFromEndpointQueue func(epID uint64)
 	OnGetCompilationLock      func() *lock.RWMutex
-	OnSendNotification        func(typ monitorAPI.AgentNotification, text string) error
+	OnSendNotification        func(msg monitorAPI.AgentNotifyMessage) error
+
+	// Metrics
+	collectors []prometheus.Collector
 }
 
 // suite can be used by testing.T benchmarks or tests as a mock regeneration.Owner
@@ -72,11 +70,23 @@ var suite = EndpointSuite{repo: policy.NewPolicyRepository(nil, nil)}
 var _ = Suite(&suite)
 
 func (s *EndpointSuite) SetUpSuite(c *C) {
+	ctmap.InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
 	s.repo = policy.NewPolicyRepository(nil, nil)
 	// GetConfig the default labels prefix filter
-	err := labels.ParseLabelPrefixCfg(nil, "")
+	err := labelsfilter.ParseLabelPrefixCfg(nil, "")
 	if err != nil {
 		panic("ParseLabelPrefixCfg() failed")
+	}
+
+	// Register metrics once before running the suite
+	_, s.collectors = metrics.CreateConfiguration([]string{"cilium_endpoint_state"})
+	metrics.MustRegister(s.collectors...)
+}
+
+func (s *EndpointSuite) TearDownSuite(c *C) {
+	// Unregister the metrics after the suite has finished
+	for _, c := range s.collectors {
+		metrics.Unregister(c)
 	}
 }
 
@@ -92,7 +102,7 @@ func (s *EndpointSuite) GetCompilationLock() *lock.RWMutex {
 	return nil
 }
 
-func (s *EndpointSuite) SendNotification(typ monitorAPI.AgentNotification, text string) error {
+func (s *EndpointSuite) SendNotification(msg monitorAPI.AgentNotifyMessage) error {
 	return nil
 }
 
@@ -100,10 +110,17 @@ func (s *EndpointSuite) Datapath() datapath.Datapath {
 	return s.datapath
 }
 
+func (s *EndpointSuite) GetDNSRules(epID uint16) restore.DNSRules {
+	return nil
+}
+
+func (s *EndpointSuite) RemoveRestoredDNSRules(epID uint16) {
+}
+
 func (s *EndpointSuite) SetUpTest(c *C) {
 	/* Required to test endpoint CEP policy model */
 	kvstore.SetupDummy("etcd")
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
 	<-mgr.InitIdentityAllocator(nil, nil)
@@ -218,23 +235,23 @@ func (s *EndpointSuite) TestEndpointUpdateLabels(c *C) {
 	e := NewEndpointWithState(s, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
 
 	// Test that inserting identity labels works
-	rev := e.replaceIdentityLabels(pkgLabels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	rev := e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(rev, Not(Equals), 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Test that nothing changes
-	rev = e.replaceIdentityLabels(pkgLabels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(rev, Equals, 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Remove one label, change the source and value of the other.
-	rev = e.replaceIdentityLabels(pkgLabels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
+	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
 	c.Assert(rev, Not(Equals), 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "nginx:foo=zop;")
 
 	// Test that inserting information labels works
-	e.replaceInformationLabels(pkgLabels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Remove one label, change the source and value of the other.
-	e.replaceInformationLabels(pkgLabels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
+	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
 	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo=zop;")
 }
 
@@ -243,115 +260,160 @@ func (s *EndpointSuite) TestEndpointState(c *C) {
 	e.unconditionalLock()
 	defer e.unlock()
 
-	e.state = StateWaitingForIdentity
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, false)
-	c.Assert(e.setState(StateReady, "test"), Equals, true)
-	e.state = StateWaitingForIdentity
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, false)
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, true)
-	e.state = StateWaitingForIdentity
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, false)
+	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateWaitingForIdentity, false)
 
-	e.state = StateReady
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, true)
-	e.state = StateReady
-	c.Assert(e.setState(StateReady, "test"), Equals, false)
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, true)
-	e.state = StateReady
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, true)
-	e.state = StateReady
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, false)
+	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateReady, true)
 
-	e.state = StateWaitingToRegenerate
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, true)
-	e.state = StateWaitingToRegenerate
-	c.Assert(e.setState(StateReady, "test"), Equals, false)
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, false)
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, true)
-	e.state = StateWaitingToRegenerate
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, false)
+	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateWaitingToRegenerate, false)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateDisconnecting, true)
 
-	e.state = StateRegenerating
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, true)
-	e.state = StateRegenerating
-	c.Assert(e.setState(StateReady, "test"), Equals, false)
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, true)
-	e.state = StateRegenerating
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, true)
-	e.state = StateRegenerating
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, false)
+	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateDisconnected, false)
 
-	e.state = StateDisconnecting
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, false)
-	c.Assert(e.setState(StateReady, "test"), Equals, false)
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, false)
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateReady, StateWaitingForIdentity, true)
+	assertStateTransition(c, e, e.setState, StateReady, StateReady, false)
+	assertStateTransition(c, e, e.setState, StateReady, StateWaitingToRegenerate, true)
+	assertStateTransition(c, e, e.setState, StateReady, StateRegenerating, false)
+	assertStateTransition(c, e, e.setState, StateReady, StateDisconnecting, true)
+	assertStateTransition(c, e, e.setState, StateReady, StateDisconnected, false)
 
-	e.state = StateDisconnected
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, false)
-	c.Assert(e.setState(StateReady, "test"), Equals, false)
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, false)
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, false)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingForIdentity, false)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateReady, false)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingToRegenerate, false)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateDisconnecting, true)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateDisconnected, false)
+
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateWaitingForIdentity, true)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateReady, false)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateWaitingToRegenerate, true)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateRegenerating, false)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateDisconnecting, true)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateDisconnected, false)
+
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateWaitingForIdentity, false)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateReady, false)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateWaitingToRegenerate, false)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateRegenerating, false)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnecting, false)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnected, true)
+
+	assertStateTransition(c, e, e.setState, StateDisconnected, StateWaitingForIdentity, false)
+	assertStateTransition(c, e, e.setState, StateDisconnected, StateReady, false)
+	assertStateTransition(c, e, e.setState, StateDisconnected, StateWaitingToRegenerate, false)
+	assertStateTransition(c, e, e.setState, StateDisconnected, StateRegenerating, false)
+	assertStateTransition(c, e, e.setState, StateDisconnected, StateDisconnecting, false)
+	assertStateTransition(c, e, e.setState, StateDisconnected, StateDisconnected, false)
+
+	// State transitions involving the "Invalid" state
+	assertStateTransition(c, e, e.setState, "", StateInvalid, false)
+	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateInvalid, true)
+	assertStateTransition(c, e, e.setState, StateInvalid, StateInvalid, false)
 
 	// Builder-specific transitions
-	e.state = StateWaitingToRegenerate
+
 	// Builder can't transition to ready from waiting-to-regenerate
 	// as (another) build is pending
-	c.Assert(e.BuilderSetStateLocked(StateReady, "test"), Equals, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateReady, false)
 	// Only builder knows when bpf regeneration starts
-	c.Assert(e.setState(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.BuilderSetStateLocked(StateRegenerating, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
+
 	// Builder does not trigger the need for regeneration
-	c.Assert(e.BuilderSetStateLocked(StateWaitingToRegenerate, "test"), Equals, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRegenerating, StateWaitingToRegenerate, false)
 	// Builder transitions to ready state after build is done
-	c.Assert(e.BuilderSetStateLocked(StateReady, "test"), Equals, true)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRegenerating, StateReady, true)
 
 	// Check that direct transition from restoring --> regenerating is valid.
-	e.state = StateRestoring
-	c.Assert(e.BuilderSetStateLocked(StateRegenerating, "test"), Equals, true)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRestoring, StateRegenerating, true)
 
 	// Typical lifecycle
-	e.state = ""
-	c.Assert(e.setState(StateWaitingForIdentity, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, "", StateWaitingForIdentity, true)
 	// Initial build does not change the state
-	c.Assert(e.BuilderSetStateLocked(StateRegenerating, "test"), Equals, false)
-	c.Assert(e.BuilderSetStateLocked(StateReady, "test"), Equals, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingForIdentity, StateRegenerating, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingForIdentity, StateReady, false)
 	// identity arrives
-	c.Assert(e.setState(StateReady, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateReady, true)
 	// a build is triggered after the identity is set
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateReady, StateWaitingToRegenerate, true)
 	// build starts
-	c.Assert(e.BuilderSetStateLocked(StateRegenerating, "test"), Equals, true)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
 	// another change arrives while building
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateRegenerating, StateWaitingToRegenerate, true)
 	// Builder's transition to ready fails due to the queued build
-	c.Assert(e.BuilderSetStateLocked(StateReady, "test"), Equals, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateReady, false)
 	// second build starts
-	c.Assert(e.BuilderSetStateLocked(StateRegenerating, "test"), Equals, true)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
 	// second build finishes
-	c.Assert(e.BuilderSetStateLocked(StateReady, "test"), Equals, true)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRegenerating, StateReady, true)
 	// endpoint is being deleted
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateReady, StateDisconnecting, true)
 	// parallel disconnect fails
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnected, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnecting, false)
+	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnected, true)
 
 	// Restoring state
-	e.state = StateRestoring
-	c.Assert(e.setState(StateWaitingToRegenerate, "test"), Equals, false)
-	c.Assert(e.setState(StateDisconnecting, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateRestoring, StateWaitingToRegenerate, false)
+	assertStateTransition(c, e, e.setState, StateRestoring, StateDisconnecting, true)
 
-	e.state = StateRestoring
-	c.Assert(e.setState(StateRestoring, "test"), Equals, true)
+	assertStateTransition(c, e, e.setState, StateRestoring, StateRestoring, true)
 
+	// Invalid state
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateInvalid, StateReady, false)
+	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateInvalid, false)
+}
+
+func assertStateTransition(c *C,
+	e *Endpoint, stateSetter func(toState State, reason string) bool,
+	from, to State,
+	success bool) {
+
+	e.state = from
+
+	currStateOldMetric := getMetricValue(e.state)
+	newStateOldMetric := getMetricValue(to)
+	got := stateSetter(to, "test")
+	currStateNewMetric := getMetricValue(from)
+	newStateNewMetric := getMetricValue(e.state)
+
+	c.Assert(got, Equals, success)
+
+	// Do not assert on metrics if the endpoint is not expected to transition.
+	if !success {
+		return
+	}
+
+	// If the state transition moves from itself to itself, we expect the
+	// metrics to be unchanged.
+	if from == to {
+		c.Assert(currStateOldMetric, Equals, currStateNewMetric)
+		c.Assert(newStateOldMetric, Equals, newStateNewMetric)
+	} else {
+		// Blank states don't have metrics so we skip over that; metric should
+		// be unchanged.
+		if from != "" {
+			c.Assert(currStateOldMetric-1, Equals, currStateNewMetric)
+		} else {
+			c.Assert(currStateOldMetric, Equals, currStateNewMetric)
+		}
+
+		// Don't assert on state transition that ends up in a final state, as
+		// the metric is not incremented in this case; metric should be
+		// unchanged.
+		if !isFinalState(to) {
+			c.Assert(newStateOldMetric+1, Equals, newStateNewMetric)
+		} else {
+			c.Assert(newStateOldMetric, Equals, newStateNewMetric)
+		}
+	}
+}
+
+func isFinalState(state State) bool {
+	return state == StateDisconnected || state == StateInvalid
+}
+
+func getMetricValue(state State) int64 {
+	return int64(metrics.GetGaugeValue(metrics.EndpointStateCount.WithLabelValues(string(state))))
 }
 
 func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
@@ -443,7 +505,8 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 func (s *EndpointSuite) TestProxyID(c *C) {
 	e := &Endpoint{ID: 123, policyRevision: 0}
 
-	id := e.ProxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true})
+	id := e.proxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true})
+	c.Assert(id, Not(Equals), "")
 	endpointID, ingress, protocol, port, err := policy.ParseProxyID(id)
 	c.Assert(endpointID, Equals, uint16(123))
 	c.Assert(ingress, Equals, true)
@@ -454,51 +517,51 @@ func (s *EndpointSuite) TestProxyID(c *C) {
 
 func TestEndpoint_GetK8sPodLabels(t *testing.T) {
 	type fields struct {
-		OpLabels pkgLabels.OpLabels
+		OpLabels labels.OpLabels
 	}
 	tests := []struct {
 		name   string
 		fields fields
-		want   pkgLabels.Labels
+		want   labels.Labels
 	}{
 		{
 			name: "has all k8s labels",
 			fields: fields{
-				OpLabels: pkgLabels.OpLabels{
-					OrchestrationInfo: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+				OpLabels: labels.OpLabels{
+					OrchestrationInfo: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 				},
 			},
-			want: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+			want: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 		},
 		{
 			name: "the namespace labels, service account and namespace should be ignored as they don't belong to pod labels",
 			fields: fields{
-				OpLabels: pkgLabels.OpLabels{
-					OrchestrationInfo: pkgLabels.Map2Labels(map[string]string{
+				OpLabels: labels.OpLabels{
+					OrchestrationInfo: labels.Map2Labels(map[string]string{
 						"foo":                                    "bar",
 						ciliumio.PodNamespaceMetaLabels + ".env": "prod",
 						ciliumio.PolicyLabelServiceAccount:       "default",
 						ciliumio.PodNamespaceLabel:               "default",
-					}, pkgLabels.LabelSourceK8s),
+					}, labels.LabelSourceK8s),
 				},
 			},
-			want: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+			want: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 		},
 		{
 			name: "labels with other source than k8s should also be ignored",
 			fields: fields{
-				OpLabels: pkgLabels.OpLabels{
-					OrchestrationInfo: pkgLabels.Map2Labels(map[string]string{
+				OpLabels: labels.OpLabels{
+					OrchestrationInfo: labels.Map2Labels(map[string]string{
 						"foo":                                    "bar",
 						ciliumio.PodNamespaceMetaLabels + ".env": "prod",
-					}, pkgLabels.LabelSourceK8s),
-					OrchestrationIdentity: pkgLabels.Map2Labels(map[string]string{
+					}, labels.LabelSourceK8s),
+					OrchestrationIdentity: labels.Map2Labels(map[string]string{
 						"foo2":                                   "bar",
 						ciliumio.PodNamespaceMetaLabels + ".env": "prod2",
-					}, pkgLabels.LabelSourceAny),
+					}, labels.LabelSourceAny),
 				},
 			},
-			want: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+			want: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 		},
 	}
 	for _, tt := range tests {
@@ -546,7 +609,7 @@ func (n *EndpointDeadlockEvent) Handle(ifc chan interface{}) {
 
 // This unit test is a bit weird - see
 // https://github.com/cilium/cilium/pull/8687 .
-func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponDeletion(c *C) {
+func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponStop(c *C) {
 	// Need to modify global configuration (hooray!), change back when test is
 	// done.
 	oldQueueSize := option.Config.EndpointQueueSize
@@ -618,21 +681,20 @@ func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponDeletion(c *C) {
 	// we need to assume that at least one event is being processed, and another
 	// one is pushed onto the endpoint's EventQueue.
 	<-ev2EnqueueCh
-	epDelComplete := make(chan struct{})
+	epStopComplete := make(chan struct{})
 
 	// Launch endpoint deletion async so that we do not deadlock (which is what
 	// this unit test is designed to test).
 	go func(ch chan struct{}) {
-		errors := ep.Delete(&monitorOwnerDummy{}, &ipReleaserDummy{}, &dummyManager{}, DeleteConfig{})
-		c.Assert(errors, Not(IsNil))
-		epDelComplete <- struct{}{}
-	}(epDelComplete)
+		ep.Stop()
+		epStopComplete <- struct{}{}
+	}(epStopComplete)
 
 	select {
 	case <-ctx.Done():
 		c.Log("endpoint deletion did not complete in time")
 		c.Fail()
-	case <-epDelComplete:
+	case <-epStopComplete:
 		// Success, do nothing.
 	}
 }
@@ -651,39 +713,25 @@ func BenchmarkEndpointGetModel(b *testing.B) {
 	}
 }
 
-type ipReleaserDummy struct{}
+// getK8sPodLabels returns all labels that exist in the endpoint and were
+// derived from k8s pod.
+func (e *Endpoint) getK8sPodLabels() labels.Labels {
+	e.unconditionalRLock()
+	defer e.runlock()
+	allLabels := e.OpLabels.AllLabels()
+	if allLabels == nil {
+		return nil
+	}
 
-func (i *ipReleaserDummy) ReleaseIP(ip net.IP) error {
-	return nil
-}
+	allLabelsFromK8s := allLabels.GetFromSource(labels.LabelSourceK8s)
 
-type monitorOwnerDummy struct{}
-
-func (m *monitorOwnerDummy) NotifyMonitorDeleted(e *Endpoint) {
-	return
-}
-
-type dummyManager struct{}
-
-func (d *dummyManager) AllocateID(id uint16) (uint16, error) {
-	return uint16(1), nil
-}
-
-func (d *dummyManager) RunK8sCiliumEndpointSync(*Endpoint) {
-}
-
-func (d *dummyManager) UpdateReferences(map[id.PrefixType]string, *Endpoint) {
-}
-
-func (d *dummyManager) UpdateIDReference(*Endpoint) {
-}
-
-func (d *dummyManager) RemoveReferences(map[id.PrefixType]string) {
-}
-
-func (d *dummyManager) RemoveID(uint16) {
-}
-
-func (d *dummyManager) ReleaseID(*Endpoint) error {
-	return nil
+	k8sEPPodLabels := labels.Labels{}
+	for k, v := range allLabelsFromK8s {
+		if !strings.HasPrefix(v.Key, ciliumio.PodNamespaceMetaLabels) &&
+			!strings.HasPrefix(v.Key, ciliumio.PolicyLabelServiceAccount) &&
+			!strings.HasPrefix(v.Key, ciliumio.PodNamespaceLabel) {
+			k8sEPPodLabels[k] = v
+		}
+	}
+	return k8sEPPodLabels
 }

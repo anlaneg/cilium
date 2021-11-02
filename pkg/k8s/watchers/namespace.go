@@ -1,16 +1,5 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2020 Authors of Cilium
 
 package watchers
 
@@ -18,20 +7,18 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/cilium/cilium/pkg/comparator"
 	"github.com/cilium/cilium/pkg/k8s"
 	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/k8s/informer"
-	"github.com/cilium/cilium/pkg/k8s/types"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/policy"
-	"github.com/cilium/cilium/pkg/serializer"
 
 	v1 "k8s.io/api/core/v1"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -39,13 +26,11 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, serNamespaces *serializer.FunctionQueue, asyncControllers *sync.WaitGroup) {
-
-	swgNamespaces := lock.NewStoppableWaitGroup()
+func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, asyncControllers *sync.WaitGroup) {
 	namespaceStore, namespaceController := informer.NewInformer(
 		cache.NewListWatchFromClient(k8sClient.CoreV1().RESTClient(),
 			"namespaces", v1.NamespaceAll, fields.Everything()),
-		&v1.Namespace{},
+		&slim_corev1.Namespace{},
 		0,
 		cache.ResourceEventHandlerFuncs{
 			// AddFunc does not matter since the endpoint will fetch
@@ -55,45 +40,31 @@ func (k *K8sWatcher) namespacesInit(k8sClient kubernetes.Interface, serNamespace
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				var valid, equal bool
 				defer func() { k.K8sEventReceived(metricNS, metricUpdate, valid, equal) }()
-				if oldNS := k8s.CopyObjToV1Namespace(oldObj); oldNS != nil {
-					valid = true
-					if newNS := k8s.CopyObjToV1Namespace(newObj); newNS != nil {
-						if k8s.EqualV1Namespace(oldNS, newNS) {
+				if oldNS := k8s.ObjToV1Namespace(oldObj); oldNS != nil {
+					if newNS := k8s.ObjToV1Namespace(newObj); newNS != nil {
+						valid = true
+						if oldNS.DeepEqual(newNS) {
 							equal = true
 							return
 						}
 
-						swgNamespaces.Add()
-						serNamespaces.Enqueue(func() error {
-							defer swgNamespaces.Done()
-							err := k.updateK8sV1Namespace(oldNS, newNS)
-							k.K8sEventProcessed(metricNS, metricUpdate, err == nil)
-							return nil
-						}, serializer.NoRetry)
+						err := k.updateK8sV1Namespace(oldNS, newNS)
+						k.K8sEventProcessed(metricNS, metricUpdate, err == nil)
 					}
 				}
 			},
 		},
-		k8s.ConvertToNamespace,
+		nil,
 	)
 
 	k.namespaceStore = namespaceStore
-	k.blockWaitGroupToSyncResources(wait.NeverStop, swgNamespaces, namespaceController, k8sAPIGroupNamespaceV1Core)
-	k.k8sAPIGroups.addAPI(k8sAPIGroupNamespaceV1Core)
+	k.blockWaitGroupToSyncResources(wait.NeverStop, nil, namespaceController.HasSynced, k8sAPIGroupNamespaceV1Core)
+	k.k8sAPIGroups.AddAPI(k8sAPIGroupNamespaceV1Core)
 	asyncControllers.Done()
 	namespaceController.Run(wait.NeverStop)
 }
 
-func (k *K8sWatcher) updateK8sV1Namespace(oldNS, newNS *types.Namespace) error {
-	if oldNS == nil || newNS == nil {
-		return nil
-	}
-
-	// We only care about label updates
-	if comparator.MapStringEquals(oldNS.GetLabels(), newNS.GetLabels()) {
-		return nil
-	}
-
+func (k *K8sWatcher) updateK8sV1Namespace(oldNS, newNS *slim_corev1.Namespace) error {
 	oldNSLabels := map[string]string{}
 	newNSLabels := map[string]string{}
 
@@ -107,8 +78,14 @@ func (k *K8sWatcher) updateK8sV1Namespace(oldNS, newNS *types.Namespace) error {
 	oldLabels := labels.Map2Labels(oldNSLabels, labels.LabelSourceK8s)
 	newLabels := labels.Map2Labels(newNSLabels, labels.LabelSourceK8s)
 
-	oldIdtyLabels, _ := labels.FilterLabels(oldLabels)
-	newIdtyLabels, _ := labels.FilterLabels(newLabels)
+	oldIdtyLabels, _ := labelsfilter.Filter(oldLabels)
+	newIdtyLabels, _ := labelsfilter.Filter(newLabels)
+
+	// Do not perform any other operations the the old labels are the same as
+	// the new labels
+	if oldIdtyLabels.DeepEqual(&newIdtyLabels) {
+		return nil
+	}
 
 	eps := k.endpointManager.GetEndpoints()
 	failed := false
@@ -130,11 +107,11 @@ func (k *K8sWatcher) updateK8sV1Namespace(oldNS, newNS *types.Namespace) error {
 }
 
 // GetCachedNamespace returns a namespace from the local store.
-func (k *K8sWatcher) GetCachedNamespace(namespace string) (*types.Namespace, error) {
+func (k *K8sWatcher) GetCachedNamespace(namespace string) (*slim_corev1.Namespace, error) {
 	<-k.controllersStarted
 	k.WaitForCacheSync(k8sAPIGroupNamespaceV1Core)
-	nsName := &types.Namespace{
-		ObjectMeta: meta_v1.ObjectMeta{
+	nsName := &slim_corev1.Namespace{
+		ObjectMeta: slim_metav1.ObjectMeta{
 			Name: namespace,
 		},
 	}
@@ -148,5 +125,5 @@ func (k *K8sWatcher) GetCachedNamespace(namespace string) (*types.Namespace, err
 			Resource: "namespace",
 		}, namespace)
 	}
-	return namespaceInterface.(*types.Namespace).DeepCopy(), nil
+	return namespaceInterface.(*slim_corev1.Namespace).DeepCopy(), nil
 }

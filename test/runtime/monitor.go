@@ -1,23 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -26,11 +14,6 @@ import (
 
 	. "github.com/onsi/gomega"
 )
-
-func init() {
-	// ensure that our random numbers are seeded differently on each run
-	rand.Seed(time.Now().UnixNano())
-}
 
 const (
 	// MonitorDropNotification represents the DropNotification configuration
@@ -44,18 +27,35 @@ const (
 
 var _ = Describe("RuntimeMonitorTest", func() {
 
-	var vm *helpers.SSHMeta
+	var (
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
+	)
 
 	BeforeAll(func() {
 		vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
 		ExpectCiliumReady(vm)
 
-		areEndpointsReady := vm.WaitEndpointsReady()
-		Expect(areEndpointsReady).Should(BeTrue())
+		dbgDone := vm.MonitorDebug(true, "")
+		Expect(dbgDone).Should(BeTrue())
+
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
+
+		endpoints, err := vm.GetEndpointsIds()
+		Expect(err).Should(BeNil())
+
+		for _, v := range endpoints {
+			dbgDone := vm.MonitorDebug(true, v)
+			Expect(dbgDone).Should(BeTrue())
+		}
+	})
+
+	JustBeforeEach(func() {
+		testStartTime = time.Now()
 	})
 
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 	})
 
 	AfterFailed(func() {
@@ -67,6 +67,17 @@ var _ = Describe("RuntimeMonitorTest", func() {
 	})
 
 	AfterAll(func() {
+		endpoints, err := vm.GetEndpointsIds()
+		Expect(err).Should(BeNil())
+
+		for _, v := range endpoints {
+			dbgDone := vm.MonitorDebug(false, v)
+			Expect(dbgDone).Should(BeTrue())
+		}
+
+		dbgDone := vm.MonitorDebug(false, "")
+		Expect(dbgDone).Should(BeTrue())
+
 		vm.CloseSSHClient()
 	})
 
@@ -94,11 +105,10 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			monitorConfig()
 
 			ctx, cancel := context.WithCancel(context.Background())
-			res := vm.ExecInBackground(ctx, "cilium monitor -v")
+			res := vm.ExecInBackground(ctx, "cilium monitor -vv")
 			defer cancel()
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue())
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			endpoints, err := vm.GetEndpointsIds()
 			Expect(err).Should(BeNil())
@@ -108,7 +118,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 				vm.ContainerExec(k, helpers.Ping(helpers.Httpd1))
 				Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 					"%q is not in the output after timeout", filter)
-				Expect(res.Output().String()).Should(ContainSubstring(filter))
+				Expect(res.Stdout()).Should(ContainSubstring(filter))
 			}
 		})
 
@@ -118,8 +128,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			_, err := vm.PolicyImportAndWait(vm.GetFullPath(policiesL3JSON), helpers.HelperTimeout)
 			Expect(err).Should(BeNil())
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			eventTypes := map[string]string{
 				"drop":    "DROP:",
@@ -132,7 +141,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				res := vm.ExecInBackground(ctx, fmt.Sprintf("cilium monitor --type %s -v", k))
+				res := vm.ExecInBackground(ctx, fmt.Sprintf("cilium monitor --type %s -vv", k))
 
 				vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 				vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
@@ -140,12 +149,12 @@ var _ = Describe("RuntimeMonitorTest", func() {
 				Expect(res.WaitUntilMatch(v)).To(BeNil(),
 					"%q is not in the output after timeout", v)
 				Expect(res.CountLines()).Should(BeNumerically(">", 3))
-				Expect(res.Output().String()).Should(ContainSubstring(v))
+				Expect(res.Stdout()).Should(ContainSubstring(v))
 				cancel()
 			}
 
 			By("all types together")
-			command := "cilium monitor -v"
+			command := "cilium monitor -vv"
 			for k := range eventTypes {
 				command = command + " --type " + k
 			}
@@ -156,8 +165,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			By(command)
 			res := vm.ExecInBackground(ctx, command)
 
-			areEndpointsReady = vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue())
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
@@ -165,7 +173,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			for _, v := range eventTypes {
 				Expect(res.WaitUntilMatch(v)).To(BeNil(),
 					"%q is not in the output after timeout", v)
-				Expect(res.Output().String()).Should(ContainSubstring(v))
+				Expect(res.Stdout()).Should(ContainSubstring(v))
 			}
 
 			Expect(res.CountLines()).Should(BeNumerically(">", 3))
@@ -174,8 +182,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 		It("cilium monitor check --from", func() {
 			monitorConfig()
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue())
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			endpoints, err := vm.GetEndpointsIds()
 			Expect(err).Should(BeNil())
@@ -184,24 +191,23 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			defer cancel()
 
 			res := vm.ExecInBackground(ctx, fmt.Sprintf(
-				"cilium monitor --type debug --from %s -v", endpoints[helpers.App1]))
+				"cilium monitor --type debug --from %s -vv", endpoints[helpers.App1]))
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 
 			filter := fmt.Sprintf("FROM %s DEBUG:", endpoints[helpers.App1])
 			Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 				"%q is not in the output after timeout", filter)
 			Expect(res.CountLines()).Should(BeNumerically(">", 3))
-			Expect(res.Output().String()).Should(ContainSubstring(filter))
+			Expect(res.Stdout()).Should(ContainSubstring(filter))
 
 			//MonitorDebug mode shouldn't have DROP lines
-			Expect(res.Output().String()).ShouldNot(ContainSubstring("DROP"))
+			Expect(res.Stdout()).ShouldNot(ContainSubstring("DROP"))
 		})
 
 		It("cilium monitor check --to", func() {
 			monitorConfig()
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue())
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			endpoints, err := vm.GetEndpointsIds()
 			Expect(err).Should(BeNil())
@@ -209,7 +215,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			res := vm.ExecInBackground(ctx, fmt.Sprintf(
-				"cilium monitor -v --to %s", endpoints[helpers.Httpd1]))
+				"cilium monitor -vv --to %s", endpoints[helpers.Httpd1]))
 
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 			vm.ContainerExec(helpers.App2, helpers.Ping(helpers.Httpd1))
@@ -218,14 +224,13 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 				"%q is not in the output after timeout", filter)
 			Expect(res.CountLines()).Should(BeNumerically(">=", 3))
-			Expect(res.Output().String()).Should(ContainSubstring(filter))
+			Expect(res.Stdout()).Should(ContainSubstring(filter))
 		})
 
 		It("cilium monitor check --related-to", func() {
 			monitorConfig()
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue())
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			endpoints, err := vm.GetEndpointsIds()
 			Expect(err).Should(BeNil())
@@ -233,7 +238,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			res := vm.ExecInBackground(ctx, fmt.Sprintf(
-				"cilium monitor -v --related-to %s", endpoints[helpers.Httpd1]))
+				"cilium monitor -vv --related-to %s", endpoints[helpers.Httpd1]))
 
 			vm.WaitEndpointsReady()
 			vm.ContainerExec(helpers.App1, helpers.CurlFail("http://httpd1/public"))
@@ -242,14 +247,13 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 				"%q is not in the output after timeout", filter)
 			Expect(res.CountLines()).Should(BeNumerically(">=", 3))
-			Expect(res.Output().String()).Should(ContainSubstring(filter))
+			Expect(res.Stdout()).Should(ContainSubstring(filter))
 		})
 
 		It("delivers the same information to multiple monitors", func() {
 			monitorConfig()
 
-			areEndpointsReady := vm.WaitEndpointsReady()
-			Expect(areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 			var monitorRes []*helpers.CmdRes
 			ctx, cancelfn := context.WithCancel(context.Background())
@@ -312,7 +316,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementAlways)
 
 			ctx, cancel := context.WithCancel(context.Background())
-			res := vm.ExecInBackground(ctx, "cilium monitor -v")
+			res := vm.ExecInBackground(ctx, "cilium monitor -vv")
 
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 			vm.ContainerExec(helpers.Httpd1, helpers.Ping(helpers.App1))
@@ -334,10 +338,8 @@ var _ = Describe("RuntimeMonitorTest", func() {
 					switch fields[i] {
 					case "FROM":
 						fromID = fields[i+1]
-						break
 					case "id":
 						toID = fields[i+1]
-						break
 					}
 				}
 				if fromID == "" || toID == "" {

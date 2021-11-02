@@ -1,21 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
 import (
 	"fmt"
+	"time"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 	"github.com/cilium/cilium/test/helpers/constants"
@@ -26,8 +17,9 @@ import (
 var _ = Describe("RuntimeCassandra", func() {
 
 	var (
-		vm          *helpers.SSHMeta
-		cassandraIP string
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
+		cassandraIP   string
 	)
 
 	containers := func(mode string) {
@@ -98,8 +90,7 @@ var _ = Describe("RuntimeCassandra", func() {
 		ExpectCiliumReady(vm)
 
 		containers("create")
-		epsReady := vm.WaitEndpointsReady()
-		Expect(epsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 
 		err := waitForCassandraServer()
 		Expect(err).To(BeNil(), "Cassandra Server failed to come up")
@@ -118,15 +109,19 @@ var _ = Describe("RuntimeCassandra", func() {
 		vm.CloseSSHClient()
 	})
 
+	JustBeforeEach(func() {
+		testStartTime = time.Now()
+	})
+
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 	})
 
 	AfterFailed(func() {
 		vm.ReportFailed("cilium policy get")
 	})
 
-	It("Tests policy allowing all actions", func() {
+	SkipItIf(helpers.SkipRaceDetectorEnabled, "Tests policy allowing all actions", func() {
 		_, err := vm.PolicyImportAndWait(vm.GetFullPath("Policies-cassandra-allow-all.json"), helpers.HelperTimeout)
 		Expect(err).Should(BeNil(), "Failed to import policy")
 
@@ -134,7 +129,7 @@ var _ = Describe("RuntimeCassandra", func() {
 		Expect(err).Should(BeNil(), "Cannot get endpoint list")
 		Expect(endPoints[helpers.Enabled]).To(Equal(1),
 			"Check number of endpoints with policy enforcement enabled")
-		Expect(endPoints[helpers.Disabled]).To(Equal(1),
+		Expect(endPoints[helpers.Disabled]).To(Equal(2),
 			"Check number of endpoints with policy enforcement disabled")
 
 		By("Inserting Value into Cassandra (no policy)")
@@ -147,7 +142,7 @@ var _ = Describe("RuntimeCassandra", func() {
 		r.ExpectContains("alice", "Did not get inserted data in select")
 	})
 
-	It("Tests policy disallowing Insert action", func() {
+	SkipItIf(helpers.SkipRaceDetectorEnabled, "Tests policy disallowing Insert action", func() {
 
 		_, err := vm.PolicyImportAndWait(vm.GetFullPath("Policies-cassandra-no-insert-posts.json"), helpers.HelperTimeout)
 		Expect(err).Should(BeNil(), "Failed to import policy")
@@ -156,7 +151,7 @@ var _ = Describe("RuntimeCassandra", func() {
 		Expect(err).Should(BeNil(), "Cannot get endpoint list")
 		Expect(endPoints[helpers.Enabled]).To(Equal(1),
 			"Check number of endpoints with policy enforcement enabled")
-		Expect(endPoints[helpers.Disabled]).To(Equal(1),
+		Expect(endPoints[helpers.Disabled]).To(Equal(2),
 			"Check number of endpoints with policy enforcement disabled")
 
 		By("Inserting Value into Cassandra (denied by policy)")
@@ -169,5 +164,4 @@ var _ = Describe("RuntimeCassandra", func() {
 		r.ExpectContains("alice", "Did not get inserted data in select")
 		r.ExpectDoesNotContain("bob", "Got value on select that should not have been inserted")
 	})
-
 })

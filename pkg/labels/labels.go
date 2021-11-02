@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package labels
 
 import (
-	"bytes"
 	"crypto/sha512"
 	"encoding/json"
 	"fmt"
@@ -65,6 +53,9 @@ const (
 var (
 	// LabelHealth is the label used for health.
 	LabelHealth = Labels{IDNameHealth: NewLabel(IDNameHealth, "", LabelSourceReserved)}
+
+	// LabelHost is the label used for the host endpoint.
+	LabelHost = Labels{IDNameHost: NewLabel(IDNameHost, "", LabelSourceReserved)}
 )
 
 const (
@@ -107,11 +98,13 @@ const (
 	LabelSourceCiliumGenerated = "cilium-generated"
 )
 
-// Label is the cilium's representation of a container label.
+// Label is the Cilium's representation of a container label.
 type Label struct {
 	Key   string `json:"key"`
 	Value string `json:"value,omitempty"`
-	// Source can be one of the values present in const.go (e.g.: LabelSourceContainer)
+	// Source can be one of the above values (e.g.: LabelSourceContainer).
+	//
+	// +kubebuilder:validation:Optional
 	Source string `json:"source"`
 }
 
@@ -247,9 +240,9 @@ func (l *Label) matches(target *Label) bool {
 // Source:Key if Value is empty.
 func (l *Label) String() string {
 	if len(l.Value) != 0 {
-		return fmt.Sprintf("%s:%s=%s", l.Source, l.Key, l.Value)
+		return l.Source + ":" + l.Key + "=" + l.Value
 	}
-	return fmt.Sprintf("%s:%s", l.Source, l.Key)
+	return l.Source + ":" + l.Key
 }
 
 // IsValid returns true if Key != "".
@@ -259,10 +252,8 @@ func (l *Label) IsValid() bool {
 
 // UnmarshalJSON TODO create better explanation about unmarshall with examples
 func (l *Label) UnmarshalJSON(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-
 	if l == nil {
-		return fmt.Errorf("cannot unmarhshal to nil pointer")
+		return fmt.Errorf("cannot unmarshal to nil pointer")
 	}
 
 	if len(data) == 0 {
@@ -275,7 +266,7 @@ func (l *Label) UnmarshalJSON(data []byte) error {
 		Value  string `json:"value,omitempty"`
 	}
 
-	err := decoder.Decode(&aux)
+	err := json.Unmarshal(data, &aux)
 	if err != nil {
 		// If parsing of the full representation failed then try the short
 		// form in the format:
@@ -283,8 +274,7 @@ func (l *Label) UnmarshalJSON(data []byte) error {
 		// [SOURCE:]KEY[=VALUE]
 		var aux string
 
-		decoder = json.NewDecoder(bytes.NewReader(data))
-		if err := decoder.Decode(&aux); err != nil {
+		if err := json.Unmarshal(data, &aux); err != nil {
 			return fmt.Errorf("decode of Label as string failed: %+v", err)
 		}
 
@@ -346,7 +336,7 @@ func GetExtendedKeyFrom(str string) string {
 // fmt.Printf("%+v\n", l)
 //   map[string]Label{"foo":Label{Key:"foo", Value:"bar", Source:"cilium"}}
 func Map2Labels(m map[string]string, source string) Labels {
-	o := Labels{}
+	o := make(Labels, len(m))
 	for k, v := range m {
 		l := NewLabel(k, v, source)
 		o[l.Key] = l
@@ -356,9 +346,22 @@ func Map2Labels(m map[string]string, source string) Labels {
 
 // StringMap converts Labels into map[string]string
 func (l Labels) StringMap() map[string]string {
-	o := map[string]string{}
+	o := make(map[string]string, len(l))
 	for _, v := range l {
 		o[v.Source+":"+v.Key] = v.Value
+	}
+	return o
+}
+
+// StringMap converts Labels into map[string]string
+func (l Labels) K8sStringMap() map[string]string {
+	o := make(map[string]string, len(l))
+	for _, v := range l {
+		if v.Source == LabelSourceK8s || v.Source == LabelSourceAny || v.Source == LabelSourceUnspec {
+			o[v.Key] = v.Value
+		} else {
+			o[v.Source+"."+v.Key] = v.Value
+		}
 	}
 	return o
 }
@@ -442,7 +445,7 @@ func (l Label) FormatForKVStore() string {
 // DO NOT BREAK THE FORMAT OF THIS. THE RETURNED STRING IS USED AS KEY IN
 // THE KEY-VALUE STORE.
 func (l Labels) SortedList() []byte {
-	var keys []string
+	keys := make([]string, 0, len(l))
 	for k := range l {
 		keys = append(keys, k)
 	}

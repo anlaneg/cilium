@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package loadinfo
 
@@ -19,12 +8,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
-	"github.com/shirou/gopsutil/load"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v3/load"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/process"
 	"github.com/sirupsen/logrus"
 )
 
@@ -97,15 +87,14 @@ func LogPeriodicSystemLoad(ctx context.Context, logFunc LogFunc, interval time.D
 	go func() {
 		LogCurrentSystemLoad(logFunc)
 
-		t := time.NewTimer(interval)
-		defer t.Stop()
+		timer, timerDone := inctimer.New()
+		defer timerDone()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
+			case <-timer.After(interval):
 				LogCurrentSystemLoad(logFunc)
-				t.Reset(interval)
 			}
 		}
 	}()

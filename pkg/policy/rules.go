@@ -1,23 +1,12 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2020 Authors of Cilium
 
 package policy
 
 import (
 	"fmt"
 
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 )
 
 // ruleSlice is a wrapper around a slice of *rule, which allows for functions
@@ -32,18 +21,23 @@ func (rules ruleSlice) resolveL4IngressPolicy(policyCtx PolicyContext, ctx *Sear
 
 	state := traceState{}
 	var matchedRules ruleSlice
-	var requirements []v1.LabelSelectorRequirement
+	var requirements, requirementsDeny []slim_metav1.LabelSelectorRequirement
 
 	// Iterate over all FromRequires which select ctx.To. These requirements
 	// will be appended to each EndpointSelector's MatchExpressions in
 	// each FromEndpoints for all ingress rules. This ensures that FromRequires
 	// is taken into account when evaluating policy at L4.
 	for _, r := range rules {
-		if ctx.rulesSelect || r.EndpointSelector.Matches(ctx.To) {
+		if ctx.rulesSelect || r.getSelector().Matches(ctx.To) {
 			matchedRules = append(matchedRules, r)
 			for _, ingressRule := range r.Ingress {
 				for _, requirement := range ingressRule.FromRequires {
 					requirements = append(requirements, requirement.ConvertToLabelSelectorRequirementSlice()...)
+				}
+			}
+			for _, ingressRule := range r.IngressDeny {
+				for _, requirement := range ingressRule.FromRequires {
+					requirementsDeny = append(requirementsDeny, requirement.ConvertToLabelSelectorRequirementSlice()...)
 				}
 			}
 		}
@@ -54,14 +48,11 @@ func (rules ruleSlice) resolveL4IngressPolicy(policyCtx PolicyContext, ctx *Sear
 	ctx.rulesSelect = true
 
 	for _, r := range matchedRules {
-		found, err := r.resolveIngressPolicy(policyCtx, ctx, &state, result, requirements)
+		_, err := r.resolveIngressPolicy(policyCtx, ctx, &state, result, requirements, requirementsDeny)
 		if err != nil {
 			return nil, err
 		}
 		state.ruleID++
-		if found != nil {
-			state.matchedRules++
-		}
 	}
 
 	state.trace(len(rules), ctx)
@@ -80,18 +71,23 @@ func (rules ruleSlice) resolveL4EgressPolicy(policyCtx PolicyContext, ctx *Searc
 
 	state := traceState{}
 	var matchedRules ruleSlice
-	var requirements []v1.LabelSelectorRequirement
+	var requirements, requirementsDeny []slim_metav1.LabelSelectorRequirement
 
 	// Iterate over all ToRequires which select ctx.To. These requirements will
 	// be appended to each EndpointSelector's MatchExpressions in each
 	// ToEndpoints for all egress rules. This ensures that ToRequires is
 	// taken into account when evaluating policy at L4.
 	for _, r := range rules {
-		if ctx.rulesSelect || r.EndpointSelector.Matches(ctx.From) {
+		if ctx.rulesSelect || r.getSelector().Matches(ctx.From) {
 			matchedRules = append(matchedRules, r)
 			for _, egressRule := range r.Egress {
 				for _, requirement := range egressRule.ToRequires {
 					requirements = append(requirements, requirement.ConvertToLabelSelectorRequirementSlice()...)
+				}
+			}
+			for _, egressRule := range r.EgressDeny {
+				for _, requirement := range egressRule.ToRequires {
+					requirementsDeny = append(requirementsDeny, requirement.ConvertToLabelSelectorRequirementSlice()...)
 				}
 			}
 		}
@@ -103,14 +99,11 @@ func (rules ruleSlice) resolveL4EgressPolicy(policyCtx PolicyContext, ctx *Searc
 
 	for i, r := range matchedRules {
 		state.ruleID = i
-		found, err := r.resolveEgressPolicy(policyCtx, ctx, &state, result, requirements)
+		_, err := r.resolveEgressPolicy(policyCtx, ctx, &state, result, requirements, requirementsDeny)
 		if err != nil {
 			return nil, err
 		}
 		state.ruleID++
-		if found != nil {
-			state.matchedRules++
-		}
 	}
 
 	state.trace(len(rules), ctx)
@@ -157,6 +150,10 @@ func (rules ruleSlice) updateEndpointsCaches(ep Endpoint) (bool, error) {
 	}
 	endpointSelected := false
 	for _, r := range rules {
+		// NodeSelector can only match nodes, EndpointSelector only pods.
+		if (r.NodeSelector.LabelSelector != nil) != ep.IsHost() {
+			continue
+		}
 		// Update the matches cache of each rule, and note if
 		// the ep is selected by any of them.
 		if ruleMatches := r.matches(securityIdentity); ruleMatches {

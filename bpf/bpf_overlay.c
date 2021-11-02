@@ -7,9 +7,21 @@
 #include <node_config.h>
 #include <netdev_config.h>
 
+#define IS_BPF_OVERLAY 1
+
+/* Controls the inclusion of the CILIUM_CALL_HANDLE_ICMP6_NS section in the
+ * bpf_lxc object file.
+ */
+#define SKIP_ICMPV6_NS_HANDLING
+
+/* Controls the inclusion of the CILIUM_CALL_SEND_ICMP6_ECHO_REPLY section in
+ * the bpf_lxc object file.
+ */
+#define SKIP_ICMPV6_ECHO_HANDLING
+
 #include "lib/tailcall.h"
-#include "lib/utils.h"
 #include "lib/common.h"
+#include "lib/edt.h"
 #include "lib/maps.h"
 #include "lib/ipv6.h"
 #include "lib/eth.h"
@@ -32,11 +44,11 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 	bool decrypted;
 
 	/* verifier workaround (dereference of modified ctx ptr) */
-	if (!revalidate_data_first(ctx, &data, &data_end, &ip6))
+	if (!revalidate_data_pull(ctx, &data, &data_end, &ip6))
 		return DROP_INVALID;
 #ifdef ENABLE_NODEPORT
 	if (!bpf_skip_nodeport(ctx)) {
-		int ret = nodeport_lb6(ctx, *identity);
+		ret = nodeport_lb6(ctx, *identity);
 		if (ret < 0)
 			return ret;
 	}
@@ -50,7 +62,7 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 
 	decrypted = ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT);
 	if (decrypted) {
-		*identity = get_identity(ctx);
+		*identity = key.tunnel_id = get_identity(ctx);
 	} else {
 		if (unlikely(ctx_get_tunnel_key(ctx, &key, sizeof(key), 0) < 0))
 			return DROP_NO_TUNNEL_KEY;
@@ -58,10 +70,10 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 
 		/* Any node encapsulating will map any HOST_ID source to be
 		 * presented as REMOTE_NODE_ID, therefore any attempt to signal
-		 * HOST_ID as source from a remote node can be droppped. */
-		if (*identity == HOST_ID) {
+		 * HOST_ID as source from a remote node can be dropped.
+		 */
+		if (*identity == HOST_ID)
 			return DROP_INVALID_IDENTITY;
-		}
 	}
 
 	cilium_dbg(ctx, DBG_DECAP, key.tunnel_id, key.tunnel_label);
@@ -79,7 +91,7 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 
 		/* Decrypt "key" is determined by SPI */
 		ctx->mark = MARK_MAGIC_DECRYPT;
-		set_identity(ctx, key.tunnel_id);
+		set_identity_mark(ctx, *identity);
 		/* To IPSec stack on cilium_vxlan we are going to pass
 		 * this up the stack but eth_type_trans has already labeled
 		 * this as an OTHERHOST type packet. To avoid being dropped
@@ -88,36 +100,42 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 		 */
 		ctx_change_type(ctx, PACKET_HOST);
 		return CTX_ACT_OK;
-	} else {
-		key.tunnel_id = get_identity(ctx);
-		ctx->mark = 0;
 	}
+	ctx->mark = 0;
 not_esp:
 #endif
 
 	/* Lookup IPv6 address in list of local endpoints */
-	if ((ep = lookup_ip6_endpoint(ip6)) != NULL) {
-		/* Let through packets to the node-ip so they are
-		 * processed by the local ip stack */
+	ep = lookup_ip6_endpoint(ip6);
+	if (ep) {
+		__u8 nexthdr;
+
+		/* Let through packets to the node-ip so they are processed by
+		 * the local ip stack.
+		 */
 		if (ep->flags & ENDPOINT_F_HOST)
 			goto to_host;
 
-		__u8 nexthdr = ip6->nexthdr;
+		nexthdr = ip6->nexthdr;
 		hdrlen = ipv6_hdrlen(ctx, l3_off, &nexthdr);
 		if (hdrlen < 0)
 			return hdrlen;
 
-		return ipv6_local_delivery(ctx, l3_off, key.tunnel_id, ep, METRIC_INGRESS);
+		return ipv6_local_delivery(ctx, l3_off, *identity, ep,
+					   METRIC_INGRESS, false);
 	}
 
+	/* A packet entering the node from the tunnel and not going to a local
+	 * endpoint has to be going to the local host.
+	 */
 to_host:
 #ifdef HOST_IFINDEX
 	if (1) {
 		union macaddr host_mac = HOST_IFINDEX_MAC;
 		union macaddr router_mac = NODE_MAC;
-		int ret;
 
-		ret = ipv6_l3(ctx, ETH_HLEN, (__u8 *) &router_mac.addr, (__u8 *) &host_mac.addr, METRIC_INGRESS);
+		ret = ipv6_l3(ctx, ETH_HLEN, (__u8 *)&router_mac.addr,
+			      (__u8 *)&host_mac.addr, METRIC_INGRESS);
 		if (ret != CTX_ACT_OK)
 			return ret;
 
@@ -152,11 +170,22 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 	bool decrypted;
 
 	/* verifier workaround (dereference of modified ctx ptr) */
-	if (!revalidate_data_first(ctx, &data, &data_end, &ip4))
+	if (!revalidate_data_pull(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
+
+/* If IPv4 fragmentation is disabled
+ * AND a IPv4 fragmented packet is received,
+ * then drop the packet.
+ */
+#ifndef ENABLE_IPV4_FRAGMENTS
+	if (ipv4_is_fragment(ip4))
+		return DROP_FRAG_NOSUPPORT;
+#endif
+
 #ifdef ENABLE_NODEPORT
 	if (!bpf_skip_nodeport(ctx)) {
 		int ret = nodeport_lb4(ctx, *identity);
+
 		if (ret < 0)
 			return ret;
 	}
@@ -167,16 +196,17 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 	decrypted = ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT);
 	/* If packets are decrypted the key has already been pushed into metadata. */
 	if (decrypted) {
-		*identity = get_identity(ctx);
+		*identity = key.tunnel_id = get_identity(ctx);
 	} else {
 		if (unlikely(ctx_get_tunnel_key(ctx, &key, sizeof(key), 0) < 0))
 			return DROP_NO_TUNNEL_KEY;
 		*identity = key.tunnel_id;
 
-		if (*identity == HOST_ID) {
+		if (*identity == HOST_ID)
 			return DROP_INVALID_IDENTITY;
-		}
 	}
+
+	cilium_dbg(ctx, DBG_DECAP, key.tunnel_id, key.tunnel_label);
 
 #ifdef ENABLE_IPSEC
 	if (!decrypted) {
@@ -190,7 +220,7 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 		}
 
 		ctx->mark = MARK_MAGIC_DECRYPT;
-		set_identity(ctx, key.tunnel_id);
+		set_identity_mark(ctx, *identity);
 		/* To IPSec stack on cilium_vxlan we are going to pass
 		 * this up the stack but eth_type_trans has already labeled
 		 * this as an OTHERHOST type packet. To avoid being dropped
@@ -199,23 +229,27 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 		 */
 		ctx_change_type(ctx, PACKET_HOST);
 		return CTX_ACT_OK;
-	} else {
-		key.tunnel_id = get_identity(ctx);
-		ctx->mark = 0;
 	}
+	ctx->mark = 0;
 not_esp:
 #endif
 
 	/* Lookup IPv4 address in list of local endpoints */
-	if ((ep = lookup_ip4_endpoint(ip4)) != NULL) {
-		/* Let through packets to the node-ip so they are
-		 * processed by the local ip stack */
+	ep = lookup_ip4_endpoint(ip4);
+	if (ep) {
+		/* Let through packets to the node-ip so they are processed by
+		 * the local ip stack.
+		 */
 		if (ep->flags & ENDPOINT_F_HOST)
 			goto to_host;
 
-		return ipv4_local_delivery(ctx, ETH_HLEN, key.tunnel_id, ip4, ep, METRIC_INGRESS);
+		return ipv4_local_delivery(ctx, ETH_HLEN, *identity, ip4, ep,
+					   METRIC_INGRESS, false);
 	}
 
+	/* A packet entering the node from the tunnel and not going to a local
+	 * endpoint has to be going to the local host.
+	 */
 to_host:
 #ifdef HOST_IFINDEX
 	if (1) {
@@ -223,7 +257,8 @@ to_host:
 		union macaddr router_mac = NODE_MAC;
 		int ret;
 
-		ret = ipv4_l3(ctx, ETH_HLEN, (__u8 *) &router_mac.addr, (__u8 *) &host_mac.addr, ip4);
+		ret = ipv4_l3(ctx, ETH_HLEN, (__u8 *)&router_mac.addr,
+			      (__u8 *)&host_mac.addr, ip4);
 		if (ret != CTX_ACT_OK)
 			return ret;
 
@@ -248,6 +283,9 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 }
 #endif /* ENABLE_IPV4 */
 
+/* Attached to the ingress of cilium_vxlan/cilium_geneve to execute on packets
+ * entering the node via the tunnel.
+ */
 //在隧道设备tc ingress点上需要加载的bpf程序
 __section("from-overlay")
 int from_overlay(struct __ctx_buff *ctx/*此点传入的类型即为sk_buff,见函数cls_bpf_classify*/)
@@ -256,7 +294,7 @@ int from_overlay(struct __ctx_buff *ctx/*此点传入的类型即为sk_buff,见�
 	int ret;
 
 	//清空skb->cb
-	bpf_clear_cb(ctx);
+	bpf_clear_meta(ctx);
 	bpf_skip_nodeport_clear(ctx);
 
 	if (!validate_ethertype(ctx, &proto)) {
@@ -307,31 +345,41 @@ out:
 	return ret;
 }
 
-#ifdef ENABLE_NODEPORT
-declare_tailcall_if(is_defined(ENABLE_IPV6), CILIUM_CALL_ENCAP_NODEPORT_NAT)
-int tail_handle_nat_fwd(struct __ctx_buff *ctx)
-{
-	int ret;
-
-	if ((ctx->mark & MARK_MAGIC_SNAT_DONE) == MARK_MAGIC_SNAT_DONE)
-		return CTX_ACT_OK;
-	ret = nodeport_nat_fwd(ctx, true);
-	if (IS_ERR(ret))
-		return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP, METRIC_EGRESS);
-	return ret;
-}
-#endif
-
+/* Attached to the egress of cilium_vxlan/cilium_geneve to execute on packets
+ * leaving the node via the tunnel.
+ */
 //在egress需要加载的程序
 __section("to-overlay")
 int to_overlay(struct __ctx_buff *ctx)
 {
-	int ret = encap_remap_v6_host_address(ctx, true);
+	int ret;
+
+	ret = encap_remap_v6_host_address(ctx, true);
 	if (unlikely(ret < 0))
 		goto out;
+
+#ifdef ENABLE_BANDWIDTH_MANAGER
+	/* In tunneling mode, we should do this as close as possible to the
+	 * phys dev where FQ runs, but the issue is that the aggregate state
+	 * (in queue_mapping) is overridden on tunnel xmit. Hence set the
+	 * timestamp already here. The tunnel dev has noqueue qdisc, so as
+	 * tradeoff it's close enough.
+	 */
+	ret = edt_sched_departure(ctx);
+	/* No send_drop_notify_error() here given we're rate-limiting. */
+	if (ret == CTX_ACT_DROP) {
+		update_metrics(ctx_full_len(ctx), METRIC_EGRESS,
+			       -DROP_EDT_HORIZON);
+		return CTX_ACT_DROP;
+	}
+#endif
+
 #ifdef ENABLE_NODEPORT
-	invoke_tailcall_if(is_defined(ENABLE_IPV6),
-			   CILIUM_CALL_ENCAP_NODEPORT_NAT, tail_handle_nat_fwd);
+	if ((ctx->mark & MARK_MAGIC_SNAT_DONE) == MARK_MAGIC_SNAT_DONE) {
+		ret = CTX_ACT_OK;
+		goto out;
+	}
+	ret = handle_nat_fwd(ctx);
 #endif
 out:
 	if (IS_ERR(ret))

@@ -5,56 +5,62 @@ pipeline {
         label 'baremetal'
     }
 
-    parameters {
-        string(defaultValue: '${ghprbPullDescription}', name: 'ghprbPullDescription')
-        string(defaultValue: '${ghprbActualCommit}', name: 'ghprbActualCommit')
-        string(defaultValue: '${ghprbTriggerAuthorLoginMention}', name: 'ghprbTriggerAuthorLoginMention')
-        string(defaultValue: '${ghprbPullAuthorLoginMention}', name: 'ghprbPullAuthorLoginMention')
-        string(defaultValue: '${ghprbGhRepository}', name: 'ghprbGhRepository')
-        string(defaultValue: '${ghprbPullLongDescription}', name: 'ghprbPullLongDescription')
-        string(defaultValue: '${ghprbCredentialsId}', name: 'ghprbCredentialsId')
-        string(defaultValue: '${ghprbTriggerAuthorLogin}', name: 'ghprbTriggerAuthorLogin')
-        string(defaultValue: '${ghprbPullAuthorLogin}', name: 'ghprbPullAuthorLogin')
-        string(defaultValue: '${ghprbTriggerAuthor}', name: 'ghprbTriggerAuthor')
-        string(defaultValue: '${ghprbCommentBody}', name: 'ghprbCommentBody')
-        string(defaultValue: '${ghprbPullTitle}', name: 'ghprbPullTitle')
-        string(defaultValue: '${ghprbPullLink}', name: 'ghprbPullLink')
-        string(defaultValue: '${ghprbAuthorRepoGitUrl}', name: 'ghprbAuthorRepoGitUrl')
-        string(defaultValue: '${ghprbTargetBranch}', name: 'ghprbTargetBranch')
-        string(defaultValue: '${ghprbPullId}', name: 'ghprbPullId')
-        string(defaultValue: '${ghprbActualCommitAuthor}', name: 'ghprbActualCommitAuthor')
-        string(defaultValue: '${ghprbActualCommitAuthorEmail}', name: 'ghprbActualCommitAuthorEmail')
-        string(defaultValue: '${ghprbTriggerAuthorEmail}', name: 'ghprbTriggerAuthorEmail')
-        string(defaultValue: '${GIT_BRANCH}', name: 'GIT_BRANCH')
-        string(defaultValue: '${ghprbPullAuthorEmail}', name: 'ghprbPullAuthorEmail')
-        string(defaultValue: '${sha1}', name: 'sha1')
-        string(defaultValue: '${ghprbSourceBranch}', name: 'ghprbSourceBranch')
-    }
-
     environment {
         PROJ_PATH = "src/github.com/cilium/cilium"
         TESTDIR="${WORKSPACE}/${PROJ_PATH}/test"
         VM_MEMORY = "5120"
-        K8S_VERSION="1.17"
-        SERVER_BOX = "cilium/ubuntu"
-        CNI_INTEGRATION=setIfLabel("integration/cni-flannel", "FLANNEL", "")
+        K8S_VERSION="1.22"
+        KERNEL="419"
+        SERVER_BOX = "cilium/ubuntu-4-19"
     }
 
     options {
-        timeout(time: 180, unit: 'MINUTES')
+        timeout(time: 300, unit: 'MINUTES')
         timestamps()
         ansiColor('xterm')
     }
 
     stages {
+        stage('Set build name') {
+            when {
+                not {
+                    anyOf {
+                        environment name: 'ghprbPullTitle', value: null
+                        environment name: 'ghprbPullLink', value: null
+                    }
+                }
+            }
+            steps {
+                   script {
+                       currentBuild.displayName = env.getProperty('ghprbPullTitle') + '  ' + env.getProperty('ghprbPullLink') + '  ' + currentBuild.displayName
+                   }
+            }
+        }
         stage('Checkout') {
             steps {
                 sh 'env'
                 Status("PENDING", "${env.JOB_NAME}")
-                sh 'rm -rf src; mkdir -p src/github.com/cilium'
-                sh 'ln -s $WORKSPACE src/github.com/cilium/cilium'
                 checkout scm
+                sh 'mkdir -p ${PROJ_PATH}'
+                sh 'ls -A | grep -v src | xargs mv -t ${PROJ_PATH}'
                 sh '/usr/local/bin/cleanup || true'
+            }
+        }
+        stage('Set programmatic env vars') {
+            steps {
+                script {
+                    if (env.ghprbActualCommit?.trim()) {
+                        env.DOCKER_TAG = env.ghprbActualCommit
+                    } else {
+                        env.DOCKER_TAG = env.GIT_COMMIT
+                    }
+                    if (env.run_with_race_detection?.trim()) {
+                        env.DOCKER_TAG = env.DOCKER_TAG + "-race"
+                        env.RACE = 1
+                        env.LOCKDEBUG = 1
+                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:f6698fe61dbe11019946e5cf5a92077cc8d4a6a9@sha256:9acfa5f4c64482d3dbe19c319f135f5e856f02b479b5eba06efa8691d74e1d4d"
+                    }
+                }
             }
         }
         stage('Preload vagrant boxes'){
@@ -68,28 +74,29 @@ pipeline {
         }
         stage('Boot VMs'){
             options {
-                timeout(time: 60, unit: 'MINUTES')
+                timeout(time: 70, unit: 'MINUTES')
             }
 
             steps {
                 retry(3){
-                    timeout(time: 20, unit: 'MINUTES'){
-                        sh 'cd ${TESTDIR}; vagrant destroy k8s1-${K8S_VERSION} --force'
-                        sh 'cd ${TESTDIR}; vagrant destroy k8s2-${K8S_VERSION} --force'
-                        sh 'cd ${TESTDIR}; vagrant up k8s1-${K8S_VERSION}'
-                        sh 'cd ${TESTDIR}; vagrant up k8s2-${K8S_VERSION}'
-                    }
+                    sh 'cd ${TESTDIR}; vagrant destroy k8s1-${K8S_VERSION} --force'
+                    sh 'cd ${TESTDIR}; vagrant destroy k8s2-${K8S_VERSION} --force'
+                    sh 'cd ${TESTDIR}; CILIUM_REGISTRY=quay.io timeout 20m vagrant up k8s1-${K8S_VERSION} k8s2-${K8S_VERSION}'
                 }
             }
         }
 
         stage('BDD-tests'){
             options {
-                timeout(time: 45, unit: 'MINUTES')
+                timeout(time: 150, unit: 'MINUTES')
+            }
+
+            environment {
+                POLL_TIMEOUT_SECONDS=300
             }
 
             steps {
-                sh 'cd ${TESTDIR}; vagrant ssh k8s1-${K8S_VERSION} -c "cd /home/vagrant/go/${PROJ_PATH}; ./test/kubernetes-test.sh"'
+                sh 'cd ${TESTDIR}; vagrant ssh k8s1-${K8S_VERSION} -c "cd /home/vagrant/go/${PROJ_PATH}; sudo ./test/kubernetes-test.sh ${DOCKER_TAG}"'
             }
         }
 
@@ -100,7 +107,7 @@ pipeline {
             }
 
             options {
-                timeout(time: 120, unit: 'MINUTES')
+                timeout(time: 300, unit: 'MINUTES')
             }
 
             environment {
@@ -119,6 +126,7 @@ pipeline {
     }
     post {
         always {
+            sh 'lscpu'
             sh 'cd ${TESTDIR}; K8S_VERSION=${K8S_VERSION} vagrant destroy -f || true'
             cleanWs()
             sh '/usr/local/bin/cleanup || true'

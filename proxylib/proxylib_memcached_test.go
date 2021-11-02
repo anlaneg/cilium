@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package main
@@ -30,7 +20,6 @@ import (
 )
 
 var setHelloText = []byte("set key 0 0 5\r\nhello\r\n")
-var setHelloTextNoreply = []byte("set key 0 0 5 noreply\r\nhello\r\n")
 
 var getKeysText = []byte("get key1 key2 key3\r\n")
 var gatKeysText = []byte("gat 5 key1 key2 key3\r\n")
@@ -144,7 +133,7 @@ func TestMemcache(t *testing.T) {
 		    remote_policies: 4
             l7_proto: "memcache"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 %s
 		      >
 		    >

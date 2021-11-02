@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -18,11 +7,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -39,17 +27,12 @@ var policyCmd = &cobra.Command{
 }
 
 var (
-	ignoredMasksSource = []string{".git"}
-	ignoredMasks       []*regexp.Regexp
+	ignoredFileNames = []string{
+		".git",
+	}
 )
 
 func init() {
-	ignoredMasks = make([]*regexp.Regexp, len(ignoredMasksSource))
-
-	for i := range ignoredMasksSource {
-		ignoredMasks[i] = regexp.MustCompile(ignoredMasksSource[i])
-	}
-
 	rootCmd.AddCommand(policyCmd)
 }
 
@@ -109,8 +92,8 @@ func handleUnmarshalError(f string, content []byte, err error) error {
 }
 
 func ignoredFile(name string) bool {
-	for i := range ignoredMasks {
-		if ignoredMasks[i].MatchString(name) {
+	for _, n := range ignoredFileNames {
+		if name == n {
 			logrus.WithField(logfields.Path, name).Debug("Ignoring file")
 			return true
 		}
@@ -125,9 +108,9 @@ func loadPolicyFile(path string) (api.Rules, error) {
 	logrus.WithField(logfields.Path, path).Debug("Loading file")
 
 	if path == "-" {
-		content, err = ioutil.ReadAll(bufio.NewReader(os.Stdin))
+		content, err = io.ReadAll(bufio.NewReader(os.Stdin))
 	} else {
-		content, err = ioutil.ReadFile(path)
+		content, err = os.ReadFile(path)
 	}
 
 	if err != nil {
@@ -158,7 +141,7 @@ func loadPolicy(name string) (api.Rules, error) {
 		return nil, fmt.Errorf("Error: %s is not a file or a directory", name)
 	}
 
-	files, err := ioutil.ReadDir(name)
+	files, err := os.ReadDir(name)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +164,7 @@ func loadPolicy(name string) (api.Rules, error) {
 	return result, nil
 }
 
-func processAllFilesFirst(name string, files []os.FileInfo) (api.Rules, error) {
+func processAllFilesFirst(name string, files []os.DirEntry) (api.Rules, error) {
 	result := api.Rules{}
 
 	for _, f := range files {
@@ -200,7 +183,7 @@ func processAllFilesFirst(name string, files []os.FileInfo) (api.Rules, error) {
 	return result, nil
 }
 
-func recursiveSearch(name string, files []os.FileInfo) (api.Rules, error) {
+func recursiveSearch(name string, files []os.DirEntry) (api.Rules, error) {
 	result := api.Rules{}
 	for _, f := range files {
 		if f.IsDir() {

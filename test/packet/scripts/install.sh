@@ -5,10 +5,9 @@ set -e
 # Ensure no prompts from apt & co.
 export DEBIAN_FRONTEND=noninteractive
 
-GOLANG_VERSION="1.14"
-VAGRANT_VERSION="2.2.4"
+GOLANG_VERSION="1.17.2"
+VAGRANT_VERSION="2.2.16"
 PACKER_VERSION="1.3.5"
-VIRTUALBOX_VERSION="6.0"
 
 #repositories
 
@@ -26,11 +25,11 @@ sudo add-apt-repository \
 sudo --preserve-env=DEBIAN_FRONTEND apt-get update
 sudo --preserve-env=DEBIAN_FRONTEND apt-get install -y \
     curl jq apt-transport-https htop bmon zip \
+    nfs-common nfs-kernel-server \
     linux-tools-common linux-tools-generic \
     ca-certificates software-properties-common \
     git openjdk-8-jdk gcc make perl unzip awscli \
-    linux-headers-`uname -r` \
-    virtualbox-${VIRTUALBOX_VERSION} docker-ce
+    linux-headers-`uname -r` virtualbox docker-ce
 
 cd /tmp/
 wget https://releases.hashicorp.com/vagrant/${VAGRANT_VERSION}/vagrant_${VAGRANT_VERSION}_x86_64.deb
@@ -43,7 +42,7 @@ cp /provision/add_vagrant_box.sh /usr/local/bin/
 chmod 755 /usr/local/bin/add_vagrant_box.sh
 
 curl -s https://raw.githubusercontent.com/cilium/cilium/master/vagrant_box_defaults.rb > defaults.rb
-/usr/local/bin/add_vagrant_box defaults.rb
+/usr/local/bin/add_vagrant_box.sh defaults.rb
 
 wget https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip
 unzip packer_${PACKER_VERSION}_linux_amd64.zip
@@ -69,8 +68,5 @@ go get -u github.com/google/gops
 go get -u github.com/onsi/ginkgo/ginkgo
 go get -u github.com/onsi/gomega/...
 sudo ln -sf /go/bin/* /usr/local/bin/
-
-sudo curl -L https://github.com/docker/compose/releases/download/1.24.0/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
 
 echo 'cd /root/go/src/github.com/cilium/cilium' >> /root/.bashrc

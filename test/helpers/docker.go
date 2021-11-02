@@ -1,16 +1,5 @@
-// Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2020 Authors of Cilium
 
 package helpers
 
@@ -77,10 +66,7 @@ func (s *SSHMeta) ContainerInspect(name string) *CmdRes {
 	return s.ExecWithSudo(fmt.Sprintf("docker inspect %s", name))
 }
 
-// ContainerInspectNet returns a map of Docker networking information fields and
-// their associated values for the container of the provided name. An error
-// is returned if the networking information could not be retrieved.
-func (s *SSHMeta) ContainerInspectNet(name string) (map[string]string, error) {
+func (s *SSHMeta) containerInspectNet(name string, network string) (map[string]string, error) {
 	res := s.ContainerInspect(name)
 	properties := map[string]string{
 		"EndpointID":        "EndpointID",
@@ -93,7 +79,7 @@ func (s *SSHMeta) ContainerInspectNet(name string) (map[string]string, error) {
 	if !res.WasSuccessful() {
 		return nil, fmt.Errorf("could not inspect container %s", name)
 	}
-	filter := fmt.Sprintf(`{ [0].NetworkSettings.Networks.%s }`, CiliumDockerNetwork)
+	filter := fmt.Sprintf(`{ [0].NetworkSettings.Networks.%s }`, network)
 	result := map[string]string{
 		Name: name,
 	}
@@ -112,21 +98,48 @@ func (s *SSHMeta) ContainerInspectNet(name string) (map[string]string, error) {
 	return result, nil
 }
 
-// NetworkCreate creates a Docker network of the provided name with the
-// specified subnet. It is a wrapper around `docker network create`.
-func (s *SSHMeta) NetworkCreate(name string, subnet string) *CmdRes {
-	if subnet == "" {
-		subnet = "::1/112"
+// ContainerInspectOtherNet returns a map of Docker networking information
+// fields and their associated values for the container of the provided name,
+// on the specified docker network. An error is returned if the networking
+// information could not be retrieved.
+func (s *SSHMeta) ContainerInspectOtherNet(name string, network string) (map[string]string, error) {
+	return s.containerInspectNet(name, network)
+}
+
+// ContainerInspectNet returns a map of Docker networking information fields and
+// their associated values for the container of the provided name. An error
+// is returned if the networking information could not be retrieved.
+func (s *SSHMeta) ContainerInspectNet(name string) (map[string]string, error) {
+	return s.containerInspectNet(name, CiliumDockerNetwork)
+}
+
+// NetworkCreateWithOptions creates a Docker network of the provided name with
+// the specified subnet, with custom specified options. It is a wrapper around
+// `docker network create`.
+func (s *SSHMeta) NetworkCreateWithOptions(name string, subnet string, ipv6 bool, opts string) *CmdRes {
+	ipv6Arg := ""
+	if ipv6 {
+		ipv6Arg = "--ipv6"
 	}
 	cmd := fmt.Sprintf(
-		"docker network create --ipv6 --subnet %s --driver cilium --ipam-driver cilium %s",
-		subnet, name)
+		"docker network create %s --subnet %s %s %s",
+		ipv6Arg, subnet, opts, name)
 	res := s.ExecWithSudo(cmd)
 	if !res.WasSuccessful() {
 		s.logger.Warningf("Unable to create docker network %s: %s", name, res.CombineOutput().String())
 	}
 
 	return res
+}
+
+// NetworkCreate creates a Docker network of the provided name with the
+// specified subnet. It is a wrapper around `docker network create`.
+func (s *SSHMeta) NetworkCreate(name string, subnet string) *CmdRes {
+	if subnet == "" {
+		subnet = "::1/112"
+	}
+	return s.NetworkCreateWithOptions(name, subnet, true,
+		"--driver cilium --ipam-driver cilium")
 }
 
 // NetworkDelete deletes the Docker network of the provided name. It is a wrapper
@@ -139,10 +152,6 @@ func (s *SSHMeta) NetworkDelete(name string) *CmdRes {
 // network. It is a wrapper around `docker network inspect`.
 func (s *SSHMeta) NetworkGet(name string) *CmdRes {
 	return s.ExecWithSudo(fmt.Sprintf("docker network inspect %s", name))
-}
-
-func (s *SSHMeta) execCmd(cmd string) *CmdRes {
-	return s.ExecWithSudo(cmd)
 }
 
 // SampleContainersActions creates or deletes various containers used for

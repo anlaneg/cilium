@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package trigger
 
@@ -18,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 )
 
@@ -89,7 +79,7 @@ type Trigger struct {
 	lastTrigger time.Time
 
 	// wakeupCan is used to wake up the background trigger routine
-	wakeupChan chan bool
+	wakeupChan chan struct{}
 
 	// closeChan is used to stop the background trigger routine
 	closeChan chan struct{}
@@ -116,7 +106,7 @@ func NewTrigger(p Parameters) (*Trigger, error) {
 
 	t := &Trigger{
 		params:        p,
-		wakeupChan:    make(chan bool, 1),
+		wakeupChan:    make(chan struct{}, 1),
 		closeChan:     make(chan struct{}, 1),
 		foldedReasons: newReasonStack(),
 	}
@@ -161,7 +151,7 @@ func (t *Trigger) TriggerWithReason(reason string) {
 	}
 
 	select {
-	case t.wakeupChan <- true:
+	case t.wakeupChan <- struct{}{}:
 	default:
 	}
 }
@@ -180,6 +170,8 @@ func (t *Trigger) Shutdown() {
 }
 
 func (t *Trigger) waiter() {
+	sleepTimer, sleepTimerDone := inctimer.New()
+	defer sleepTimerDone()
 	for {
 		// keep critical section as small as possible
 		t.mutex.Lock()
@@ -213,7 +205,7 @@ func (t *Trigger) waiter() {
 
 		select {
 		case <-t.wakeupChan:
-		case <-time.After(t.params.sleepInterval):
+		case <-sleepTimer.After(t.params.sleepInterval):
 
 		case <-t.closeChan:
 			return

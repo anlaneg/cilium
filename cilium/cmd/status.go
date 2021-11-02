@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -25,6 +14,7 @@ import (
 	pkg "github.com/cilium/cilium/pkg/client"
 	"github.com/cilium/cilium/pkg/command"
 	healthPkg "github.com/cilium/cilium/pkg/health/client"
+	"github.com/cilium/cilium/pkg/health/defaults"
 
 	"github.com/spf13/cobra"
 )
@@ -37,28 +27,25 @@ var statusCmd = &cobra.Command{
 		statusDaemon()
 	},
 }
+
 var (
-	allAddresses   bool
-	allControllers bool
-	allHealth      bool
-	allNodes       bool
-	allRedirects   bool
-	allClusters    bool
-	brief          bool
-	timeout        time.Duration
-	healthLines    = 10
+	statusDetails pkg.StatusDetails
+	allHealth     bool
+	brief         bool
+	timeout       time.Duration
+	healthLines   = 10
 )
 
 func init() {
 	rootCmd.AddCommand(statusCmd)
-	statusCmd.Flags().BoolVar(&allAddresses, "all-addresses", false, "Show all allocated addresses, not just count")
-	statusCmd.Flags().BoolVar(&allControllers, "all-controllers", false, "Show all controllers, not just failing")
+	statusCmd.Flags().BoolVar(&statusDetails.AllAddresses, "all-addresses", false, "Show all allocated addresses, not just count")
+	statusCmd.Flags().BoolVar(&statusDetails.AllControllers, "all-controllers", false, "Show all controllers, not just failing")
+	statusCmd.Flags().BoolVar(&statusDetails.AllNodes, "all-nodes", false, "Show all nodes, not just localhost")
+	statusCmd.Flags().BoolVar(&statusDetails.AllRedirects, "all-redirects", false, "Show all redirects")
+	statusCmd.Flags().BoolVar(&statusDetails.AllClusters, "all-clusters", false, "Show all clusters")
 	statusCmd.Flags().BoolVar(&allHealth, "all-health", false, "Show all health status, not just failing")
-	statusCmd.Flags().BoolVar(&allNodes, "all-nodes", false, "Show all nodes, not just localhost")
-	statusCmd.Flags().BoolVar(&allRedirects, "all-redirects", false, "Show all redirects")
-	statusCmd.Flags().BoolVar(&allClusters, "all-clusters", false, "Show all clusters")
 	statusCmd.Flags().BoolVar(&brief, "brief", false, "Only print a one-line status message")
-	statusCmd.Flags().BoolVar(&verbose, "verbose", false, "Equivalent to --all-addresses --all-controllers --all-nodes --all-health")
+	statusCmd.Flags().BoolVar(&verbose, "verbose", false, "Equivalent to --all-addresses --all-controllers --all-nodes --all-redirects --all-clusters --all-health")
 	statusCmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Sets the timeout to use when querying for health")
 	command.AddJSONOutput(statusCmd)
 }
@@ -74,12 +61,8 @@ func statusDaemon() {
 	}
 
 	if verbose {
-		allAddresses = true
-		allControllers = true
+		statusDetails = pkg.StatusAllDetails
 		allHealth = true
-		allNodes = true
-		allRedirects = true
-		allClusters = true
 	}
 	if allHealth {
 		healthLines = 0
@@ -106,14 +89,25 @@ func statusDaemon() {
 	} else {
 		sr := resp.Payload
 		w := tabwriter.NewWriter(os.Stdout, 2, 0, 3, ' ', 0)
-		pkg.FormatStatusResponse(w, sr, allAddresses, allControllers, allNodes, allRedirects, allClusters)
-		w.Flush()
+		pkg.FormatStatusResponse(w, sr, statusDetails)
 
 		if isUnhealthy(sr) {
+			w.Flush()
 			os.Exit(1)
 		}
 
-		healthPkg.GetAndFormatHealthStatus(w, true, allHealth, healthLines)
+		healthEnabled := false
+		for _, c := range sr.Controllers {
+			if c.Name == defaults.HealthEPName {
+				healthEnabled = true
+				break
+			}
+		}
+		if healthEnabled {
+			healthPkg.GetAndFormatHealthStatus(w, true, allHealth, healthLines)
+		} else {
+			fmt.Fprint(w, "Cluster health:\t\tProbe disabled\n")
+		}
 		w.Flush()
 	}
 }

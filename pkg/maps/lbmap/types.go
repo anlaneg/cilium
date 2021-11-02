@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package lbmap
 
@@ -18,6 +7,7 @@ import (
 	"net"
 
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 )
 
@@ -28,14 +18,23 @@ type ServiceKey interface {
 	// Return true if the key is of type IPv6
 	IsIPv6() bool
 
+	// IsSurrogate returns true on zero-address
+	IsSurrogate() bool
+
 	// Return the BPF map matching the key type
 	Map() *bpf.Map
 
-	// Set slave slot for the key
-	SetSlave(slave int)
+	// Set backend slot for the key
+	SetBackendSlot(slot int)
 
-	// Get slave slot of the key
-	GetSlave() int
+	// Get backend slot of the key
+	GetBackendSlot() int
+
+	// Set lookup scope for the key
+	SetScope(scope uint8)
+
+	// Get lookup scope for the key
+	GetScope() uint8
 
 	// Get frontend IP address
 	GetAddress() net.IP
@@ -51,6 +50,9 @@ type ServiceKey interface {
 
 	// ToNetwork converts fields to network byte order.
 	ToNetwork() ServiceKey
+
+	// ToHost converts fields to host byte order.
+	ToHost() ServiceKey
 }
 
 // ServiceValue is the interface describing protocol independent value for services map v2.
@@ -70,10 +72,13 @@ type ServiceValue interface {
 	GetRevNat() int
 
 	// Set flags
-	SetFlags(uint8)
+	SetFlags(uint16)
 
 	// Get flags
-	GetFlags() uint8
+	GetFlags() uint16
+
+	// Set timeout for sessionAffinity=clientIP
+	SetSessionAffinityTimeoutSec(t uint32)
 
 	// Set backend identifier
 	SetBackendID(id loadbalancer.BackendID)
@@ -86,6 +91,9 @@ type ServiceValue interface {
 
 	// Convert fields to network byte order.
 	ToNetwork() ServiceValue
+
+	// ToHost converts fields to host byte order.
+	ToHost() ServiceValue
 }
 
 // BackendKey is the interface describing protocol independent backend key.
@@ -114,6 +122,9 @@ type BackendValue interface {
 
 	// Convert fields to network byte order.
 	ToNetwork() BackendValue
+
+	// ToHost converts fields to host byte order.
+	ToHost() BackendValue
 }
 
 // Backend is the interface describing protocol independent backend used by services v2.
@@ -139,6 +150,9 @@ type RevNatKey interface {
 
 	// Returns the key value
 	GetKey() uint16
+
+	// ToHost converts fields to host byte order.
+	ToHost() RevNatKey
 }
 
 type RevNatValue interface {
@@ -146,10 +160,19 @@ type RevNatValue interface {
 
 	// ToNetwork converts fields to network byte order.
 	ToNetwork() RevNatValue
+
+	// ToHost converts fields to host byte order.
+	ToHost() RevNatValue
 }
 
+// BackendIDByServiceIDSet is the type of a set for checking whether a backend
+// belongs to a given service
+type BackendIDByServiceIDSet map[uint16]map[loadbalancer.BackendID]struct{} // svc ID => backend ID
+
+type SourceRangeSetByServiceID map[uint16][]*cidr.CIDR // svc ID => src range CIDRs
+
 func svcFrontend(svcKey ServiceKey, svcValue ServiceValue) *loadbalancer.L3n4AddrID {
-	feL3n4Addr := loadbalancer.NewL3n4Addr(loadbalancer.NONE, svcKey.GetAddress(), svcKey.GetPort())
+	feL3n4Addr := loadbalancer.NewL3n4Addr(loadbalancer.NONE, svcKey.GetAddress(), svcKey.GetPort(), svcKey.GetScope())
 	feL3n4AddrID := &loadbalancer.L3n4AddrID{
 		L3n4Addr: *feL3n4Addr,
 		ID:       loadbalancer.ID(svcValue.GetRevNat()),

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipcache
 
@@ -39,26 +28,44 @@ var (
 // AllocateCIDRs attempts to allocate identities for a list of CIDRs. If any
 // allocation fails, all allocations are rolled back and the error is returned.
 // When an identity is freshly allocated for a CIDR, it is added to the
-// ipcache.
-func AllocateCIDRs(prefixes []*net.IPNet) ([]*identity.Identity, error) {
-	return allocateCIDRs(prefixes)
+// ipcache if 'newlyAllocatedIdentities' is 'nil', otherwise the newly allocated
+// identities are placed in 'newlyAllocatedIdentities' and it is the caller's
+// responsibility to upsert them into ipcache by calling UpsertGeneratedIdentities().
+func AllocateCIDRs(prefixes []*net.IPNet, newlyAllocatedIdentities map[string]*identity.Identity) ([]*identity.Identity, error) {
+	return allocateCIDRs(prefixes, newlyAllocatedIdentities)
 }
 
 // AllocateCIDRsForIPs attempts to allocate identities for a list of CIDRs. If
 // any allocation fails, all allocations are rolled back and the error is
 // returned. When an identity is freshly allocated for a CIDR, it is added to
-// the ipcache.
-func AllocateCIDRsForIPs(prefixes []net.IP) ([]*identity.Identity, error) {
-	return allocateCIDRs(ip.GetCIDRPrefixesFromIPs(prefixes))
+// the ipcache if 'newlyAllocatedIdentities' is 'nil', otherwise the newly allocated
+// identities are placed in 'newlyAllocatedIdentities' and it is the caller's
+// responsibility to upsert them into ipcache by calling UpsertGeneratedIdentities().
+func AllocateCIDRsForIPs(prefixes []net.IP, newlyAllocatedIdentities map[string]*identity.Identity) ([]*identity.Identity, error) {
+	return allocateCIDRs(ip.GetCIDRPrefixesFromIPs(prefixes), newlyAllocatedIdentities)
 }
 
-func allocateCIDRs(prefixes []*net.IPNet) ([]*identity.Identity, error) {
-	// maintain list of used identities to undo on error
-	var usedIdentities []*identity.Identity
+func UpsertGeneratedIdentities(newlyAllocatedIdentities map[string]*identity.Identity) {
+	for prefixString, id := range newlyAllocatedIdentities {
+		IPIdentityCache.Upsert(prefixString, nil, 0, nil, Identity{
+			ID:     id.ID,
+			Source: source.Generated,
+		})
+	}
+}
 
-	// maintain list of newly allocated identities to update ipcache
-	allocatedIdentities := map[string]*identity.Identity{}
-	newlyAllocatedIdentities := map[string]*identity.Identity{}
+func allocateCIDRs(prefixes []*net.IPNet, newlyAllocatedIdentities map[string]*identity.Identity) ([]*identity.Identity, error) {
+	// maintain list of used identities to undo on error
+	usedIdentities := make([]*identity.Identity, 0, len(prefixes))
+
+	allocatedIdentities := make(map[string]*identity.Identity, len(prefixes))
+	// Maintain list of newly allocated identities to update ipcache,
+	// but upsert them to ipcache only if no map was given by the caller.
+	upsert := false
+	if newlyAllocatedIdentities == nil {
+		upsert = true
+		newlyAllocatedIdentities = map[string]*identity.Identity{}
+	}
 
 	for _, prefix := range prefixes {
 		if prefix == nil {
@@ -71,6 +78,9 @@ func allocateCIDRs(prefixes []*net.IPNet) ([]*identity.Identity, error) {
 		allocateCtx, cancel := context.WithTimeout(context.Background(), option.Config.IPAllocationTimeout)
 		defer cancel()
 
+		if IdentityAllocator == nil {
+			return nil, fmt.Errorf("IdentityAllocator not initialized!")
+		}
 		id, isNew, err := IdentityAllocator.AllocateIdentity(allocateCtx, cidr.GetCIDRLabels(prefix), false)
 		if err != nil {
 			IdentityAllocator.ReleaseSlice(context.Background(), nil, usedIdentities)
@@ -89,12 +99,10 @@ func allocateCIDRs(prefixes []*net.IPNet) ([]*identity.Identity, error) {
 
 	allocatedIdentitiesSlice := make([]*identity.Identity, 0, len(allocatedIdentities))
 
-	// Only upsert into ipcache if identity wasn't allocated before.
-	for prefixString, id := range newlyAllocatedIdentities {
-		IPIdentityCache.Upsert(prefixString, nil, 0, nil, Identity{
-			ID:     id.ID,
-			Source: source.Generated,
-		})
+	// Only upsert into ipcache if identity wasn't allocated
+	// before and the caller does not care doing this
+	if upsert {
+		UpsertGeneratedIdentities(newlyAllocatedIdentities)
 	}
 
 	for _, id := range allocatedIdentities {

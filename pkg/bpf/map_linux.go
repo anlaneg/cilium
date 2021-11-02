@@ -1,17 +1,7 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2020 Authors of Cilium
 
+//go:build linux
 // +build linux
 
 package bpf
@@ -25,6 +15,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -110,16 +101,18 @@ type Map struct {
 	// enableSync is true when synchronization retries have been enabled.
 	enableSync bool
 
-	// openLock serializes calls to Map.Open()
-	openLock lock.Mutex
-
 	// NonPersistent is true if the map does not contain persistent data
 	// and should be removed on startup.
 	NonPersistent bool
 
 	// DumpParser is a function for parsing keys and values from BPF maps
-	dumpParser DumpParser
+	DumpParser DumpParser
 
+	// withValueCache is true when map cache has been enabled
+	withValueCache bool
+
+	// cache as key/value entries when map cache is enabled or as key-only when
+	// pressure metric is enabled
 	cache map[string]*cacheEntry
 
 	// errorResolverLastScheduled is the timestamp when the error resolver
@@ -129,10 +122,30 @@ type Map struct {
 	// outstandingErrors is the number of outsanding errors syncing with
 	// the kernel
 	outstandingErrors int
+
+	// pressureGauge is a metric that tracks the pressure on this map
+	pressureGauge *metrics.GaugeWithThreshold
 }
 
-// NewMap creates a new Map instance - object representing a BPF map
-func NewMap(name string, mapType MapType, mapKey MapKey, keySize int, mapValue MapValue, valueSize, maxEntries int, flags uint32, innerID uint32, dumpParser DumpParser) *Map {
+type NewMapOpts struct {
+	CheckValueSize bool // Enable mapValue and valueSize size check
+}
+
+// NewMapWithOpts creates a new Map instance - object representing a BPF map
+func NewMapWithOpts(name string, mapType MapType, mapKey MapKey, keySize int,
+	mapValue MapValue, valueSize, maxEntries int, flags uint32, innerID uint32,
+	dumpParser DumpParser, opts *NewMapOpts) *Map {
+
+	if size := reflect.TypeOf(mapKey).Elem().Size(); size != uintptr(keySize) {
+		panic(fmt.Sprintf("Invalid %s map key size (%d != %d)", name, size, keySize))
+	}
+
+	if opts.CheckValueSize {
+		if size := reflect.TypeOf(mapValue).Elem().Size(); size != uintptr(valueSize) {
+			panic(fmt.Sprintf("Invalid %s map value size (%d != %d)", name, size, valueSize))
+		}
+	}
+
 	m := &Map{
 		MapInfo: MapInfo{
 			MapType:       mapType,
@@ -147,9 +160,20 @@ func NewMap(name string, mapType MapType, mapKey MapKey, keySize int, mapValue M
 			OwnerProgType: ProgTypeUnspec,
 		},
 		name:       path.Base(name),
-		dumpParser: dumpParser,
+		DumpParser: dumpParser,
 	}
+
 	return m
+}
+
+// NewMap creates a new Map instance - object representing a BPF map
+func NewMap(name string, mapType MapType, mapKey MapKey, keySize int,
+	mapValue MapValue, valueSize, maxEntries int, flags uint32, innerID uint32,
+	dumpParser DumpParser) *Map {
+
+	return NewMapWithOpts(name, mapType, mapKey, keySize, mapValue, valueSize,
+		maxEntries, flags, innerID, dumpParser,
+		&NewMapOpts{CheckValueSize: true})
 }
 
 // NewPerCPUHashMap creates a new Map type of "per CPU hash" - object representing a BPF map
@@ -170,7 +194,7 @@ func NewPerCPUHashMap(name string, mapKey MapKey, keySize int, mapValue MapValue
 			OwnerProgType: ProgTypeUnspec,
 		},
 		name:       path.Base(name),
-		dumpParser: dumpParser,
+		DumpParser: dumpParser,
 	}
 	return m
 }
@@ -188,6 +212,10 @@ func (m *Map) commonName() string {
 
 	m.cachedCommonName = extractCommonName(m.name)
 	return m.cachedCommonName
+}
+
+func (m *Map) NonPrefixedName() string {
+	return strings.TrimPrefix(m.name, metrics.Namespace+"_")
 }
 
 // scheduleErrorResolver schedules a periodic resolver controller that scans
@@ -221,9 +249,51 @@ func (m *Map) scheduleErrorResolver() {
 // user space in a local cache (map) and will indicate the status of each
 // individual entry.
 func (m *Map) WithCache() *Map {
-	m.cache = map[string]*cacheEntry{}
+	if m.cache == nil {
+		m.cache = map[string]*cacheEntry{}
+	}
+	m.withValueCache = true
 	m.enableSync = true
 	return m
+}
+
+// WithPressureMetricThreshold enables the tracking of a metric that measures
+// the pressure of this map. This metric is only reported if over the
+// threshold.
+func (m *Map) WithPressureMetricThreshold(threshold float64) *Map {
+	// When pressure metric is enabled, we keep track of map keys in cache
+	if m.cache == nil {
+		m.cache = map[string]*cacheEntry{}
+	}
+
+	m.pressureGauge = metrics.NewBPFMapPressureGauge(m.NonPrefixedName(), threshold)
+
+	return m
+}
+
+// WithPressureMetric enables tracking and reporting of this map pressure with
+// threshold 0.
+func (m *Map) WithPressureMetric() *Map {
+	return m.WithPressureMetricThreshold(0.0)
+}
+
+func (m *Map) updatePressureMetric() {
+	if m.pressureGauge == nil {
+		return
+	}
+
+	// Do a lazy check of MetricsConfig as it is not available at map static
+	// initialization.
+	if !option.Config.MetricsConfig.BPFMapPressure {
+		if !m.withValueCache {
+			m.cache = nil
+		}
+		m.pressureGauge = nil
+		return
+	}
+
+	pvalue := float64(len(m.cache)) / float64(m.MaxEntries)
+	m.pressureGauge.Set(pvalue)
 }
 
 func (m *Map) GetFd() int {
@@ -429,7 +499,7 @@ func (m *Map) OpenParallel() (bool, error) {
 // support for this map type, then the map will be opened as MapTypeHash
 // instead. Note that the BPF code that interacts with this map *MUST* be
 // structured in such a way that the map is declared as the same type based on
-// the same probe logic (eg HAVE_LRU_MAP_TYPE, HAVE_LPM_MAP_TYPE).
+// the same probe logic (eg HAVE_LRU_HASH_MAP_TYPE, HAVE_LPM_TRIE_MAP_TYPE).
 //
 // For code that uses an LPMTrie, the BPF code must also use macros to retain
 // the "longest prefix match" behaviour on top of the hash maps, for example
@@ -443,13 +513,23 @@ func (m *Map) OpenOrCreate() (bool, error) {
 	return m.openOrCreate(true)
 }
 
-// OpenOrCreateUnpinned is similar to OpenOrCreate (see above) but without
-// pinning the map to the file system if it had to be created.
-func (m *Map) OpenOrCreateUnpinned() (bool, error) {
+// CreateUnpinned creates the map without pinning it to the file system.
+func (m *Map) CreateUnpinned() error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	return m.openOrCreate(false)
+	_, err := m.openOrCreate(false)
+	return err
+}
+
+// Create is similar to OpenOrCreate, but closes the map after creating or
+// opening it.
+func (m *Map) Create() (bool, error) {
+	isNew, err := m.OpenOrCreate()
+	if err != nil {
+		return isNew, err
+	}
+	return isNew, m.Close()
 }
 
 /*创建指定的map*/
@@ -483,10 +563,19 @@ func (m *Map) openOrCreate(pin bool) (bool, error) {
 	return isNew, nil
 }
 
+// Open opens the BPF map. All calls to Open() are serialized due to acquiring
+// m.lock
 func (m *Map) Open() error {
-	m.openLock.Lock()
-	defer m.openLock.Unlock()
+	m.lock.Lock()
+	defer m.lock.Unlock()
 
+	return m.open()
+}
+
+// open opens the BPF map. It is identical to Open() but should be used when
+// m.lock is already held. open() may only be used if m.lock is held for
+// writing.
+func (m *Map) open() error {
 	if m.fd != 0 {
 		return nil
 	}
@@ -541,16 +630,16 @@ type MapValidator func(path string) (bool, error)
 // deepcopy of the key and value on between each iterations to avoid memory
 // corruption.
 func (m *Map) DumpWithCallback(cb DumpCallback) error {
+	if err := m.Open(); err != nil {
+		return err
+	}
+
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
 	key := make([]byte, m.KeySize)
 	nextKey := make([]byte, m.KeySize)
 	value := make([]byte, m.ReadValueSize)
-
-	if err := m.Open(); err != nil {
-		return err
-	}
 
 	if err := GetFirstKey(m.fd, unsafe.Pointer(&nextKey[0])); err != nil {
 		if err == io.EOF {
@@ -585,7 +674,7 @@ func (m *Map) DumpWithCallback(cb DumpCallback) error {
 			return err
 		}
 
-		mk, mv, err = m.dumpParser(nextKey, value, mk, mv)
+		mk, mv, err = m.DumpParser(nextKey, value, mk, mv)
 		if err != nil {
 			return err
 		}
@@ -713,7 +802,7 @@ func (m *Map) DumpReliablyWithCallback(cb DumpCallback, stats *DumpStats) error 
 			continue
 		}
 
-		mk, mv, err = m.dumpParser(currentKey, value, mk, mv)
+		mk, mv, err = m.DumpParser(currentKey, value, mk, mv)
 		if err != nil {
 			stats.Interrupted++
 			return err
@@ -772,14 +861,14 @@ func (m *Map) DumpIfExists(hash map[string][]string) error {
 }
 
 func (m *Map) Lookup(key MapKey) (MapValue, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-
-	value := key.NewValue()
-
 	if err := m.Open(); err != nil {
 		return nil, err
 	}
+
+	value := key.NewValue()
+
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 
 	err := LookupElement(m.fd, key.GetKeyPtr(), value.GetValuePtr())
 	if err != nil {
@@ -799,25 +888,31 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 			return
 		}
 
-		desiredAction := OK
-		if err != nil {
-			desiredAction = Insert
-			m.scheduleErrorResolver()
-		}
+		if m.withValueCache {
+			desiredAction := OK
+			if err != nil {
+				desiredAction = Insert
+				m.scheduleErrorResolver()
+			}
 
-		m.cache[key.String()] = &cacheEntry{
-			Key:           key,
-			Value:         value,
-			DesiredAction: desiredAction,
-			LastError:     err,
+			m.cache[key.String()] = &cacheEntry{
+				Key:           key,
+				Value:         value,
+				DesiredAction: desiredAction,
+				LastError:     err,
+			}
+			m.updatePressureMetric()
+		} else if err == nil {
+			m.cache[key.String()] = nil
+			m.updatePressureMetric()
 		}
 	}()
 
-	if err = m.Open(); err != nil {
+	if err = m.open(); err != nil {
 		return err
 	}
 
-	err = UpdateElement(m.fd, key.GetKeyPtr(), value.GetValuePtr(), 0)
+	err = UpdateElement(m.fd, m.name, key.GetKeyPtr(), value.GetValuePtr(), 0)
 	if option.Config.MetricsConfig.BPFMapOps {
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
 	}
@@ -838,6 +933,8 @@ func (m *Map) deleteCacheEntry(key MapKey, err error) {
 	k := key.String()
 	if err == nil {
 		delete(m.cache, k)
+	} else if !m.withValueCache {
+		return
 	} else {
 		entry, ok := m.cache[k]
 		if !ok {
@@ -853,25 +950,52 @@ func (m *Map) deleteCacheEntry(key MapKey, err error) {
 	}
 }
 
-// Delete deletes the map entry corresponding to the given key.
-func (m *Map) Delete(key MapKey) error {
+// deleteMapEntry deletes the map entry corresponding to the given key.
+// If ignoreMissing is set to true and the entry is not found, then
+// the error metric is not incremented for missing entries and nil error is returned.
+func (m *Map) deleteMapEntry(key MapKey, ignoreMissing bool) (deleted bool, err error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	var err error
-	defer m.deleteCacheEntry(key, err)
+	defer func() {
+		m.deleteCacheEntry(key, err)
+		if err != nil {
+			m.updatePressureMetric()
+		}
+	}()
 
-	if err = m.Open(); err != nil {
-		return err
+	if err = m.open(); err != nil {
+		return false, err
 	}
 
 	_, errno := deleteElement(m.fd, key.GetKeyPtr())
-	if option.Config.MetricsConfig.BPFMapOps {
+	deleted = errno == 0
+
+	// Error handling is skipped in the case ignoreMissing is set and the
+	// error is ENOENT. This removes false positives in the delete metrics
+	// and skips the deferred cleanup of non-existing entries. This situation
+	// occurs at least in the context of cleanup of NAT mappings from CT GC.
+	handleError := errno != unix.ENOENT || !ignoreMissing
+
+	if option.Config.MetricsConfig.BPFMapOps && handleError {
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpDelete, metrics.Errno2Outcome(errno)).Inc()
 	}
-	if errno != 0 {
+
+	if errno != 0 && handleError {
 		err = fmt.Errorf("unable to delete element %s from map %s: %w", key, m.name, errno)
 	}
+	return
+}
+
+// SilentDelete deletes the map entry corresponding to the given key.
+// If a map entry is not found this returns (true, nil).
+func (m *Map) SilentDelete(key MapKey) (deleted bool, err error) {
+	return m.deleteMapEntry(key, true)
+}
+
+// Delete deletes the map entry corresponding to the given key.
+func (m *Map) Delete(key MapKey) error {
+	_, err := m.deleteMapEntry(key, false)
 	return err
 }
 
@@ -886,13 +1010,13 @@ func (m *Map) scopedLogger() *logrus.Entry {
 func (m *Map) DeleteAll() error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-
+	defer m.updatePressureMetric()
 	scopedLog := m.scopedLogger()
 	scopedLog.Debug("deleting all entries in map")
 
 	nextKey := make([]byte, m.KeySize)
 
-	if m.cache != nil {
+	if m.withValueCache {
 		// Mark all entries for deletion, upon successful deletion,
 		// entries will be removed or the LastError will be updated
 		for _, entry := range m.cache {
@@ -901,7 +1025,7 @@ func (m *Map) DeleteAll() error {
 		}
 	}
 
-	if err := m.Open(); err != nil {
+	if err := m.open(); err != nil {
 		return err
 	}
 
@@ -918,7 +1042,7 @@ func (m *Map) DeleteAll() error {
 
 		err := DeleteElement(m.fd, unsafe.Pointer(&nextKey[0]))
 
-		mk, _, err2 := m.dumpParser(nextKey, []byte{}, mk, mv)
+		mk, _, err2 := m.DumpParser(nextKey, []byte{}, mk, mv)
 		if err2 == nil {
 			m.deleteCacheEntry(mk, err)
 		} else {
@@ -971,7 +1095,7 @@ func (m *Map) GetModel() *models.BPFMap {
 		Path: m.path,
 	}
 
-	if m.cache != nil {
+	if m.withValueCache {
 		mapModel.Cache = make([]*models.BPFMapEntry, len(m.cache))
 		i := 0
 		for k, entry := range m.cache {
@@ -1012,6 +1136,10 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 		return nil
 	}
 
+	if err := m.open(); err != nil {
+		return err
+	}
+
 	scopedLogger := m.scopedLogger()
 	scopedLogger.WithField("remaining", m.outstandingErrors).
 		Debug("Starting periodic BPF map error resolver")
@@ -1025,7 +1153,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 		switch e.DesiredAction {
 		case OK:
 		case Insert:
-			err := UpdateElement(m.fd, e.Key.GetKeyPtr(), e.Value.GetValuePtr(), 0)
+			err := UpdateElement(m.fd, m.name, e.Key.GetKeyPtr(), e.Value.GetValuePtr(), 0)
 			if option.Config.MetricsConfig.BPFMapOps {
 				metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
 			}
@@ -1038,6 +1166,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 				e.LastError = err
 				errors++
 			}
+			m.cache[k] = e
 
 		case Delete:
 			_, err := deleteElement(m.fd, e.Key.GetKeyPtr())
@@ -1051,16 +1180,17 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 			} else {
 				e.LastError = err
 				errors++
+				m.cache[k] = e
 			}
 		}
-
-		m.cache[k] = e
 
 		// bail out if maximum errors are reached to relax the map lock
 		if errors > maxSyncErrors {
 			break
 		}
 	}
+
+	m.updatePressureMetric()
 
 	scopedLogger.WithFields(logrus.Fields{
 		"remaining": m.outstandingErrors,
@@ -1083,7 +1213,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 // Returns true if the map was upgraded.
 func (m *Map) CheckAndUpgrade(desired *MapInfo) bool {
 	desiredMapType := GetMapType(desired.MapType)
-	desired.Flags |= GetPreAllocateMapFlags(desired.MapType)
+	desired.Flags |= GetPreAllocateMapFlags(desiredMapType)
 
 	return objCheck(
 		m.fd,

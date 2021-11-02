@@ -2,11 +2,15 @@
 
 ## cilium cleanup
 
-Reset the agent state
+Remove system state installed by Cilium at runtime
 
 ### Synopsis
 
-Reset the agent state
+Clean up CNI configurations, CNI binaries, attached BPF programs,
+bpffs, tc filters, routes, links and named network namespaces.
+
+Running this command might be necessary to get the worker node back into
+working condition after uninstalling the Cilium agent.
 
 ```
 cilium cleanup [flags]

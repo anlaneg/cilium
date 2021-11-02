@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package ipam
@@ -21,9 +11,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cilium/cilium/pkg/defaults"
 	metricsmock "github.com/cilium/cilium/pkg/ipam/metrics/mock"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/math"
 	"github.com/cilium/cilium/pkg/testutils"
 
@@ -35,12 +27,13 @@ import (
 var (
 	k8sapi     = &k8sMock{}
 	metricsapi = metricsmock.NewMockMetrics()
-	eniTags    = map[string]string{}
 )
 
-const testPoolID = PoolID("global")
+const testPoolID = ipamTypes.PoolID("global")
 
 type allocationImplementationMock struct {
+	// mutex protects all fields of this structure
+	mutex        lock.RWMutex
 	poolSize     int
 	allocatedIPs int
 	ipGenerator  int
@@ -51,15 +44,14 @@ func newAllocationImplementationMock() *allocationImplementationMock {
 }
 
 func (a *allocationImplementationMock) CreateNode(obj *v2.CiliumNode, node *Node) NodeOperations {
-	return &nodeOperationsMock{
-		allocator: a,
-		k8sObj:    obj,
-	}
+	return &nodeOperationsMock{allocator: a}
 }
 
-func (a *allocationImplementationMock) GetPoolQuota() PoolQuotaMap {
-	return PoolQuotaMap{
-		testPoolID: PoolQuota{AvailableIPs: a.poolSize - a.allocatedIPs},
+func (a *allocationImplementationMock) GetPoolQuota() ipamTypes.PoolQuotaMap {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+	return ipamTypes.PoolQuotaMap{
+		testPoolID: ipamTypes.PoolQuota{AvailableIPs: a.poolSize - a.allocatedIPs},
 	}
 }
 
@@ -68,20 +60,16 @@ func (a *allocationImplementationMock) Resync(ctx context.Context) time.Time {
 }
 
 type nodeOperationsMock struct {
-	k8sObj       *v2.CiliumNode
-	allocator    *allocationImplementationMock
+	allocator *allocationImplementationMock
+
+	// mutex protects allocatedIPs
+	mutex        lock.RWMutex
 	allocatedIPs []string
 }
 
-func (n *nodeOperationsMock) UpdatedNode(obj *v2.CiliumNode) { n.k8sObj = obj }
-func (n *nodeOperationsMock) GetMaxAboveWatermark() int      { return n.k8sObj.Spec.IPAM.MaxAboveWatermark }
-func (n *nodeOperationsMock) GetPreAllocate() int            { return n.k8sObj.Spec.IPAM.PreAllocate }
-func (n *nodeOperationsMock) GetMinAllocate() int            { return n.k8sObj.Spec.IPAM.MinAllocate }
+func (n *nodeOperationsMock) UpdatedNode(obj *v2.CiliumNode) {}
 
 func (n *nodeOperationsMock) PopulateStatusFields(resource *v2.CiliumNode) {}
-func (n *nodeOperationsMock) PopulateSpecFields(resource *v2.CiliumNode)   {}
-
-func (n *nodeOperationsMock) LogFields(log *logrus.Entry) *logrus.Entry { return log }
 
 func (n *nodeOperationsMock) CreateInterface(ctx context.Context, allocation *AllocationAction, scopedLog *logrus.Entry) (int, string, error) {
 	return 0, "operation not supported", fmt.Errorf("operation not supported")
@@ -89,13 +77,17 @@ func (n *nodeOperationsMock) CreateInterface(ctx context.Context, allocation *Al
 
 func (n *nodeOperationsMock) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (ipamTypes.AllocationMap, error) {
 	available := ipamTypes.AllocationMap{}
+	n.mutex.RLock()
 	for _, ip := range n.allocatedIPs {
 		available[ip] = ipamTypes.AllocationIP{}
 	}
+	n.mutex.RUnlock()
 	return available, nil
 }
 
 func (n *nodeOperationsMock) PrepareIPAllocation(scopedLog *logrus.Entry) (*AllocationAction, error) {
+	n.allocator.mutex.RLock()
+	defer n.allocator.mutex.RUnlock()
 	return &AllocationAction{
 		PoolID:                 testPoolID,
 		AvailableForAllocation: n.allocator.poolSize - n.allocator.allocatedIPs,
@@ -104,24 +96,34 @@ func (n *nodeOperationsMock) PrepareIPAllocation(scopedLog *logrus.Entry) (*Allo
 }
 
 func (n *nodeOperationsMock) AllocateIPs(ctx context.Context, allocation *AllocationAction) error {
+	n.mutex.Lock()
+	n.allocator.mutex.Lock()
 	n.allocator.allocatedIPs += allocation.AvailableForAllocation
 	for i := 0; i < allocation.AvailableForAllocation; i++ {
 		n.allocator.ipGenerator++
 		n.allocatedIPs = append(n.allocatedIPs, fmt.Sprintf("%d", n.allocator.ipGenerator))
 	}
+	n.allocator.mutex.Unlock()
+	n.mutex.Unlock()
 	return nil
 }
 
 func (n *nodeOperationsMock) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry) *ReleaseAction {
+	n.mutex.RLock()
 	excessIPs = math.IntMin(excessIPs, len(n.allocatedIPs))
 	r := &ReleaseAction{PoolID: testPoolID}
 	for i := 0; i < excessIPs; i++ {
 		r.IPsToRelease = append(r.IPsToRelease, n.allocatedIPs[i])
 	}
+	n.mutex.RUnlock()
 	return r
 }
 
 func (n *nodeOperationsMock) releaseIP(ip string) error {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	n.allocator.mutex.RLock()
+	defer n.allocator.mutex.RUnlock()
 	for i, allocatedIP := range n.allocatedIPs {
 		if allocatedIP == ip {
 			n.allocatedIPs = append(n.allocatedIPs[:i], n.allocatedIPs[i+1:]...)
@@ -139,6 +141,14 @@ func (n *nodeOperationsMock) ReleaseIPs(ctx context.Context, release *ReleaseAct
 		}
 	}
 	return nil
+}
+
+func (n *nodeOperationsMock) GetMaximumAllocatableIPv4() int {
+	return 0
+}
+
+func (n *nodeOperationsMock) GetMinimumAllocatableIPv4() int {
+	return defaults.IPAMPreAllocation
 }
 
 func (e *IPAMSuite) TestGetNodeNames(c *check.C) {
@@ -187,16 +197,24 @@ func (e *IPAMSuite) TestNodeManagerGet(c *check.C) {
 
 type k8sMock struct{}
 
-func (k *k8sMock) Update(node, origNode *v2.CiliumNode) (*v2.CiliumNode, error) {
+func (k *k8sMock) Update(origNode, orig *v2.CiliumNode) (*v2.CiliumNode, error) {
 	return nil, nil
 }
 
-func (k *k8sMock) UpdateStatus(node, origNode *v2.CiliumNode) (*v2.CiliumNode, error) {
+func (k *k8sMock) UpdateStatus(origNode, node *v2.CiliumNode) (*v2.CiliumNode, error) {
 	return nil, nil
 }
 
 func (k *k8sMock) Get(node string) (*v2.CiliumNode, error) {
 	return &v2.CiliumNode{}, nil
+}
+
+func (k *k8sMock) Create(*v2.CiliumNode) (*v2.CiliumNode, error) {
+	return &v2.CiliumNode{}, nil
+}
+
+func (k *k8sMock) Delete(nodeName string) error {
+	return nil
 }
 
 func newCiliumNode(node string, preAllocate, minAllocate, used int) *v2.CiliumNode {

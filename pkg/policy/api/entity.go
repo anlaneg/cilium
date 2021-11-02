@@ -1,16 +1,5 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2020 Authors of Cilium
 
 package api
 
@@ -22,6 +11,8 @@ import (
 // Entity specifies the class of receiver/sender endpoints that do not have
 // individual identities.  Entities are used to describe "outside of cluster",
 // "host", etc.
+//
+// +kubebuilder:validation:Enum=all;world;cluster;host;init;unmanaged;remote-node;health;none
 type Entity string
 
 const (
@@ -42,8 +33,14 @@ const (
 	// EntityInit is an entity that represents an initializing endpoint
 	EntityInit Entity = "init"
 
+	// EntityUnmanaged is an entity that represents unamanaged endpoints.
+	EntityUnmanaged Entity = "unmanaged"
+
 	// EntityRemoteNode is an entity that represents all remote nodes
 	EntityRemoteNode Entity = "remote-node"
+
+	// EntityHealth is an entity that represents all health endpoints.
+	EntityHealth Entity = "health"
 
 	// EntityNone is an entity that can be selected but never exist
 	EntityNone Entity = "none"
@@ -58,6 +55,8 @@ var (
 
 	endpointSelectorRemoteNode = NewESFromLabels(labels.NewLabel(labels.IDNameRemoteNode, "", labels.LabelSourceReserved))
 
+	endpointSelectorHealth = NewESFromLabels(labels.NewLabel(labels.IDNameHealth, "", labels.LabelSourceReserved))
+
 	EndpointSelectorNone = NewESFromLabels(labels.NewLabel(labels.IDNameNone, "", labels.LabelSourceReserved))
 
 	endpointSelectorUnmanaged = NewESFromLabels(labels.NewLabel(labels.IDNameUnmanaged, "", labels.LabelSourceReserved))
@@ -70,6 +69,8 @@ var (
 		EntityHost:       {endpointSelectorHost},
 		EntityInit:       {endpointSelectorInit},
 		EntityRemoteNode: {endpointSelectorRemoteNode},
+		EntityHealth:     {endpointSelectorHealth},
+		EntityUnmanaged:  {endpointSelectorUnmanaged},
 		EntityNone:       {EndpointSelectorNone},
 
 		// EntityCluster is populated with an empty entry to allow the
@@ -101,12 +102,20 @@ func (s EntitySlice) GetAsEndpointSelectors() EndpointSelectorSlice {
 }
 
 // InitEntities is called to initialize the policy API layer
-func InitEntities(clusterName string) {
+func InitEntities(clusterName string, treatRemoteNodeAsHost bool) {
 	EntitySelectorMapping[EntityCluster] = EndpointSelectorSlice{
 		endpointSelectorHost,
 		endpointSelectorRemoteNode,
 		endpointSelectorInit,
+		endpointSelectorHealth,
 		endpointSelectorUnmanaged,
 		NewESFromLabels(labels.NewLabel(k8sapi.PolicyLabelCluster, clusterName, labels.LabelSourceK8s)),
 	}
+
+	hostSelectors := make(EndpointSelectorSlice, 0, 2)
+	hostSelectors = append(hostSelectors, endpointSelectorHost)
+	if treatRemoteNodeAsHost {
+		hostSelectors = append(hostSelectors, endpointSelectorRemoteNode)
+	}
+	EntitySelectorMapping[EntityHost] = hostSelectors
 }

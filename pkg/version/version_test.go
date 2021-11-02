@@ -1,22 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package version
 
 import (
+	"runtime"
 	"testing"
 
 	. "gopkg.in/check.v1"
@@ -25,8 +16,7 @@ import (
 // Hook up gocheck into the "go test" runner.
 func Test(t *testing.T) { TestingT(t) }
 
-type VersionSuite struct {
-}
+type VersionSuite struct{}
 
 var _ = Suite(&VersionSuite{})
 
@@ -96,4 +86,10 @@ func (vs *VersionSuite) TestStructIsSet(c *C) {
 		c.Assert(cver.Arch, Equals, tt.out.Arch)
 		c.Assert(cver.AuthorDate, Equals, tt.out.AuthorDate)
 	}
+}
+
+func (vs *VersionSuite) TestVersionArchMatchesGOARCH(c *C) {
+	// var ciliumVersion is not set in tests, thus Version does not contain the cilium version,
+	// just check that GOOS/GOARCH are reported correctly, see #13122.
+	c.Assert(Version, Matches, ".* "+runtime.GOOS+"/"+runtime.GOARCH)
 }

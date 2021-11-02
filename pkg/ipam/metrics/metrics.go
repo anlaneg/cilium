@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package metrics
 
@@ -58,21 +47,21 @@ func NewPrometheusMetrics(namespace string, registry *prometheus.Registry) *prom
 		Subsystem: ipamSubsystem,
 		Name:      "allocation_ops",
 		Help:      "Number of IP allocation operations",
-	}, []string{"subnetId"})
+	}, []string{"subnet_id"})
 
 	m.ReleaseIpOps = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: ipamSubsystem,
 		Name:      "release_ops",
 		Help:      "Number of IP release operations",
-	}, []string{"subnetId"})
+	}, []string{"subnet_id"})
 
 	m.AllocateInterfaceOps = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: ipamSubsystem,
 		Name:      "interface_creation_ops",
 		Help:      "Number of interfaces allocated",
-	}, []string{"subnetId", "status"})
+	}, []string{"subnet_id", "status"})
 
 	m.AvailableInterfaces = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -86,7 +75,7 @@ func NewPrometheusMetrics(namespace string, registry *prometheus.Registry) *prom
 		Subsystem: ipamSubsystem,
 		Name:      "available_ips_per_subnet",
 		Help:      "Number of available IPs per subnet ID",
-	}, []string{"subnetId", "availabilityZone"})
+	}, []string{"subnet_id", "availability_zone"})
 
 	m.Nodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -99,14 +88,14 @@ func NewPrometheusMetrics(namespace string, registry *prometheus.Registry) *prom
 		Namespace: namespace,
 		Subsystem: ipamSubsystem,
 		Name:      "resync_total",
-		Help:      "Number of resync operations to synchronize AWS EC2 metadata",
+		Help:      "Number of resync operations to synchronize and resolve IP deficit of nodes",
 	})
 
 	// pool_maintainer is a more generic name, but for backward compatibility
 	// of dashboard, keep the metric name deficit_resolver unchanged
-	m.poolMaintainer = newTriggerMetrics(namespace, "deficit_resolver")
-	m.k8sSync = newTriggerMetrics(namespace, "k8s_sync")
-	m.resync = newTriggerMetrics(namespace, "ec2_resync")
+	m.poolMaintainer = NewTriggerMetrics(namespace, "deficit_resolver")
+	m.k8sSync = NewTriggerMetrics(namespace, "k8s_sync")
+	m.resync = NewTriggerMetrics(namespace, "resync")
 
 	registry.MustRegister(m.IPsAllocated)
 	registry.MustRegister(m.AllocateIpOps)
@@ -116,9 +105,9 @@ func NewPrometheusMetrics(namespace string, registry *prometheus.Registry) *prom
 	registry.MustRegister(m.AvailableIPsPerSubnet)
 	registry.MustRegister(m.Nodes)
 	registry.MustRegister(m.Resync)
-	m.poolMaintainer.register(registry)
-	m.k8sSync.register(registry)
-	m.resync.register(registry)
+	m.poolMaintainer.Register(registry)
+	m.k8sSync.Register(registry)
+	m.resync.Register(registry)
 
 	return m
 }
@@ -174,7 +163,7 @@ type triggerMetrics struct {
 	latency      prometheus.Histogram
 }
 
-func newTriggerMetrics(namespace, name string) *triggerMetrics {
+func NewTriggerMetrics(namespace, name string) *triggerMetrics {
 	return &triggerMetrics{
 		total: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -203,7 +192,7 @@ func newTriggerMetrics(namespace, name string) *triggerMetrics {
 	}
 }
 
-func (t *triggerMetrics) register(registry *prometheus.Registry) {
+func (t *triggerMetrics) Register(registry *prometheus.Registry) {
 	registry.MustRegister(t.total)
 	registry.MustRegister(t.folds)
 	registry.MustRegister(t.callDuration)

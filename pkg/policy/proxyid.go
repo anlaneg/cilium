@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package policy
 
@@ -35,11 +24,6 @@ func ProxyID(endpointID uint16, ingress bool, protocol string, port uint16) stri
 // ProxyIDFromKey returns a unique string to identify a proxy mapping.
 func ProxyIDFromKey(endpointID uint16, key Key) string {
 	return ProxyID(endpointID, key.TrafficDirection == trafficdirection.Ingress.Uint8(), u8proto.U8proto(key.Nexthdr).String(), key.DestPort)
-}
-
-// ProxyIDFromFilter returns a unique string to identify a proxy mapping.
-func ProxyIDFromFilter(endpointID uint16, l4 *L4Filter) string {
-	return ProxyID(endpointID, l4.Ingress, string(l4.Protocol), uint16(l4.Port))
 }
 
 // ParseProxyID parses a proxy ID returned by ProxyID and returns its components.

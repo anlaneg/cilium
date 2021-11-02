@@ -1,16 +1,5 @@
-// Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2020 Authors of Cilium
 
 package policy
 
@@ -57,7 +46,23 @@ func GetCIDRPrefixes(rules api.Rules) []*net.IPNet {
 				res = append(res, GetPrefixesFromCIDRSet(ir.FromCIDRSet)...)
 			}
 		}
+		for _, ir := range r.IngressDeny {
+			if len(ir.FromCIDR) > 0 {
+				res = append(res, getPrefixesFromCIDR(ir.FromCIDR)...)
+			}
+			if len(ir.FromCIDRSet) > 0 {
+				res = append(res, GetPrefixesFromCIDRSet(ir.FromCIDRSet)...)
+			}
+		}
 		for _, er := range r.Egress {
+			if len(er.ToCIDR) > 0 {
+				res = append(res, getPrefixesFromCIDR(er.ToCIDR)...)
+			}
+			if len(er.ToCIDRSet) > 0 {
+				res = append(res, GetPrefixesFromCIDRSet(er.ToCIDRSet)...)
+			}
+		}
+		for _, er := range r.EgressDeny {
 			if len(er.ToCIDR) > 0 {
 				res = append(res, getPrefixesFromCIDR(er.ToCIDR)...)
 			}

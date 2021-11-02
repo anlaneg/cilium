@@ -1,25 +1,13 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package linux
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -27,9 +15,10 @@ import (
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/version"
 	"github.com/cilium/cilium/pkg/versioncheck"
 
-	go_version "github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -53,43 +42,12 @@ var (
 	canDisableDwarfRelocations bool
 )
 
-func parseKernelVersion(ver string) (go_version.Version, error) {
-	verStrs := strings.Split(ver, ".")
-	switch {
-	case len(verStrs) < 2:
-		return go_version.Version{}, fmt.Errorf("unable to get kernel version from %q", ver)
-	case len(verStrs) < 3:
-		verStrs = append(verStrs, "0")
-	}
-	// We are assuming the kernel version will be something as:
-	// 4.9.17-040917-generic
-
-	// If verStrs is []string{ "4", "9", "17-040917-generic" }
-	// then we need to retrieve patch number.
-	patch := regexp.MustCompilePOSIX(`^[0-9]+`).FindString(verStrs[2])
-	if patch == "" {
-		verStrs[2] = "0"
-	} else {
-		verStrs[2] = patch
-	}
-	return versioncheck.Version(strings.Join(verStrs[:3], "."))
-}
-
-// GetKernelVersion returns the version of the Linux kernel running on this host.
-func GetKernelVersion() (go_version.Version, error) {
-	var unameBuf unix.Utsname
-	if err := unix.Uname(&unameBuf); err != nil {
-		log.WithError(err).Fatal("kernel version: NOT OK")
-	}
-	return parseKernelVersion(string(unameBuf.Release[:]))
-}
-
-func getClangVersion(filePath string) (go_version.Version, error) {
+func getClangVersion(filePath string) (semver.Version, error) {
 	verOut, err := exec.Command(filePath, "--version").CombinedOutput()
 	if err != nil {
 		log.WithError(err).Fatal("clang version: NOT OK")
 	}
-	res := regexp.MustCompile(`(clang version )([^ ]*)`).FindStringSubmatch(string(verOut))
+	res := regexp.MustCompile(`(clang version )([^\s]*)`).FindStringSubmatch(string(verOut))
 	if len(res) != 3 {
 		log.Fatalf("clang version: NOT OK: unable to get clang's version "+
 			"from: %q", string(verOut))
@@ -97,7 +55,7 @@ func getClangVersion(filePath string) (go_version.Version, error) {
 	// at this point res is []string{"clang", "version", "maj.min.patch"}
 	verStrs := strings.Split(res[2], ".")
 	if len(verStrs) < 3 {
-		return go_version.Version{}, fmt.Errorf("unable to get clang version from %q", string(verOut))
+		return semver.Version{}, fmt.Errorf("unable to get clang version from %q", string(verOut))
 	}
 	v := strings.Join(verStrs[:3], ".")
 	// Handle Ubuntu versioning by removing the dash and everything after.
@@ -106,40 +64,10 @@ func getClangVersion(filePath string) (go_version.Version, error) {
 	return versioncheck.Version(v)
 }
 
-func checkBPFLogs(logType string, fatal bool) {
-	bpfLogFile := logType + ".log"
-	bpfLogPath := filepath.Join(option.Config.StateDir, bpfLogFile)
-
-	if _, err := os.Stat(bpfLogPath); os.IsNotExist(err) {
-		log.Infof("%s check: OK!", logType)
-	} else if err == nil {
-		bpfFeaturesLog, err := ioutil.ReadFile(bpfLogPath)
-		if err != nil {
-			log.WithError(err).WithField(logfields.Path, bpfLogPath).Fatalf("%s check: NOT OK. Unable to read", logType)
-		}
-		printer := log.Debugf
-		if fatal {
-			printer = log.Errorf
-			printer("%s check: NOT OK", logType)
-		} else {
-			printer("%s check: Some features may be limited:", logType)
-		}
-		lines := strings.Trim(string(bpfFeaturesLog), "\n")
-		for _, line := range strings.Split(lines, "\n") {
-			printer(line)
-		}
-		if fatal {
-			log.Fatalf("%s check failed.", logType)
-		}
-	} else {
-		log.WithError(err).WithField(logfields.Path, bpfLogPath).Fatalf("%s check: NOT OK. Unable to read", logType)
-	}
-}
-
 // CheckMinRequirements checks that minimum kernel requirements are met for
 // configuring the BPF datapath. If not, fatally exits.
 func CheckMinRequirements() {
-	kernelVersion, err := GetKernelVersion()
+	kernelVersion, err := version.GetKernelVersion()
 	if err != nil {
 		log.WithError(err).Fatal("kernel version: NOT OK")
 	}
@@ -149,7 +77,7 @@ func CheckMinRequirements() {
 	}
 
 	_, err = netlink.RuleList(netlink.FAMILY_V4)
-	if err == unix.EAFNOSUPPORT {
+	if errors.Is(err, unix.EAFNOSUPPORT) {
 		log.WithError(err).Error("Policy routing:NOT OK. " +
 			"Please enable kernel configuration item CONFIG_IP_MULTIPLE_TABLES")
 	}
@@ -203,23 +131,19 @@ func CheckMinRequirements() {
 	if _, err := os.Stat(option.Config.BpfDir); os.IsNotExist(err) {
 		log.WithError(err).Fatalf("BPF template directory: NOT OK. Please run 'make install-bpf'")
 	}
-	probeScript := filepath.Join(option.Config.BpfDir, "run_probes.sh")
-	if err := exec.Command(probeScript, option.Config.BpfDir, option.Config.StateDir).Run(); err != nil {
-		log.WithError(err).Fatal("BPF Verifier: NOT OK. Unable to run checker for bpf_features")
-	}
-	featuresFilePath := filepath.Join(globalsDir, "bpf_features.h")
-	if _, err := os.Stat(featuresFilePath); os.IsNotExist(err) {
-		log.WithError(err).WithField(logfields.Path, globalsDir).Fatal("BPF Verifier: NOT OK. Unable to read bpf_features.h")
-	}
-
-	checkBPFLogs("bpf_requirements", true)
-	checkBPFLogs("bpf_features", false)
 
 	// bpftool checks
 	if !option.Config.DryMode {
 		probeManager := probes.NewProbeManager()
 		if err := probeManager.SystemConfigProbes(); err != nil {
-			log.WithError(err).Warning("BPF system config check: NOT OK.")
+			errMsg := "BPF system config check: NOT OK."
+			// TODO(brb) warn after GH#14314 has been resolved
+			if !errors.Is(err, probes.ErrKernelConfigNotFound) {
+				log.WithError(err).Warn(errMsg)
+			}
+		}
+		if err := probeManager.CreateHeadersFile(); err != nil {
+			log.WithError(err).Fatal("BPF check: NOT OK.")
 		}
 	}
 }

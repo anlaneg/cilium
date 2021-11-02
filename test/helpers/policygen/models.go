@@ -1,16 +1,5 @@
-// Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2020 Authors of Cilium
 
 package policygen
 
@@ -19,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -28,6 +16,7 @@ import (
 	"time"
 
 	cnpv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/test/helpers"
 	"github.com/cilium/cilium/test/helpers/constants"
@@ -35,7 +24,6 @@ import (
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	log "github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var timeout = 10 * time.Minute
@@ -250,7 +238,7 @@ func (t *Target) CreateApplyManifest(spec *TestSpec, base string) error {
 		if err != nil {
 			return fmt.Errorf("cannot render template: %s", err)
 		}
-		err = helpers.RenderTemplateToFile(t.GetManifestName(spec), data.String(), os.ModePerm)
+		err = spec.Kub.RenderTemplateToFile(t.GetManifestName(spec), data.String(), os.ModePerm)
 		if err != nil {
 			return err
 		}
@@ -286,7 +274,7 @@ func (t *Target) CreateApplyManifest(spec *TestSpec, base string) error {
 			return fmt.Errorf("cannot render template: %s", err)
 		}
 
-		err = helpers.RenderTemplateToFile(t.GetManifestName(spec), data.String(), os.ModePerm)
+		err = spec.Kub.RenderTemplateToFile(t.GetManifestName(spec), data.String(), os.ModePerm)
 		if err != nil {
 			return err
 		}
@@ -403,7 +391,7 @@ func (t *TestSpec) Destroy(delay time.Duration, base string) error {
 	manifestToDestroy := []string{
 		t.GetManifestsPath(base),
 		fmt.Sprintf("%s/%s", base, t.NetworkPolicyName()),
-		fmt.Sprintf("%s", t.Destination.GetManifestPath(t, base)),
+		t.Destination.GetManifestPath(t, base),
 	}
 
 	done := time.After(delay)
@@ -473,7 +461,7 @@ spec:
     ports:
       - containerPort: 80`
 
-	err := helpers.RenderTemplateToFile(
+	err := t.Kub.RenderTemplateToFile(
 		t.GetManifestName(),
 		fmt.Sprintf(manifest, t.Prefix, t.SrcPod, t.DestPod, constants.AlpineCurlImage, constants.HttpdImage),
 		os.ModePerm)
@@ -607,7 +595,7 @@ func (t *TestSpec) CreateCiliumNetworkPolicy() (string, error) {
 		}
 		specs = append(specs, api.Rule{
 			EndpointSelector: api.EndpointSelector{
-				LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
 					"id": t.DestPod,
 				}},
 			},
@@ -629,7 +617,7 @@ func (t *TestSpec) CreateCiliumNetworkPolicy() (string, error) {
 
 		specs = append(specs, api.Rule{
 			EndpointSelector: api.EndpointSelector{
-				LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				LabelSelector: &slim_metav1.LabelSelector{MatchLabels: map[string]string{
 					"id": t.SrcPod,
 				}},
 			},
@@ -669,7 +657,7 @@ func (t *TestSpec) NetworkPolicyApply(base string) error {
 		return nil
 	}
 
-	err = ioutil.WriteFile(t.NetworkPolicyName(), []byte(policy), os.ModePerm)
+	err = os.WriteFile(t.NetworkPolicyName(), []byte(policy), os.ModePerm)
 	if err != nil {
 		return fmt.Errorf("Network policy cannot be written prefix=%s: %s", t.Prefix, err)
 	}
@@ -696,7 +684,7 @@ func (t *TestSpec) InvalidNetworkPolicyApply(base string) (*cnpv2.CiliumNetworkP
 		return nil, fmt.Errorf("Network policy cannot be created prefix=%s: %s", t.Prefix, err)
 	}
 
-	err = ioutil.WriteFile(t.NetworkPolicyName(), []byte(policy), os.ModePerm)
+	err = os.WriteFile(t.NetworkPolicyName(), []byte(policy), os.ModePerm)
 	if err != nil {
 		return nil, fmt.Errorf("Network policy cannot be written prefix=%s: %s", t.Prefix, err)
 	}

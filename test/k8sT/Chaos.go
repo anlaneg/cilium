@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
@@ -24,7 +13,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("K8sChaosTest", func() {
+// The 5.4 CI job is intended to catch BPF complexity regressions and as such
+// doesn't need to execute this test suite.
+var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sChaosTest", func() {
 
 	var (
 		kubectl        *helpers.Kubectl
@@ -36,14 +27,13 @@ var _ = Describe("K8sChaosTest", func() {
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
 		demoDSPath = helpers.ManifestGet(kubectl.BasePath(), "demo_ds.yaml")
+
 		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
 		DeployCiliumAndDNS(kubectl, ciliumFilename)
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.CiliumNamespace,
-			"cilium service list",
-			"cilium endpoint list")
+		kubectl.CiliumReport("cilium service list", "cilium endpoint list")
 	})
 
 	JustAfterEach(func() {
@@ -51,8 +41,7 @@ var _ = Describe("K8sChaosTest", func() {
 	})
 
 	AfterAll(func() {
-		kubectl.DeleteCiliumDS()
-		ExpectAllPodsTerminated(kubectl)
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		kubectl.CloseSSHClient()
 	})
 
@@ -61,12 +50,12 @@ var _ = Describe("K8sChaosTest", func() {
 			kubectl.ApplyDefault(demoDSPath).ExpectSuccess("DS deployment cannot be applied")
 
 			err := kubectl.WaitforPods(
-				helpers.DefaultNamespace, fmt.Sprintf("-l zgroup=testDS"), helpers.HelperTimeout)
+				helpers.DefaultNamespace, "-l zgroup=testDS", helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 		})
 
 		AfterEach(func() {
-			kubectl.Delete(demoDSPath).ExpectSuccess(
+			kubectl.DeleteLong(demoDSPath).ExpectSuccess(
 				"%s deployment cannot be deleted", demoDSPath)
 			ExpectAllPodsTerminated(kubectl)
 
@@ -121,7 +110,7 @@ var _ = Describe("K8sChaosTest", func() {
 			By("Waiting for deployed pods to be ready")
 			err := kubectl.WaitforPods(
 				helpers.DefaultNamespace,
-				fmt.Sprintf("-l zgroup=testDSClient"), helpers.HelperTimeout)
+				"-l zgroup=testDSClient", helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 
 			err = kubectl.CiliumEndpointWaitReady()
@@ -155,9 +144,7 @@ var _ = Describe("K8sChaosTest", func() {
 			By("Checking connectivity after uninstalling Cilium")
 			connectivityTest()
 
-			By("Install cilium pods")
-
-			ciliumFilename := helpers.TimestampFilename("cilium.yaml")
+			By("Reinstall cilium DaemonSet")
 			err = kubectl.CiliumInstall(ciliumFilename, map[string]string{})
 			Expect(err).To(BeNil(), "Cilium cannot be installed")
 
@@ -190,7 +177,7 @@ var _ = Describe("K8sChaosTest", func() {
 
 			err := kubectl.WaitforPods(
 				helpers.DefaultNamespace,
-				fmt.Sprintf("-l zgroup=testapp"), helpers.HelperTimeout)
+				"-l zgroup=testapp", helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 
 			podsIps, err = kubectl.GetPodsIPs(helpers.DefaultNamespace, "zgroup=testapp")
@@ -235,7 +222,7 @@ var _ = Describe("K8sChaosTest", func() {
 			res := kubectl.ExecPodCmdBackground(
 				ctx,
 				helpers.DefaultNamespace,
-				netperfClient,
+				netperfClient, "",
 				fmt.Sprintf("netperf -l 60 -t TCP_STREAM -H %s", podsIps[netperfServer]))
 
 			restartCilium()
@@ -252,7 +239,7 @@ var _ = Describe("K8sChaosTest", func() {
 			res := kubectl.ExecPodCmdBackground(
 				ctx,
 				helpers.DefaultNamespace,
-				netperfClient,
+				netperfClient, "",
 				fmt.Sprintf("netperf -l 60 -t TCP_STREAM -H %s", podsIps[netperfServer]))
 
 			By("Installing the L3-L4 Policy")
