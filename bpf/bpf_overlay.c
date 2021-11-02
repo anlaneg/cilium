@@ -248,12 +248,14 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 }
 #endif /* ENABLE_IPV4 */
 
+//在隧道设备tc ingress点上需要加载的bpf程序
 __section("from-overlay")
-int from_overlay(struct __ctx_buff *ctx)
+int from_overlay(struct __ctx_buff *ctx/*此点传入的类型即为sk_buff,见函数cls_bpf_classify*/)
 {
 	__u16 proto;
 	int ret;
 
+	//清空skb->cb
 	bpf_clear_cb(ctx);
 	bpf_skip_nodeport_clear(ctx);
 
@@ -295,6 +297,7 @@ int from_overlay(struct __ctx_buff *ctx)
 		break;
 
 	default:
+	    //放通其它报文
 		/* Pass unknown traffic to the stack */
 		ret = CTX_ACT_OK;
 	}
@@ -319,6 +322,7 @@ int tail_handle_nat_fwd(struct __ctx_buff *ctx)
 }
 #endif
 
+//在egress需要加载的程序
 __section("to-overlay")
 int to_overlay(struct __ctx_buff *ctx)
 {

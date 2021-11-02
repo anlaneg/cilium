@@ -239,6 +239,7 @@ ctx_load_meta(struct xdp_md *ctx, const __u64 off)
 	}
 }
 
+//自报文中提取protocol
 static __always_inline __maybe_unused __u32
 ctx_get_protocol(struct xdp_md *ctx)
 {

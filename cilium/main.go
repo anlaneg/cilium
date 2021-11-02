@@ -14,6 +14,7 @@
 
 package main
 
+//此句导入会导致cmd目录下所有.go中的init函数被调用
 import (
 	"github.com/cilium/cilium/cilium/cmd"
 )

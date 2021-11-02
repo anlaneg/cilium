@@ -58,6 +58,7 @@ DIR="$PWD/globals"
 
 MACHINE=$(uname -m)
 
+#设置设备可转发
 function setup_dev()
 {
 	local -r NAME=$1
@@ -76,6 +77,7 @@ function setup_dev()
 	fi
 }
 
+#创建veth,并为其配置mac地址
 function setup_veth_pair()
 {
 	local -r NAME1=$1
@@ -93,6 +95,7 @@ function setup_veth_pair()
 	setup_dev $NAME2
 }
 
+#创建ipvlan接口
 function setup_ipvlan_slave()
 {
 	local -r NATIVE_DEV=$1
@@ -250,11 +253,14 @@ function setup_proxy_rules()
 	esac
 }
 
+#将传入的mac地址替换为C语言数组形式
+#例如 2c:35:da:5b:9e:ec 转换为 {0x2c,0x35,0xda,0x5b,0x9e,0xec}
 function mac2array()
 {
 	echo "{0x${1//:/,0x}}"
 }
 
+#生成随机mac地址
 function rnd_mac_addr()
 {
     local lower=$(od /dev/urandom -N5 -t x1 -An | sed 's/ /:/g')
@@ -265,9 +271,13 @@ function rnd_mac_addr()
 #编译bpf程序
 function bpf_compile()
 {
+    #要编译的C源文件
 	IN=$1
+	#编译后的object文件名称
 	OUT=$2
+	#编译后的文件类型，例如obj
 	TYPE=$3
+	#额外增加的编译选项
 	EXTRA_OPTS=$4
 
 	clang -O2 -g -target bpf -emit-llvm				\
@@ -317,17 +327,26 @@ function bpf_unload()
 #bpf filter程序加载
 function bpf_load()
 {
+    #网络设备名称
 	DEV=$1
+	#编译选项
 	OPTS=$2
+	#bpf位置，"ingress"或"egress"
 	WHERE=$3
+	#要加载的c源文件
 	IN=$4
+	#要加载的编译后object文件名
 	OUT=$5
+	#要加载的段名称
 	SEC=$6
+	#map的名称
 	CALLS_MAP=$7
 
+    #取设备mac地址转成数组形式
 	NODE_MAC=$(ip link show $DEV | grep ether | awk '{print $2}')
 	NODE_MAC="{.addr=$(mac2array $NODE_MAC)}"
 
+    #按加载bpf位置，添加相应的OPTS_DIR
 	if [ "$WHERE" == "ingress" ]; then
 		OPTS_DIR="-DBPF_PKT_DIR=1"
 	else
@@ -335,11 +354,13 @@ function bpf_load()
 	fi
 
 	OPTS="${OPTS} ${OPTS_DIR} -DNODE_MAC=${NODE_MAC} -DCALLS_MAP=${CALLS_MAP}"
+	#编译生成object文件
 	bpf_compile $IN $OUT obj "$OPTS"
 	tc qdisc replace dev $DEV clsact || true
 	[ -z "$(tc filter show dev $DEV $WHERE | grep -v 'pref 1 bpf chain 0 $\|pref 1 bpf chain 0 handle 0x1')" ] || tc filter del dev $DEV $WHERE
 	cilium-map-migrate -s $OUT
 	set +e
+	#下发bpf程序到设备$DEV
 	tc filter replace dev $DEV $WHERE prio 1 handle 1 bpf da obj $OUT sec $SEC
 	RETCODE=$?
 	set -e
@@ -500,6 +521,7 @@ move_local_rules
 # using a separate routing table
 setup_proxy_rules
 
+#修改node_config.h文件，指明使用哪种隧道协议
 sed -i '/ENCAP_GENEVE/d' $RUNDIR/globals/node_config.h
 sed -i '/ENCAP_VXLAN/d' $RUNDIR/globals/node_config.h
 if [ "$MODE" = "vxlan" ]; then
@@ -508,15 +530,20 @@ elif [ "$MODE" = "geneve" ]; then
 	echo "#define ENCAP_GENEVE 1" >> $RUNDIR/globals/node_config.h
 fi
 
+#使用vxlan或geneve格式隧道情况，加载bpf_overlay.c
 if [ "$MODE" = "vxlan" -o "$MODE" = "geneve" ]; then
+    #隧道名称
 	ENCAP_DEV="cilium_${MODE}"
 	ip link show $ENCAP_DEV || {
+	    #创建隧道设备
 		ip link add name $ENCAP_DEV address $(rnd_mac_addr) mtu $MTU type $MODE external || encap_fail
 	}
 
+    #使设备up
 	setup_dev $ENCAP_DEV
 	ip link set $ENCAP_DEV up || encap_fail
 
+    #定义encap设备对应的ifindex
 	ENCAP_IDX=$(cat /sys/class/net/${ENCAP_DEV}/ifindex)
 	sed -i '/^#.*ENCAP_IFINDEX.*$/d' $RUNDIR/globals/node_config.h
 	echo "#define ENCAP_IFINDEX $ENCAP_IDX" >> $RUNDIR/globals/node_config.h
@@ -526,6 +553,7 @@ if [ "$MODE" = "vxlan" -o "$MODE" = "geneve" ]; then
 	if [ "$NODE_PORT" = "true" ]; then
 		COPTS="${COPTS} -DLB_L3 -DLB_L4"
 	fi
+	#加载bpf_overlay.c 定义的bpf到ingress,egress
 	bpf_load $ENCAP_DEV "$COPTS" "ingress" bpf_overlay.c bpf_overlay.o from-overlay ${CALLS_MAP}
 	bpf_load $ENCAP_DEV "$COPTS" "egress" bpf_overlay.c bpf_overlay.o to-overlay ${CALLS_MAP}
 else
@@ -534,6 +562,7 @@ else
 	ip link del cilium_geneve 2> /dev/null || true
 fi
 
+#载加bpf_netdev.c，实现以下mode
 if [ "$MODE" = "direct" ] || [ "$MODE" = "ipvlan" ] || [ "$MODE" = "routed" ] || [ "$NODE_PORT" = "true" ] ; then
 	if [ "$NATIVE_DEV" == "<nil>" ]; then
 		echo "No device specified for $MODE mode, ignoring..."

@@ -33,13 +33,14 @@
  *
  * Return 0 on success or a negative DROP_* reason
  */
-static __always_inline int l4_modify_port(struct __ctx_buff *ctx, int l4_off,
-					  int off, struct csum_offset *csum_off,
-					  __be16 port, __be16 old_port)
+static __always_inline int l4_modify_port(struct __ctx_buff *ctx, int l4_off/*到l4头部的偏移量*/,
+					  int off/*l4层头到待修改port位置的偏移量*/, struct csum_offset *csum_off/*checksum对应的位置及flags*/,
+					  __be16 port/*新port*/, __be16 old_port/*旧port*/)
 {
 	if (csum_l4_replace(ctx, l4_off, csum_off, old_port, port, sizeof(port)) < 0)
 		return DROP_CSUM_L4;
 
+	/*使新port值应用到报文中*/
 	if (ctx_store_bytes(ctx, l4_off + off, &port, sizeof(port), 0) < 0)
 		return DROP_WRITE_ERROR;
 

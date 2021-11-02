@@ -59,12 +59,14 @@ static __always_inline int eth_store_saddr(struct __ctx_buff *ctx, __u8 *mac,
 	return ctx_store_bytes(ctx, off + ETH_ALEN, mac, ETH_ALEN, 0);
 }
 
+//加载目的mac
 static __always_inline int eth_load_daddr(struct __ctx_buff *ctx, __u8 *mac,
 					  int off)
 {
 	return ctx_load_bytes(ctx, off, mac, ETH_ALEN);
 }
 
+//修改skb的目的mac
 static __always_inline int eth_store_daddr(struct __ctx_buff *ctx, __u8 *mac,
 					   int off)
 {

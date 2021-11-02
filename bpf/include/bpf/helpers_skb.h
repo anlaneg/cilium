@@ -18,8 +18,10 @@ static __u32 BPF_FUNC(get_hash_recalc, struct __sk_buff *skb);
 static int BPF_FUNC(redirect, int ifindex, __u32 flags);
 
 /* Packet manipulation */
+//自skb指定的offset位置加载长度为len的数据，存放到to中
 static int BPF_FUNC(skb_load_bytes, struct __sk_buff *skb, __u32 off,
 		    void *to, __u32 len);
+//向skb指定的offset位置写入长度为len的数据，存放到to中
 static int BPF_FUNC(skb_store_bytes, struct __sk_buff *skb, __u32 off,
 		    const void *from, __u32 len, __u32 flags);
 

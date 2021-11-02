@@ -29,6 +29,7 @@ const notResponding = "Not responding"
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
+	//用于显示version
 	Run: func(cmd *cobra.Command, args []string) {
 		getVersion(cmd, args)
 	},

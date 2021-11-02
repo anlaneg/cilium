@@ -452,6 +452,7 @@ func (m *Map) OpenOrCreateUnpinned() (bool, error) {
 	return m.openOrCreate(false)
 }
 
+/*创建指定的map*/
 func (m *Map) openOrCreate(pin bool) (bool, error) {
 	if m.fd != 0 {
 		return false, nil

@@ -28,7 +28,9 @@
 
 #define META_PIVOT		field_sizeof(struct __sk_buff, cb)
 
+//skb指定offset位置内容加载
 #define ctx_load_bytes		skb_load_bytes
+//skb指定offset位置内容写
 #define ctx_store_bytes		skb_store_bytes
 
 #define ctx_adjust_room		skb_adjust_room
@@ -76,6 +78,7 @@ ctx_get_protocol(struct __sk_buff *ctx)
 	return ctx->protocol;
 }
 
+//入接口index
 static __always_inline __maybe_unused __u32
 ctx_get_ifindex(struct __sk_buff *ctx)
 {

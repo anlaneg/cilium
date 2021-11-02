@@ -536,6 +536,7 @@ ct_recreate4:
 		 * reverse NAT.
 		 */
 		ct_state_new.src_sec_id = SECLABEL;
+		/*创建ct*/
 		ret = ct_create4(get_ct_map4(&tuple), &tuple, ctx, CT_EGRESS,
 				 &ct_state_new, verdict > 0);
 		if (IS_ERR(ret))

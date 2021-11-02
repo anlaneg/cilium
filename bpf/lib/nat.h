@@ -24,7 +24,8 @@ enum {
 };
 
 struct nat_entry {
-	__u64 created;
+	__u64 created;/*创建时间*/
+	/*是否主机本地地址*/
 	__u64 host_local;	/* Only single bit used. */
 	__u64 pad1;		/* Future use. */
 	__u64 pad2;		/* Future use. */
@@ -54,6 +55,7 @@ struct nat_entry {
 # define SNAT_SIGNAL_THRES		10
 #endif
 
+/*在start,end之间取一个伪随机值*/
 static __always_inline __be16 __snat_clamp_port_range(__u16 start, __u16 end,
 						      __u16 val)
 {
@@ -63,8 +65,8 @@ static __always_inline __be16 __snat_clamp_port_range(__u16 start, __u16 end,
 static __always_inline __maybe_unused __be16
 __snat_try_keep_port(__u16 start, __u16 end, __u16 val)
 {
-	return val >= start && val <= end ? val :
-	       __snat_clamp_port_range(start, end, get_prandom_u32());
+	return val >= start && val <= end ? val /*不转换，保持原样*/:
+	       __snat_clamp_port_range(start, end, get_prandom_u32())/*生成一个随机值*/;
 }
 
 static __always_inline __maybe_unused void *__snat_lookup(void *map, void *tuple)
@@ -76,6 +78,7 @@ static __always_inline __maybe_unused int __snat_update(void *map, void *otuple,
 							void *ostate, void *rtuple,
 							void *rstate)
 {
+    /*连续添加两次hashtable*/
 	int ret = map_update_elem(map, rtuple, rstate, BPF_NOEXIST);
 	if (!ret) {
 		ret = map_update_elem(map, otuple, ostate, BPF_NOEXIST);
@@ -85,6 +88,7 @@ static __always_inline __maybe_unused int __snat_update(void *map, void *otuple,
 	return ret;
 }
 
+//移除掉正向两方flow
 static __always_inline __maybe_unused void __snat_delete(void *map, void *otuple,
 							 void *rtuple)
 {
@@ -108,6 +112,7 @@ struct ipv4_nat_entry {
 
 struct ipv4_nat_target {
 	__be32 addr;
+	//nat分配范围
 	const __u16 min_port; /* host endianess */
 	const __u16 max_port; /* host endianess */
 	bool src_from_world;
@@ -125,6 +130,7 @@ struct bpf_elf_map __section_maps SNAT_MAPPING_IPV4 = {
 #endif
 };
 
+//通过tuple查询ipv4 mapping
 static __always_inline
 struct ipv4_nat_entry *snat_v4_lookup(struct ipv4_ct_tuple *tuple)
 {
@@ -264,6 +270,7 @@ static __always_inline int snat_v4_track_local(struct __ctx_buff *ctx,
 	if (state && state->common.host_local) {
 		needs_ct = true;
 	} else if (!state && dir == NAT_DIR_EGRESS) {
+	    /*出方向,无ct,且srcip相等，需要创建ct*/
 		if (tuple->saddr == target->addr)
 			needs_ct = true;
 	}
@@ -309,27 +316,33 @@ static __always_inline int snat_v4_handle_mapping(struct __ctx_buff *ctx,
 		       bpf_ntohs(tuple->dport) < target->min_port ?
 		       NAT_PUNT_TO_STACK : DROP_NAT_NO_MAPPING;
 	else
+	    /*创建新的mapping*/
 		return snat_v4_new_mapping(ctx, tuple, (*state = tmp), target);
 }
 
 static __always_inline int snat_v4_rewrite_egress(struct __ctx_buff *ctx,
 						  struct ipv4_ct_tuple *tuple,
 						  struct ipv4_nat_entry *state,
-						  __u32 off)
+						  __u32 off/*到l4头部的偏移量*/)
 {
 	struct csum_offset csum = {};
 	__be32 sum_l4 = 0, sum;
 	int ret;
 
+	/*无地址变换，直接返回*/
 	if (state->to_saddr == tuple->saddr &&
 	    state->to_sport == tuple->sport)
 		return 0;
-	sum = csum_diff(&tuple->saddr, 4, &state->to_saddr, 4, 0);
+
+	/*转换前地址与转换后地址不同，执行checksum变更*/
+	sum = csum_diff(&tuple->saddr, 4, &state->to_saddr, 4, 0);//checksum diff
 	csum_l4_offset_and_flags(tuple->nexthdr, &csum);
 	if (state->to_sport != tuple->sport) {
+	    /*port有变更，则checksum需要更新，做snat*/
 		switch (tuple->nexthdr) {
 		case IPPROTO_TCP:
 		case IPPROTO_UDP:
+		    /*udp/tcp的port变更应用到报文*/
 			ret = l4_modify_port(ctx, off,
 					     offsetof(struct tcphdr, source),
 					     &csum, state->to_sport,
@@ -361,11 +374,12 @@ static __always_inline int snat_v4_rewrite_egress(struct __ctx_buff *ctx,
 	if (tuple->nexthdr == IPPROTO_ICMP)
 		sum = sum_l4;
 	if (csum.offset &&
-	    csum_l4_replace(ctx, off, &csum, 0, sum, BPF_F_PSEUDO_HDR) < 0)
+	    csum_l4_replace(ctx, off, &csum, 0, sum, BPF_F_PSEUDO_HDR/*这里只能传0，现在是个bug*/) < 0)
                 return DROP_CSUM_L4;
 	return 0;
 }
 
+//完成地址，port转换,checksum调整
 static __always_inline int snat_v4_rewrite_ingress(struct __ctx_buff *ctx,
 						   struct ipv4_ct_tuple *tuple,
 						   struct ipv4_nat_entry *state,
@@ -415,7 +429,7 @@ static __always_inline int snat_v4_rewrite_ingress(struct __ctx_buff *ctx,
 	if (tuple->nexthdr == IPPROTO_ICMP)
 		sum = sum_l4;
 	if (csum.offset &&
-	    csum_l4_replace(ctx, off, &csum, 0, sum, BPF_F_PSEUDO_HDR) < 0)
+	    csum_l4_replace(ctx, off, &csum, 0, sum, BPF_F_PSEUDO_HDR/*bug?*/) < 0)
                 return DROP_CSUM_L4;
 	return 0;
 }
@@ -425,8 +439,10 @@ static __always_inline bool snat_v4_can_skip(const struct ipv4_nat_target *targe
 {
 	__u16 dport = bpf_ntohs(tuple->dport), sport = bpf_ntohs(tuple->sport);
 
+	//出去方向，端port<min不处理
 	if (dir == NAT_DIR_EGRESS && !target->src_from_world && sport < NAT_MIN_EGRESS)
 		return true;
+	//进来方向的报文，目的port不在池子范围，不处理。
 	if (dir == NAT_DIR_INGRESS && (dport < target->min_port || dport > target->max_port))
 		return true;
 	return false;
@@ -481,8 +497,8 @@ static __always_inline __maybe_unused int snat_v4_create_dsr(struct __ctx_buff *
 	return CTX_ACT_OK;
 }
 
-static __always_inline int snat_v4_process(struct __ctx_buff *ctx, int dir,
-					   const struct ipv4_nat_target *target)
+static __always_inline int snat_v4_process(struct __ctx_buff *ctx, int dir/*ingress或egress点*/,
+					   const struct ipv4_nat_target *target/*地址池信息*/)
 {
 	struct ipv4_nat_entry *state, tmp;
 	struct ipv4_ct_tuple tuple = {};
@@ -498,14 +514,18 @@ static __always_inline int snat_v4_process(struct __ctx_buff *ctx, int dir,
 
 	build_bug_on(sizeof(struct ipv4_nat_entry) > 64);
 
-	if (!revalidate_data(ctx, &data, &data_end, &ip4))
+	if (!revalidate_data(ctx, &data/*出参，报文起始位置*/, &data_end/*出参，报文终止位置*/, &ip4/*l3层头部指针*/))
 		return DROP_INVALID;
 
+	//构造tuple
 	tuple.nexthdr = ip4->protocol;
 	tuple.daddr = ip4->daddr;
 	tuple.saddr = ip4->saddr;
 	tuple.flags = dir;
+	/*到l4头部的偏移量（从data开始）*/
 	off = ((void *)ip4 - data) + ipv4_hdrlen(ip4);
+
+	/*加载l4层端目的port*/
 	switch (tuple.nexthdr) {
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
@@ -532,8 +552,10 @@ static __always_inline int snat_v4_process(struct __ctx_buff *ctx, int dir,
 		return DROP_NAT_UNSUPP_PROTO;
 	};
 
+	/*如果不需要做snat,则跳过*/
 	if (snat_v4_can_skip(target, &tuple, dir))
 		return NAT_PUNT_TO_STACK;
+
 	ret = snat_v4_handle_mapping(ctx, &tuple, &state, &tmp, dir, off, target);
 	if (ret > 0)
 		return CTX_ACT_OK;
@@ -541,7 +563,9 @@ static __always_inline int snat_v4_process(struct __ctx_buff *ctx, int dir,
 		return ret;
 
 	return dir == NAT_DIR_EGRESS ?
+	        /*egress做snat*/
 	       snat_v4_rewrite_egress(ctx, &tuple, state, off) :
+	       /*egress做dnat*/
 	       snat_v4_rewrite_ingress(ctx, &tuple, state, off);
 }
 #else
@@ -559,6 +583,7 @@ static __always_inline __maybe_unused void snat_v4_delete_tuples(struct ipv4_ct_
 struct ipv6_nat_entry {
 	struct nat_entry common;
 	union {
+	    //转换后addr,port情况
 		struct {
 			union v6addr to_saddr;
 			__be16       to_sport;
@@ -579,26 +604,27 @@ struct ipv6_nat_target {
 
 #if defined ENABLE_IPV6 && (defined ENABLE_MASQUERADE || defined ENABLE_NODEPORT)
 struct bpf_elf_map __section_maps SNAT_MAPPING_IPV6 = {
-	.type		= NAT_MAP_TYPE,
+	.type		= NAT_MAP_TYPE,/*hashmap类型*/
 	.size_key	= sizeof(struct ipv6_ct_tuple),
 	.size_value	= sizeof(struct ipv6_nat_entry),
 	.pinning	= PIN_GLOBAL_NS,
-	.max_elem	= SNAT_MAPPING_IPV6_SIZE,
+	.max_elem	= SNAT_MAPPING_IPV6_SIZE,/*元素最大数*/
 #ifndef HAVE_LRU_MAP_TYPE
 	.flags		= CONDITIONAL_PREALLOC,
 #endif
 };
 
+/*用元组查询hashtable,确认对应session*/
 static __always_inline
 struct ipv6_nat_entry *snat_v6_lookup(struct ipv6_ct_tuple *tuple)
 {
 	return __snat_lookup(&SNAT_MAPPING_IPV6, tuple);
 }
 
-static __always_inline int snat_v6_update(struct ipv6_ct_tuple *otuple,
-					  struct ipv6_nat_entry *ostate,
-					  struct ipv6_ct_tuple *rtuple,
-					  struct ipv6_nat_entry *rstate)
+static __always_inline int snat_v6_update(struct ipv6_ct_tuple *otuple/*源元组*/,
+					  struct ipv6_nat_entry *ostate/*源方向session*/,
+					  struct ipv6_ct_tuple *rtuple/*响应方元组*/,
+					  struct ipv6_nat_entry *rstate/*响应方session*/)
 {
 	return __snat_update(&SNAT_MAPPING_IPV6, otuple, ostate,
 			     rtuple, rstate);
@@ -661,7 +687,7 @@ static __always_inline void snat_v6_delete_tuples(struct ipv6_ct_tuple *otuple)
 }
 
 static __always_inline int snat_v6_new_mapping(struct __ctx_buff *ctx,
-					       struct ipv6_ct_tuple *otuple,
+					       struct ipv6_ct_tuple *otuple/*源方向元素*/,
 					       struct ipv6_nat_entry *ostate,
 					       const struct ipv6_nat_target *target)
 {
@@ -670,6 +696,7 @@ static __always_inline int snat_v6_new_mapping(struct __ctx_buff *ctx,
 	struct ipv6_ct_tuple rtuple;
 	__u16 port;
 
+	//清零
 	__builtin_memset(&rstate, 0, sizeof(rstate));
 	__builtin_memset(ostate, 0, sizeof(*ostate));
 
@@ -678,30 +705,38 @@ static __always_inline int snat_v6_new_mapping(struct __ctx_buff *ctx,
 
 	ostate->to_saddr = target->addr;
 
+	//构造replay 方向元组
 	snat_v6_swap_tuple(otuple, &rtuple);
+	//随机选一个port
 	port = __snat_try_keep_port(target->min_port,
 				    target->max_port,
 				    bpf_ntohs(otuple->sport));
 
+	/*假设使用此port及此地址*/
 	rtuple.dport = ostate->to_sport = bpf_htons(port);
 	rtuple.daddr = target->addr;
 
+	/*标记使用ip地址未发生变更*/
 	if (!ipv6_addrcmp(&otuple->saddr, &rtuple.daddr)) {
 		ostate->common.host_local = 1;
 		rstate.common.host_local = ostate->common.host_local;
 	}
 
 #pragma unroll
+	//进行多次尝试，检查是否有冲突（成功率 17/18=94.4%,但由于是full nat故成功率将大于此值）
 	for (retries = 0; retries < SNAT_COLLISION_RETRIES; retries++) {
 		if (!snat_v6_lookup(&rtuple)) {
+		    /*sessin不存在，确认此端口可用*/
 			ostate->common.created = bpf_ktime_get_nsec();
 			rstate.common.created = ostate->common.created;
 
+			/*加入正反两方向session*/
 			ret = snat_v6_update(otuple, ostate, &rtuple, &rstate);
 			if (!ret)
 				break;
 		}
 
+		/*尝试分配下一个port*/
 		port = __snat_clamp_port_range(target->min_port,
 					       target->max_port,
 					       retries ? port + 1 :
@@ -709,6 +744,7 @@ static __always_inline int snat_v6_new_mapping(struct __ctx_buff *ctx,
 		rtuple.dport = ostate->to_sport = bpf_htons(port);
 	}
 
+	/*分配端口失败*/
 	if (retries > SNAT_SIGNAL_THRES)
 		send_signal_nat_fill_up(ctx, SIGNAL_NAT_PROTO_V6);
 	return !ret ? 0 : DROP_NAT_NO_MAPPING;
@@ -727,14 +763,17 @@ static __always_inline int snat_v6_track_local(struct __ctx_buff *ctx,
 	int ret, where;
 
 	if (state && state->common.host_local) {
+	    /*ip使用host local,ct有效*/
 		needs_ct = true;
 	} else if (!state && dir == NAT_DIR_EGRESS) {
+	    /*出方向，无state,但其源ip与target ip相等，故其是host_local为true情况*/
 		if (!ipv6_addrcmp(&tuple->saddr, (void *)&target->addr))
 			needs_ct = true;
 	}
 	if (!needs_ct)
 		return 0;
 
+	//？？？？？待分析
 	__builtin_memset(&ct_state, 0, sizeof(ct_state));
 	__builtin_memcpy(&tmp, tuple, sizeof(tmp));
 
@@ -774,9 +813,11 @@ static __always_inline int snat_v6_handle_mapping(struct __ctx_buff *ctx,
 		       bpf_ntohs(tuple->dport) < target->min_port ?
 		       NAT_PUNT_TO_STACK : DROP_NAT_NO_MAPPING;
 	else
-		return snat_v6_new_mapping(ctx, tuple, (*state = tmp), target);
+	    //执行port分配（full nat)
+		return snat_v6_new_mapping(ctx, tuple, (*state = tmp)/*使用临时变量*/, target);
 }
 
+//完成地址，port转换,checksum调整
 static __always_inline int snat_v6_rewrite_egress(struct __ctx_buff *ctx,
 						  struct ipv6_ct_tuple *tuple,
 						  struct ipv6_nat_entry *state,
@@ -795,6 +836,7 @@ static __always_inline int snat_v6_rewrite_egress(struct __ctx_buff *ctx,
 		switch (tuple->nexthdr) {
 		case IPPROTO_TCP:
 		case IPPROTO_UDP:
+		    /*修改port,更新checksum*/
 			ret = l4_modify_port(ctx, off, offsetof(struct tcphdr, source),
 					     &csum, state->to_sport, tuple->sport);
 			if (ret < 0)
@@ -815,15 +857,20 @@ static __always_inline int snat_v6_rewrite_egress(struct __ctx_buff *ctx,
 			break;
 		}}
 	}
+	/*修改ipv6地址*/
 	if (ctx_store_bytes(ctx, ETH_HLEN + offsetof(struct ipv6hdr, saddr),
 			    &state->to_saddr, 16, 0) < 0)
 		return DROP_WRITE_ERROR;
+	/*这里更新checksum.（由于ipv6地址发生了变更）此时from=0,而sum是相对之前checksum的diff
+	 * 由于我们更新的是ip地址，故在ip_summed=complete情况下skb->csum并不需要发生变更
+	 * 但这里传入了BPF_F_PSEUDO_HDR,这会导致skb->csum被更改，所以认为是一个bug*/
 	if (csum.offset &&
-	    csum_l4_replace(ctx, off, &csum, 0, sum, BPF_F_PSEUDO_HDR) < 0)
+	    csum_l4_replace(ctx, off, &csum, 0, sum, BPF_F_PSEUDO_HDR/*应传入0*/) < 0)
                 return DROP_CSUM_L4;
 	return 0;
 }
 
+//完成地址，port转换,checksum调整
 static __always_inline int snat_v6_rewrite_ingress(struct __ctx_buff *ctx,
 						   struct ipv6_ct_tuple *tuple,
 						   struct ipv6_nat_entry *state,
@@ -965,6 +1012,7 @@ static __always_inline int snat_v6_process(struct __ctx_buff *ctx, int dir,
 	if (hdrlen < 0)
 		return hdrlen;
 
+	//完成元组数据提取
 	tuple.nexthdr = nexthdr;
 	ipv6_addr_copy(&tuple.daddr, (union v6addr *)&ip6->daddr);
 	ipv6_addr_copy(&tuple.saddr, (union v6addr *)&ip6->saddr);
@@ -1001,12 +1049,14 @@ static __always_inline int snat_v6_process(struct __ctx_buff *ctx, int dir,
 
 	if (snat_v6_can_skip(target, &tuple, dir))
 		return NAT_PUNT_TO_STACK;
+	//执行nat转换及状态处理
 	ret = snat_v6_handle_mapping(ctx, &tuple, &state, &tmp, dir, off, target);
 	if (ret > 0)
 		return CTX_ACT_OK;
 	if (ret < 0)
 		return ret;
 
+	//完成地址及port，checksum更新
 	return dir == NAT_DIR_EGRESS ?
 	       snat_v6_rewrite_egress(ctx, &tuple, state, off) :
 	       snat_v6_rewrite_ingress(ctx, &tuple, state, off);
@@ -1057,18 +1107,22 @@ static __always_inline __maybe_unused void ct_delete6(void *map, struct ipv6_ct_
 }
 #endif
 
+//处理ipv4/ipv6的snat
 static __always_inline __maybe_unused int snat_process(struct __ctx_buff *ctx, int dir)
 {
 	int ret = CTX_ACT_OK;
 
 #ifdef ENABLE_MASQUERADE
+	//检查报文l3层协议
 	switch (ctx_get_protocol(ctx)) {
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP): {
+	    //做ipv4的snat
 		struct ipv4_nat_target target = {
+		    //地址池
 			.min_port = SNAT_MAPPING_MIN_PORT,
 			.max_port = SNAT_MAPPING_MAX_PORT,
-			.addr  = SNAT_IPV4_EXTERNAL,
+			.addr  = SNAT_IPV4_EXTERNAL,/*做snat的地址*/
 		};
 		ret = snat_v4_process(ctx, dir, &target);
 		break; }

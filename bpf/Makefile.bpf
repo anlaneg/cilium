@@ -6,6 +6,7 @@ CLANG_FLAGS := ${FLAGS} -target bpf -emit-llvm
 CLANG_FLAGS += -Wall -Werror -Wno-address-of-packed-member -Wno-unknown-warning-option
 LLC_FLAGS   := -march=bpf -mcpu=probe -mattr=dwarfris
 
+#lib对应的是bpf文件下所有.h文件
 LIB := $(shell find $(ROOT_DIR)/bpf -name '*.h')
 BPF_C := $(patsubst %.o,%.c,$(BPF))
 BPF_ASM := $(patsubst %.o,%.s,$(BPF))
@@ -18,10 +19,12 @@ HOSTCC ?= gcc
 # the 'all' target first (which we expect to be overridden by the includer).
 all:
 
+#定义object规则
 %.ll: %.c $(LIB)
 	@$(ECHO_CC)
 	$(QUIET) ${CLANG} ${CLANG_FLAGS} -c $< -o $@
 
+#定义汇编代码规则
 %.s: %.ll
 	@$(ECHO_CC)
 	$(QUIET) ${LLC} $(LLC_FLAGS) -filetype=asm -o $@ $(patsubst %.s,%.ll,$@)

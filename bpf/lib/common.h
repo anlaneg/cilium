@@ -89,18 +89,22 @@ union v6addr {
         __u8 addr[16];
 } __attribute__((packed));
 
+//提取三层协议号，只支持2型以太帧
 static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
-					       __u16 *proto)
+					       __u16 *proto/*出参，l3层协议号*/)
 {
 	void *data = ctx_data(ctx);
 	void *data_end = ctx_data_end(ctx);
 
+	//报文长度小于以太头，则直接返回false
 	if (data + ETH_HLEN > data_end)
 		return false;
 
+	//提取l3类型
 	struct ethhdr *eth = data;
 	*proto = eth->h_proto;
 
+	//只考虑2型以太型
 	if (bpf_ntohs(*proto) < ETH_P_802_3_MIN)
 		return false; // non-Ethernet II unsupported
 
@@ -117,6 +121,7 @@ __revalidate_data(struct __ctx_buff *ctx, void **data_, void **data_end_,
 
 	/* Verifier workaround, do this unconditionally: invalid size of register spill. */
 	if (pull)
+	    /*pull数据使其长度支持tot_len*/
 		ctx_pull_data(ctx, tot_len);
 	data_end = ctx_data_end(ctx);
 	data = ctx_data(ctx);
@@ -127,6 +132,7 @@ __revalidate_data(struct __ctx_buff *ctx, void **data_, void **data_end_,
 	*data_ = data;
 	*data_end_ = data_end;
 
+	/*返回l3层头部指针*/
 	*l3 = data + ETH_HLEN;
 	return true;
 }
@@ -502,14 +508,14 @@ struct ipv6_ct_tuple {
 struct ipv4_ct_tuple {
 	/* Address fields are reversed, i.e.,
 	 * these field names are correct for reply direction traffic. */
-	__be32		daddr;
+	__be32		daddr;/*目的地址*/
 	__be32		saddr;
 	/* The order of dport+sport must not be changed!
 	 * These field names are correct for original direction traffic. */
 	__be16		dport;
 	__be16		sport;
-	__u8		nexthdr;
-	__u8		flags;
+	__u8		nexthdr;/*4层协议*/
+	__u8		flags;/*报文方向*/
 } __attribute__((packed));
 
 struct ct_entry {

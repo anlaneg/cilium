@@ -36,6 +36,7 @@
 #include "lib/nodeport.h"
 
 #if defined FROM_HOST && (defined ENABLE_IPV4 || defined ENABLE_IPV6)
+//修改报文目的mac到cilium_net_mac
 static __always_inline int rewrite_dmac_to_host(struct __ctx_buff *ctx,
 						__u32 src_identity)
 {
@@ -45,6 +46,7 @@ static __always_inline int rewrite_dmac_to_host(struct __ctx_buff *ctx,
 	union macaddr cilium_net_mac = CILIUM_NET_MAC;
 
 	/* Rewrite to destination MAC of cilium_net (remote peer) */
+	//修改报文目的mac为cilium_net_mac
 	if (eth_store_daddr(ctx, (__u8 *) &cilium_net_mac.addr, 0) < 0)
 		return send_drop_notify_error(ctx, src_identity, DROP_WRITE_ERROR,
 					      CTX_ACT_OK, METRIC_INGRESS);
@@ -678,6 +680,7 @@ int from_netdev(struct __ctx_buff *ctx)
 	int ret = ret;
 	__u16 proto;
 
+	//帧格式校验
 	if (!validate_ethertype(ctx, &proto))
 		/* Pass unknown traffic to the stack */
 		return CTX_ACT_OK;
@@ -708,6 +711,7 @@ int to_netdev(struct __ctx_buff *ctx)
 	if (IS_ERR(ret))
 		return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP, METRIC_EGRESS);
 #elif defined(ENABLE_MASQUERADE)
+	//取以太网帧l3层协议类型
 	__u16 proto;
 	if (!validate_ethertype(ctx, &proto))
 		/* Pass unknown traffic to the stack */

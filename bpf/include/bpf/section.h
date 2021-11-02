@@ -14,6 +14,7 @@
 # define __section_license		__section("license")
 #endif
 
+/*定义maps段，这此段会存放bpf规定的map*/
 #ifndef __section_maps
 # define __section_maps			__section("maps")
 #endif
