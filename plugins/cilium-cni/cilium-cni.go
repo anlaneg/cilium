@@ -71,6 +71,7 @@ type CmdState struct {
 }
 
 func main() {
+	/*自env中获取cmd,并按cmd要求执行cmdAdd/cmdDel*/
 	skel.PluginMain(cmdAdd,
 		nil,
 		cmdDel,
