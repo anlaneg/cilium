@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-
-	. "github.com/onsi/gomega"
 )
 
 // The 5.4 CI job is intended to catch BPF complexity regressions and as such
@@ -31,10 +31,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sLRPTests", func() {
 
 	JustAfterEach(func() {
 		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-	})
-
-	AfterEach(func() {
-		ExpectAllPodsTerminated(kubectl)
 	})
 
 	AfterAll(func() {
@@ -90,6 +86,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sLRPTests", func() {
 
 		AfterAll(func() {
 			_ = kubectl.Delete(deploymentYAML)
+			ExpectAllPodsTerminated(kubectl)
 		})
 
 		It("LRP connectivity", func() {

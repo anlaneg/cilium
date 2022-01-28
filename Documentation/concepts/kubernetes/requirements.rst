@@ -24,6 +24,8 @@ backward compatibility offered by Kubernetes.
 * 1.19
 * 1.20
 * 1.21
+* 1.22
+* 1.23
 
 System Requirements
 ===================

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/cilium/cilium/pkg/lock"
-
 	"github.com/sirupsen/logrus"
+
+	"github.com/cilium/cilium/pkg/lock"
 )
 
 var (
@@ -103,43 +103,11 @@ func (elf *ELF) Close() (err error) {
 	return err
 }
 
-func (elf *ELF) readValue(offset int64, size int64) ([]byte, error) {
-	reader := io.NewSectionReader(elf.file, offset, size)
-	result := make([]byte, size)
-	if err := binary.Read(reader, elf.metadata.ByteOrder, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
 func (elf *ELF) writeValue(w io.WriteSeeker, offset uint64, value []byte) error {
 	if _, err := w.Seek(int64(offset), io.SeekStart); err != nil {
 		return err
 	}
 	return binary.Write(w, elf.metadata.ByteOrder, value)
-}
-
-func (elf *ELF) readOption(key string) (result uint32, err error) {
-	opt, exists := elf.symbols.data[key]
-	if !exists {
-		return 0, fmt.Errorf("no such option %q in ELF", key)
-	}
-	value, err := elf.readValue(int64(opt.offset), int64(opt.size))
-	if err != nil {
-		return 0, err
-	}
-	return elf.metadata.ByteOrder.Uint32(value), err
-}
-
-func (elf *ELF) findString(key string) error {
-	opt, exists := elf.symbols.strings[key]
-	if !exists {
-		return fmt.Errorf("no such string %q in ELF", key)
-	}
-	if _, err := elf.readValue(int64(opt.offset), int64(opt.size)); err != nil {
-		return err
-	}
-	return nil
 }
 
 // copy the ELF from the reader to the writer, substituting the constants with
@@ -170,11 +138,15 @@ processSymbols:
 		// Figure out the value to substitute
 		var value []byte
 		switch symbol.kind {
-		case symbolUint32:
-			v, exists := intOptions[symbol.name]
-			if exists {
-				value = make([]byte, unsafe.Sizeof(v))
-				elf.metadata.ByteOrder.PutUint32(value, v)
+		case symbolData:
+			if v, exists := intOptions[symbol.name]; exists {
+				value = make([]byte, symbol.size)
+				switch uintptr(symbol.size) {
+				case unsafe.Sizeof(uint32(0)):
+					elf.metadata.ByteOrder.PutUint32(value, v)
+				case unsafe.Sizeof(uint16(0)):
+					elf.metadata.ByteOrder.PutUint16(value, uint16(v))
+				}
 			}
 
 		case symbolString:

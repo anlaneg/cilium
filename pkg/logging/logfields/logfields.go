@@ -99,6 +99,9 @@ const (
 	// MACAddr is a MAC address
 	MACAddr = "macAddr"
 
+	// NextHop is an IPV4 or IPv6 address for the next hop
+	NextHop = "nextHop"
+
 	// IPAddr is an IPV4 or IPv6 address
 	IPAddr = "ipAddr"
 
@@ -535,4 +538,34 @@ const (
 
 	// Hint helps nudge the user in the right direction when troubleshooting.
 	Hint = "hint"
+
+	// CEPName is the name of the CiliumEndpoint.
+	CEPName = "ciliumEndpointName"
+
+	// CESName is the name of the CiliumEndpointSlice.
+	CESName = "ciliumEndpointSliceName"
+
+	// WorkQueueQPSLimit is the QPS limit for WorkQueues.
+	WorkQueueQPSLimit = "workQueueQPSLimit"
+
+	// WorkQueueBurstLimit is the burst limit for WorkQueues.
+	WorkQueueBurstLimit = "workQueueBurstLimit"
+
+	// WorkQueueSyncBackoff is the backoff time used by workqueues before an attempt to retry sync with k8s-apiserver.
+	WorkQueueSyncBackOff = "workQueueSyncBackOff"
+
+	// CESSliceMode indicates the name of algorithm used to batch CEPs in a CES.
+	CESSliceMode = "ciliumEndpointSliceMode"
+
+	// SourceIP is a source IP
+	SourceIP = "sourceIP"
+
+	// DestinationCIDR is a destination CIDR
+	DestinationCIDR = "destinationCIDR"
+
+	// EgressIP is the egress IP used in a given egress policy
+	EgressIP = "egressIP"
+
+	// GatewayIP is the gateway IP used in a given egress policy
+	GatewayIP = "gatewayIP"
 )

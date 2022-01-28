@@ -49,12 +49,12 @@ func (e *Endpoint) GetLabelsModel() (*models.LabelConfiguration, error) {
 }
 
 // NewEndpointFromChangeModel creates a new endpoint from a request
-func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator, base *models.EndpointChangeRequest) (*Endpoint, error) {
+func NewEndpointFromChangeModel(ctx context.Context, owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, base *models.EndpointChangeRequest) (*Endpoint, error) {
 	if base == nil {
 		return nil, nil
 	}
 
-	ep := createEndpoint(owner, proxy, allocator, uint16(base.ID), base.InterfaceName)
+	ep := createEndpoint(owner, policyGetter, proxy, allocator, uint16(base.ID), base.InterfaceName)
 	ep.ifIndex = int(base.InterfaceIndex)
 	ep.containerName = base.ContainerName
 	ep.containerID = base.ContainerID
@@ -355,12 +355,10 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 	sortProxyStats(proxyStats)
 
 	var (
-		realizedCIDRPolicy *policy.CIDRPolicy
-		realizedL4Policy   *policy.L4Policy
+		realizedL4Policy *policy.L4Policy
 	)
 	if e.realizedPolicy != nil {
 		realizedL4Policy = e.realizedPolicy.L4Policy
-		realizedCIDRPolicy = e.realizedPolicy.CIDRPolicy
 	}
 
 	mdl := &models.EndpointPolicy{
@@ -372,17 +370,14 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 		AllowedEgressIdentities:  realizedEgressIdentities,
 		DeniedIngressIdentities:  realizedDenyIngressIdentities,
 		DeniedEgressIdentities:   realizedDenyEgressIdentities,
-		CidrPolicy:               realizedCIDRPolicy.GetModel(),
 		L4:                       realizedL4Policy.GetModel(),
 		PolicyEnabled:            policyEnabled,
 	}
 
 	var (
-		desiredCIDRPolicy *policy.CIDRPolicy
-		desiredL4Policy   *policy.L4Policy
+		desiredL4Policy *policy.L4Policy
 	)
 	if e.desiredPolicy != nil {
-		desiredCIDRPolicy = e.desiredPolicy.CIDRPolicy
 		desiredL4Policy = e.desiredPolicy.L4Policy
 	}
 
@@ -395,7 +390,6 @@ func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
 		AllowedEgressIdentities:  desiredEgressIdentities,
 		DeniedIngressIdentities:  desiredDenyIngressIdentities,
 		DeniedEgressIdentities:   desiredDenyEgressIdentities,
-		CidrPolicy:               desiredCIDRPolicy.GetModel(),
 		L4:                       desiredL4Policy.GetModel(),
 		PolicyEnabled:            policyEnabled,
 	}

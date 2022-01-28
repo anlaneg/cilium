@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright 2016-2021 Authors of Cilium
 
 package kvstore
 
@@ -12,6 +12,10 @@ import (
 	"os"
 	"time"
 
+	consulAPI "github.com/hashicorp/consul/api"
+	"github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
+
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/inctimer"
@@ -19,10 +23,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/spanstat"
-
-	consulAPI "github.com/hashicorp/consul/api"
-	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
 )
 
 const (
@@ -115,6 +115,10 @@ func (c *consulModule) getConfig() map[string]string {
 }
 
 func (c *consulModule) newClient(ctx context.Context, opts *ExtraOptions) (BackendOperations, chan error) {
+	log.WithFields(logrus.Fields{
+		logfields.URL: "https://cilium.herokuapp.com/",
+	}).Warning("Support for Consul as a kvstore backend has been deprecated due to lack of maintainers. If you are interested in helping to maintain Consul support in Cilium, please reach out on GitHub or the official Cilium slack")
+
 	errChan := make(chan error, 1)
 	backend, err := c.connectConsulClient(ctx, opts)
 	if err != nil {

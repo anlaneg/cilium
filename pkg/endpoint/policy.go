@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
@@ -31,8 +33,6 @@ import (
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/revert"
 	"github.com/cilium/cilium/pkg/u8proto"
-
-	"github.com/sirupsen/logrus"
 )
 
 // GetNamedPort returns the port for the given name.
@@ -138,7 +138,7 @@ func (e *Endpoint) updateNetworkPolicy(proxyWaitGroup *completion.WaitGroup) (re
 	}
 
 	// Publish the updated policy to L7 proxies.
-	return e.proxy.UpdateNetworkPolicy(e, e.desiredPolicy.L4Policy, e.desiredPolicy.IngressPolicyEnabled, e.desiredPolicy.EgressPolicyEnabled, proxyWaitGroup)
+	return e.proxy.UpdateNetworkPolicy(e, e.visibilityPolicy, e.desiredPolicy.L4Policy, e.desiredPolicy.IngressPolicyEnabled, e.desiredPolicy.EgressPolicyEnabled, proxyWaitGroup)
 }
 
 func (e *Endpoint) useCurrentNetworkPolicy(proxyWaitGroup *completion.WaitGroup) {
@@ -151,7 +151,7 @@ func (e *Endpoint) useCurrentNetworkPolicy(proxyWaitGroup *completion.WaitGroup)
 		return
 	}
 
-	if e.proxy != nil {
+	if !e.isProxyDisabled() {
 		// Wait for the current network policy to be acked
 		e.proxy.UseCurrentNetworkPolicy(e, e.desiredPolicy.L4Policy, proxyWaitGroup)
 	}
@@ -194,7 +194,7 @@ func (e *Endpoint) regeneratePolicy() (retErr error) {
 	stats.totalTime.Start()
 
 	stats.waitingForPolicyRepository.Start()
-	repo := e.owner.GetPolicyRepository()
+	repo := e.policyGetter.GetPolicyRepository()
 	repo.Mutex.RLock()
 	revision := repo.GetRevision()
 	defer repo.Mutex.RUnlock()
@@ -287,13 +287,6 @@ func (e *Endpoint) updatePolicyRegenerationStatistics(stats *policyRegenerationS
 func (e *Endpoint) updateAndOverrideEndpointOptions(opts option.OptionMap) (optsChanged bool) {
 	if opts == nil {
 		opts = make(option.OptionMap)
-	}
-	// Apply possible option changes before regenerating maps, as map regeneration
-	// depends on the conntrack options
-	if e.desiredPolicy != nil && e.desiredPolicy.L4Policy != nil {
-		if e.desiredPolicy.L4Policy.RequiresConntrack() {
-			opts[option.Conntrack] = option.OptionEnabled
-		}
 	}
 
 	optsChanged = e.applyOptsLocked(opts)
@@ -808,13 +801,7 @@ func (e *Endpoint) SetIdentity(identity *identityPkg.Identity, newEndpoint bool)
 // GetCIDRPrefixLengths returns the sorted list of unique prefix lengths used
 // for CIDR policy or IPcache lookup from this endpoint.
 func (e *Endpoint) GetCIDRPrefixLengths() (s6, s4 []int) {
-	if e.IsHost() {
-		return e.owner.GetCIDRPrefixLengths()
-	}
-	if e.desiredPolicy == nil || e.desiredPolicy.CIDRPolicy == nil {
-		return policy.GetDefaultPrefixLengths()
-	}
-	return e.desiredPolicy.CIDRPolicy.ToBPFData()
+	return e.owner.GetCIDRPrefixLengths()
 }
 
 // AnnotationsResolverCB provides an implementation for resolving the pod

@@ -9,16 +9,17 @@ package bpf
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"unsafe"
 
+	. "gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
-
-	. "gopkg.in/check.v1"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -87,6 +88,13 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
+func mapsEqual(a, b *Map) bool {
+	return a.name == b.name &&
+		a.path == b.path &&
+		a.NonPersistent == b.NonPersistent &&
+		reflect.DeepEqual(a.MapInfo, b.MapInfo)
+}
+
 func (s *BPFPrivilegedTestSuite) TestGetMapInfo(c *C) {
 	mi, err := GetMapInfo(os.Getpid(), testMap.GetFd())
 	c.Assert(err, IsNil)
@@ -143,8 +151,7 @@ func (s *BPFPrivilegedTestSuite) TestOpenMap(c *C) {
 		testMap.MapKey = &TestKey{}
 		testMap.MapValue = &TestValue{}
 	}()
-	noDiff := openedMap.DeepEquals(testMap)
-	c.Assert(noDiff, Equals, true)
+	c.Assert(mapsEqual(openedMap, testMap), Equals, true)
 }
 
 func (s *BPFPrivilegedTestSuite) TestOpenOrCreate(c *C) {
@@ -208,8 +215,7 @@ func (s *BPFPrivilegedTestSuite) TestOpenParallel(c *C) {
 	c.Assert(err, Not(IsNil))
 
 	// Check OpenMap warning section
-	noDiff := parallelMap.DeepEquals(testMap)
-	c.Assert(noDiff, Equals, true)
+	c.Assert(mapsEqual(parallelMap, testMap), Equals, true)
 
 	key1 := &TestKey{Key: 101}
 	value1 := &TestValue{Value: 201}

@@ -320,6 +320,10 @@ remote-node
     Any node in any of the connected clusters other than the local host. This
     also includes all containers running in host-networking mode on remote
     nodes. (Requires the option ``enable-remote-node-identity`` to be enabled)
+kube-apiserver
+    The kube-apiserver entity represents the kube-apiserver in a Kubernetes
+    cluster. This entity represents both deployments of the kube-apiserver:
+    within the cluster and outside of the cluster.
 cluster
     Cluster is the logical group of all network endpoints inside of the local
     cluster. This includes all Cilium-managed endpoints of the local cluster,
@@ -1209,8 +1213,6 @@ considered external to the cluster.
 
 Host Policies
 =============
-
-.. include:: ../beta.rst
 
 Host policies take the form of a `CiliumClusterwideNetworkPolicy` with a
 :ref:`NodeSelector` instead of an `EndpointSelector`. Host policies can have

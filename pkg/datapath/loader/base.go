@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/cgroups"
 	"github.com/cilium/cilium/pkg/command/exec"
@@ -31,8 +34,6 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/sysctl"
-	"github.com/sirupsen/logrus"
-	"github.com/vishvananda/netlink"
 )
 
 const (
@@ -93,12 +94,13 @@ func (l *Loader) writeNetdevHeader(dir string, o datapath.BaseProgramOwner) erro
 func writePreFilterHeader(preFilter *prefilter.PreFilter, dir string) error {
 	headerPath := filepath.Join(dir, preFilterHeaderFileName)
 	log.WithField(logfields.Path, headerPath).Debug("writing configuration")
+
 	f, err := os.Create(headerPath)
 	if err != nil {
 		return fmt.Errorf("failed to open file %s for writing: %s", headerPath, err)
-
 	}
 	defer f.Close()
+
 	fw := bufio.NewWriter(f)
 	fmt.Fprint(fw, "/*\n")
 	fmt.Fprintf(fw, " * XDP devices: %s\n", strings.Join(option.Config.Devices, " "))
@@ -242,6 +244,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	sysSettings := []sysctl.Setting{
 		{Name: "net.core.bpf_jit_enable", Val: "1", IgnoreErr: true},
 		{Name: "net.ipv4.conf.all.rp_filter", Val: "0", IgnoreErr: false},
+		{Name: "net.ipv4.fib_multipath_use_neigh", Val: "1", IgnoreErr: true},
 		{Name: "kernel.unprivileged_bpf_disabled", Val: "1", IgnoreErr: true},
 		{Name: "kernel.timer_migration", Val: "0", IgnoreErr: true},
 	}
@@ -350,7 +353,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 	args[initArgMode] = string(mode)
 
-	if option.Config.Tunnel == option.TunnelDisabled && option.Config.EnableEgressGateway {
+	if option.Config.Tunnel == option.TunnelDisabled && option.Config.EnableIPv4EgressGateway {
 		// Enable tunnel mode to vxlan if egress gateway is configured
 		// Tunnel is required for egress traffic under this config
 		args[initArgTunnelMode] = option.TunnelVXLAN
@@ -401,7 +404,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	// Datapath initialization
 	hostDev1, hostDev2, err := setupBaseDevice(devices, mode, deviceMTU)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to setup base devices in mode %s: %w", mode, err)
 	}
 	args[initArgHostDev1] = hostDev1.Attrs().Name
 	args[initArgHostDev2] = hostDev2.Attrs().Name
@@ -452,7 +455,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		return err
 	}
 
-	if err := iptMgr.InstallRules(option.Config.HostDevice, firstInitialization, option.Config.InstallIptRules); err != nil {
+	if err := iptMgr.InstallRules(defaults.HostDevice, firstInitialization, option.Config.InstallIptRules); err != nil {
 		return err
 	}
 

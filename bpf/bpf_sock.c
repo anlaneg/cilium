@@ -13,6 +13,7 @@
 #include "lib/common.h"
 #include "lib/lb.h"
 #include "lib/eps.h"
+#include "lib/identity.h"
 #include "lib/metrics.h"
 
 #define SYS_REJECT	0
@@ -72,7 +73,7 @@ ctx_dst_port(const struct bpf_sock_addr *ctx)
 static __always_inline __maybe_unused __be16
 ctx_src_port(const struct bpf_sock *ctx)
 {
-	volatile __u32 sport = ctx->src_port;
+	volatile __u16 sport = (__u16)ctx->src_port;
 
 	return (__be16)bpf_htons(sport);
 }
@@ -261,7 +262,7 @@ sock4_wildcard_lookup(struct lb4_key *key __maybe_unused,
 
 	info = ipcache_lookup4(&IPCACHE_MAP, key->address, V4_CACHE_KEY_LEN);
 	if (info != NULL && (info->sec_label == HOST_ID ||
-	    (include_remote_hosts && info->sec_label == REMOTE_NODE_ID)))
+	    (include_remote_hosts && identity_is_remote_node(info->sec_label))))
 		goto wildcard_lookup;
 
 	return NULL;
@@ -533,7 +534,7 @@ static __always_inline int __sock4_pre_bind(struct bpf_sock_addr *ctx,
 		.peer = {
 			.address	= ctx->user_ip4,
 			.port		= ctx_dst_port(ctx),
-			.proto		= ctx->protocol,
+			.proto		= (__u8)ctx->protocol,
 		},
 	};
 	int ret;
@@ -746,7 +747,7 @@ sock6_wildcard_lookup(struct lb6_key *key __maybe_unused,
 
 	info = ipcache_lookup6(&IPCACHE_MAP, &key->address, V6_CACHE_KEY_LEN);
 	if (info != NULL && (info->sec_label == HOST_ID ||
-	    (include_remote_hosts && info->sec_label == REMOTE_NODE_ID)))
+	    (include_remote_hosts && identity_is_remote_node(info->sec_label))))
 		goto wildcard_lookup;
 
 	return NULL;
@@ -800,7 +801,7 @@ int sock6_xlate_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused,
 
 	build_v4_in_v6(&addr6, fake_ctx.user_ip4);
 	ctx_set_v6_address(ctx, &addr6);
-	ctx_set_port(ctx, fake_ctx.user_port);
+	ctx_set_port(ctx, (__u16)fake_ctx.user_port);
 
 	return 0;
 #endif /* ENABLE_IPV4 */
@@ -889,7 +890,7 @@ sock6_pre_bind_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused)
 
 	build_v4_in_v6(&addr6, fake_ctx.user_ip4);
 	ctx_set_v6_address(ctx, &addr6);
-	ctx_set_port(ctx, fake_ctx.user_port);
+	ctx_set_port(ctx, (__u16)fake_ctx.user_port);
 #endif /* ENABLE_IPV4 */
 	return 0;
 }
@@ -910,7 +911,7 @@ static __always_inline int __sock6_pre_bind(struct bpf_sock_addr *ctx)
 	struct lb6_health val = {
 		.peer = {
 			.port		= ctx_dst_port(ctx),
-			.proto		= ctx->protocol,
+			.proto		= (__u8)ctx->protocol,
 		},
 	};
 	int ret = 0;
@@ -1084,7 +1085,7 @@ sock6_xlate_rev_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused)
 
 	build_v4_in_v6(&addr6, fake_ctx.user_ip4);
 	ctx_set_v6_address(ctx, &addr6);
-	ctx_set_port(ctx, fake_ctx.user_port);
+	ctx_set_port(ctx, (__u16)fake_ctx.user_port);
 
 	return 0;
 #endif /* ENABLE_IPV4 */

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/go-openapi/runtime/middleware"
+
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/pkg/api"
@@ -16,7 +18,6 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
-	"github.com/go-openapi/runtime/middleware"
 )
 
 // ConfigModifyEvent is a wrapper around the parameters for configModify.
@@ -193,7 +194,7 @@ func (h *getConfig) Handle(params GetConfigParams) middleware.Responder {
 			OperationMode:     option.Config.Ipvlan.OperationMode,
 		},
 		IpamMode:   option.Config.IPAM,
-		Masquerade: option.Config.EnableIPv4Masquerade || option.Config.EnableIPv6Masquerade,
+		Masquerade: option.Config.MasqueradingEnabled(),
 		MasqueradeProtocols: &models.DaemonConfigurationStatusMasqueradeProtocols{
 			IPV4: option.Config.EnableIPv4Masquerade,
 			IPV6: option.Config.EnableIPv6Masquerade,

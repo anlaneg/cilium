@@ -17,12 +17,12 @@ import (
 	"text/tabwriter"
 	"time"
 
+	runtime_client "github.com/go-openapi/runtime/client"
+	"github.com/go-openapi/strfmt"
+
 	clientapi "github.com/cilium/cilium/api/v1/client"
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/defaults"
-
-	runtime_client "github.com/go-openapi/runtime/client"
-	"github.com/go-openapi/strfmt"
 )
 
 type Client struct {
@@ -310,6 +310,11 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 		}
 		fmt.Fprintf(w, "\n")
 	}
+
+	if sr.CniChaining != nil {
+		fmt.Fprintf(w, "CNI Chaining:\t%s\n", sr.CniChaining.Mode)
+	}
+
 	if sr.Cilium != nil {
 		fmt.Fprintf(w, "Cilium:\t%s   %s\n", sr.Cilium.State, sr.Cilium.Msg)
 	}
@@ -573,6 +578,11 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 			protocols = strings.Join(hs.Protocols, ", ")
 		}
 
+		gracefulTerm := "Disabled"
+		if sr.KubeProxyReplacement.Features.GracefulTermination.Enabled {
+			gracefulTerm = "Enabled"
+		}
+
 		fmt.Fprintf(w, "KubeProxyReplacement Details:\n")
 		tab := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 		fmt.Fprintf(tab, "  Status:\t%s\n", sr.KubeProxyReplacement.Mode)
@@ -589,6 +599,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 			fmt.Fprintf(tab, "  Backend Selection:\t%s\n", selection)
 		}
 		fmt.Fprintf(tab, "  Session Affinity:\t%s\n", affinity)
+		fmt.Fprintf(tab, "  Graceful Termination:\t%s\n", gracefulTerm)
 		if xdp != "" {
 			fmt.Fprintf(tab, "  XDP Acceleration:\t%s\n", xdp)
 		}

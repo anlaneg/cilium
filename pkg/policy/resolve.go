@@ -4,10 +4,10 @@
 package policy
 
 import (
+	"github.com/sirupsen/logrus"
+
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
-
-	"github.com/sirupsen/logrus"
 )
 
 // selectorPolicy is a structure which contains the resolved policy for a
@@ -23,9 +23,6 @@ type selectorPolicy struct {
 
 	// L4Policy contains the computed L4 and L7 policy.
 	L4Policy *L4Policy
-
-	// CIDRPolicy contains the L3 (not L4) CIDR-based policy.
-	CIDRPolicy *CIDRPolicy
 
 	// IngressPolicyEnabled specifies whether this policy contains any policy
 	// at ingress.

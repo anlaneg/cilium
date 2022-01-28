@@ -9,6 +9,8 @@ package endpoint
 import (
 	"context"
 
+	"gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
@@ -25,7 +27,6 @@ import (
 	"github.com/cilium/cilium/pkg/proxy/logger"
 	"github.com/cilium/cilium/pkg/revert"
 	"github.com/cilium/cilium/pkg/u8proto"
-	"gopkg.in/check.v1"
 )
 
 type RedirectSuite struct{}
@@ -54,7 +55,7 @@ func (r *RedirectSuiteProxy) RemoveRedirect(id string, wg *completion.WaitGroup)
 }
 
 // UpdateNetworkPolicy does nothing.
-func (r *RedirectSuiteProxy) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *policy.L4Policy, ingressPolicyEnforced, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error) {
+func (r *RedirectSuiteProxy) UpdateNetworkPolicy(ep logger.EndpointUpdater, vis *policy.VisibilityPolicy, policy *policy.L4Policy, ingressPolicyEnforced, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error) {
 	return nil, nil
 }
 
@@ -137,12 +138,12 @@ func (s *RedirectSuite) TestAddVisibilityRedirects(c *check.C) {
 	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	idAllocatorOwner := &DummyIdentityAllocatorOwner{}
 
-	mgr := cache.NewCachingIdentityAllocator(idAllocatorOwner)
+	mgr := NewCachingIdentityAllocator(idAllocatorOwner)
 	<-mgr.InitIdentityAllocator(nil, nil)
 	defer mgr.Close()
 
 	do := &DummyOwner{
-		repo: policy.NewPolicyRepository(nil, nil),
+		repo: policy.NewPolicyRepository(nil, nil, nil),
 	}
 	identitymanager.Subscribe(do.repo)
 
@@ -162,7 +163,7 @@ func (s *RedirectSuite) TestAddVisibilityRedirects(c *check.C) {
 		redirectPortUserMap: make(map[uint16][]string),
 	}
 
-	ep := NewEndpointWithState(do, rsp, mgr, 12345, StateRegenerating)
+	ep := NewEndpointWithState(do, do, rsp, mgr, 12345, StateRegenerating)
 
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	epIdentity, _, err := mgr.AllocateIdentity(context.Background(), qaBarLbls, true)

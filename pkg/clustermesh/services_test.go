@@ -13,6 +13,8 @@ import (
 	"path"
 	"time"
 
+	. "gopkg.in/check.v1"
+
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/identity"
@@ -26,9 +28,7 @@ import (
 	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/testutils"
-	"github.com/cilium/cilium/pkg/testutils/allocator"
-
-	. "gopkg.in/check.v1"
+	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 )
 
 var etcdConfig = []byte(fmt.Sprintf("endpoints:\n- %s\n", kvstore.EtcdDummyAddress()))
@@ -59,7 +59,7 @@ func (s *ClusterMeshServicesTestSuite) SetUpTest(c *C) {
 	s.svcCache = k8s.NewServiceCache(fakeDatapath.NewNodeAddressing())
 	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 
-	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
+	mgr := cache.NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
 	<-mgr.InitIdentityAllocator(nil, nil)
 	dir, err := os.MkdirTemp("", "multicluster")

@@ -11,12 +11,12 @@ import (
 	"path/filepath"
 	"time"
 
+	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 	external_ips "github.com/cilium/cilium/test/k8sT/manifests/externalIPs"
-
-	. "github.com/onsi/ginkgo/extensions/table"
-	. "github.com/onsi/gomega"
 )
 
 const (
@@ -178,8 +178,10 @@ var _ = skipSuite("K8sKubeProxyFreeMatrix tests", func() {
 			return
 		}
 
-		UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		_ = kubectl.NamespaceDelete(namespaceTest)
+		ExpectAllPodsTerminated(kubectl)
+
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		kubectl.CloseSSHClient()
 	})
 

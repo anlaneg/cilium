@@ -166,12 +166,6 @@ podAnnotations: {}
 # -- Labels to be added to agent pods
 podLabels: {}
 
-# -- PodDisruptionBudget settings
-# ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-podDisruptionBudget:
-  enabled: true
-  maxUnavailable: 2
-
 # -- Agent resource limits & requests
 # ref: https://kubernetes.io/docs/user-guide/compute-resources/
 resources: {}
@@ -229,6 +223,9 @@ bgp:
     podCIDR: false
 
 bpf:
+  # -- Configure the mount point for the BPF filesystem
+  root: /sys/fs/bpf
+
   # -- Enable BPF clock source probing for more efficient tick retrieval.
   clockProbe: false
 
@@ -258,7 +255,7 @@ bpf:
   policyMapMax: 16384
 
   # -- Configure auto-sizing for all BPF maps based on available memory.
-  # ref: https://docs.cilium.io/en/v1.9/concepts/ebpf/maps/#ebpf-maps
+  # ref: https://docs.cilium.io/en/stable/concepts/ebpf/maps/#ebpf-maps
   #mapDynamicSizeRatio: 0.0025
 
   # -- Configure the level of aggregation for monitor notifications.
@@ -277,7 +274,7 @@ bpf:
   lbExternalClusterIP: false
 
   # -- Enable native IP masquerade support in eBPF
-  #masquerade: true
+  #masquerade: false
 
   # -- Configure whether direct routing mode should route traffic via
   # host stack (true) or directly and more efficiently out of BPF (false) if
@@ -315,8 +312,9 @@ cni:
 
   # -- Configure chaining on top of other CNI plugins. Possible values:
   #  - none
-  #  - generic-veth
   #  - aws-cni
+  #  - flannel
+  #  - generic-veth
   #  - portmap
   chainingMode: none
 
@@ -325,6 +323,10 @@ cni:
   # This ensures no Pods can be scheduled using other CNI plugins during Cilium
   # agent downtime.
   exclusive: true
+
+  # -- Configure the log file for CNI logging with retention policy of 7 days.
+  # Disable CNI file logging by setting this field to empty explicitly.
+  logFile: /var/run/cilium/cilium-cni.log
 
   # -- Skip writing of the CNI configuration. This can be used if
   # writing of the CNI configuration is performed by external automation.
@@ -383,7 +385,8 @@ customCalls:
   enabled: false
 
 # -- Configure which datapath mode should be used for configuring container
-# connectivity. Valid options are "veth" or "ipvlan".
+# connectivity. Valid options are "veth" or "ipvlan". Deprecated, to be removed
+# in v1.12.
 datapathMode: veth
 
 daemon:
@@ -414,10 +417,13 @@ enableK8sEventHandover: false
 
 # enableK8sEndpointSlice: false
 
+# -- Enable CiliumEndpointSlice feature.
+enableCiliumEndpointSlice: false
+
 # -- Enables the fallback compatibility solution for when the xt_socket kernel
 # module is missing and it is needed for the datapath L7 redirection to work
 # properly. See documentation for details on when this can be disabled:
-# http://docs.cilium.io/en/stable/install/system_requirements/#admin-kernel-version.
+# https://docs.cilium.io/en/stable/operations/system_requirements/#linux-kernel.
 enableXTSocketFallback: true
 
 encryption:
@@ -554,6 +560,9 @@ certgen:
   ttlSecondsAfterFinished: 1800
   # -- Labels to be added to hubble-certgen pods
   podLabels: {}
+  # -- Node tolerations for pod assignment on nodes with taints
+  # ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+  tolerations: []
 
 hubble:
   # -- Enable Hubble (true by default).
@@ -570,7 +579,7 @@ hubble:
   # eventBufferCapacity: "4095"
 
   # -- Hubble metrics configuration.
-  # See https://docs.cilium.io/en/stable/configuration/metrics/#hubble-metrics
+  # See https://docs.cilium.io/en/stable/operations/metrics/#hubble-metrics
   # for more comprehensive documentation about Hubble metrics.
   metrics:
     # -- Configures the list of metrics to collect. If empty or null, metrics
@@ -698,6 +707,17 @@ hubble:
     # -- Labels to be added to hubble-relay pods
     podLabels: {}
 
+    # PodDisruptionBudget settings
+    podDisruptionBudget:
+      # -- enable PodDisruptionBudget
+      # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+      enabled: false
+      # -- Minimum number/percentage of pods that should remain scheduled.
+      # When it's set, maxUnavailable must be disabled by `maxUnavailable: null`
+      minAvailable: null
+      # -- Maximum number/percentage of pods that may be made unavailable
+      maxUnavailable: 1
+
     # -- Node tolerations for pod assignment on nodes with taints
     # ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
     tolerations: []
@@ -710,6 +730,9 @@ hubble:
       rollingUpdate:
         maxUnavailable: 1
       type: RollingUpdate
+
+    # -- hubble-relay security context
+    securityContext: {}
 
     # -- Host to listen to. Specify an empty string to bind to all the interfaces.
     listenHost: ""
@@ -858,6 +881,17 @@ hubble:
     # -- Labels to be added to hubble-ui pods
     podLabels: {}
 
+    # PodDisruptionBudget settings
+    podDisruptionBudget:
+      # -- enable PodDisruptionBudget
+      # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+      enabled: false
+      # -- Minimum number/percentage of pods that should remain scheduled.
+      # When it's set, maxUnavailable must be disabled by `maxUnavailable: null`
+      minAvailable: null
+      # -- Maximum number/percentage of pods that may be made unavailable
+      maxUnavailable: 1
+
     # -- Node labels for pod assignment
     # ref: https://kubernetes.io/docs/user-guide/node-selection/
     nodeSelector: {}
@@ -886,6 +920,7 @@ hubble:
       annotations: {}
         # kubernetes.io/ingress.class: nginx
         # kubernetes.io/tls-acme: "true"
+      className: ""
       hosts:
         - chart-example.local
       tls: []
@@ -923,12 +958,18 @@ ipam:
   # ref: https://docs.cilium.io/en/stable/concepts/networking/ipam/
   mode: "cluster-pool"
   operator:
-    # -- IPv4 CIDR range to delegate to individual nodes for IPAM.
+    # -- Deprecated in favor of ipam.operator.clusterPoolIPv4PodCIDRList.
+    # IPv4 CIDR range to delegate to individual nodes for IPAM.
     clusterPoolIPv4PodCIDR: "10.0.0.0/8"
+    # -- IPv4 CIDR list range to delegate to individual nodes for IPAM.
+    clusterPoolIPv4PodCIDRList: []
     # -- IPv4 CIDR mask size to delegate to individual nodes for IPAM.
     clusterPoolIPv4MaskSize: 24
-    # -- IPv6 CIDR range to delegate to individual nodes for IPAM.
+    # -- Deprecated in favor of ipam.operator.clusterPoolIPv6PodCIDRList.
+    # IPv6 CIDR range to delegate to individual nodes for IPAM.
     clusterPoolIPv6PodCIDR: "fd00::/104"
+     # -- IPv6 CIDR list range to delegate to individual nodes for IPAM.
+    clusterPoolIPv6PodCIDRList: []
     # -- IPv6 CIDR mask size to delegate to individual nodes for IPAM.
     clusterPoolIPv6MaskSize: 120
 
@@ -948,7 +989,7 @@ ipv6:
   enabled: false
 
 ipvlan:
-  # -- Enable the IPVLAN datapath
+  # -- Enable the IPVLAN datapath (deprecated)
   enabled: false
 
   # -- masterDevice is the name of the device to use to attach secondary IPVLAN
@@ -1002,8 +1043,8 @@ kubeProxyReplacementHealthzBindAddr: ""
 l2NeighDiscovery:
   # -- Enable L2 neighbor discovery in the agent
   enabled: true
-  # -- Set period for arping
-  arping-refresh-period: "5m"
+  # -- Override the agent's default neighbor resolution refresh period.
+  arping-refresh-period: "30s"
 
 # -- Enable Layer 7 network policy.
 l7Proxy: true
@@ -1051,6 +1092,11 @@ egressGateway:
 # This value corresponds to the configured cluster-cidr.
 # ipv4NativeRoutingCIDR:
 
+# -- Specify the IPv6 CIDR for native routing (ie to avoid IP masquerade for).
+# This value corresponds to the configured cluster-cidr.
+# ipv6NativeRoutingCIDR:
+
+# -- cilium-monitor sidecar.
 monitor:
   # -- Enable the cilium-monitor sidecar.
   enabled: false
@@ -1076,6 +1122,10 @@ monitor:
   # -- dsrDispatch configures whether IP option or IPIP encapsulation is
   # used to pass a service IP and port to remote backend
   # dsrDispatch: opt
+
+  # -- serviceTopology enables K8s Topology Aware Hints -based service
+  # endpoints filtering
+  # serviceTopology: false
 
 # -- Configure N-S k8s service loadbalancing
 nodePort:
@@ -1242,11 +1292,16 @@ etcd:
   # -- Labels to be added to cilium-etcd-operator pods
   podLabels: {}
 
-  # -- PodDisruptionBudget settings
-  # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+  # PodDisruptionBudget settings
   podDisruptionBudget:
-    enabled: true
-    maxUnavailable: 2
+    # -- enable PodDisruptionBudget
+    # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+    enabled: false
+    # -- Minimum number/percentage of pods that should remain scheduled.
+    # When it's set, maxUnavailable must be disabled by `maxUnavailable: null`
+    minAvailable: null
+    # -- Maximum number/percentage of pods that may be made unavailable
+    maxUnavailable: 1
 
   # -- cilium-etcd-operator resource limits & requests
   # ref: https://kubernetes.io/docs/user-guide/compute-resources/
@@ -1381,10 +1436,15 @@ operator:
   # -- Labels to be added to cilium-operator pods
   podLabels: {}
 
-  # -- PodDisruptionBudget settings
-  # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+  # PodDisruptionBudget settings
   podDisruptionBudget:
+    # -- enable PodDisruptionBudget
+    # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
     enabled: false
+    # -- Minimum number/percentage of pods that should remain scheduled.
+    # When it's set, maxUnavailable must be disabled by `maxUnavailable: null`
+    minAvailable: null
+    # -- Maximum number/percentage of pods that may be made unavailable
     maxUnavailable: 1
 
   # -- cilium-operator resource limits & requests
@@ -1483,12 +1543,6 @@ nodeinit:
   # -- Labels to be added to node-init pods.
   podLabels: {}
 
-  # -- PodDisruptionBudget settings
-  # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-  podDisruptionBudget:
-    enabled: true
-    maxUnavailable: 2
-
   # -- nodeinit resource limits & requests
   # ref: https://kubernetes.io/docs/user-guide/compute-resources/
   resources:
@@ -1572,11 +1626,16 @@ preflight:
   # -- Labels to be added to the preflight pod.
   podLabels: {}
 
-  # -- PodDisruptionBudget settings
-  # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+  # PodDisruptionBudget settings
   podDisruptionBudget:
-    enabled: true
-    maxUnavailable: 2
+    # -- enable PodDisruptionBudget
+    # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+    enabled: false
+    # -- Minimum number/percentage of pods that should remain scheduled.
+    # When it's set, maxUnavailable must be disabled by `maxUnavailable: null`
+    minAvailable: null
+    # -- Maximum number/percentage of pods that may be made unavailable
+    maxUnavailable: 1
 
   # -- preflight resource limits & requests
   # ref: https://kubernetes.io/docs/user-guide/compute-resources/
@@ -1656,6 +1715,17 @@ clustermesh:
 
     # -- Labels to be added to clustermesh-apiserver pods
     podLabels: {}
+
+    # PodDisruptionBudget settings
+    podDisruptionBudget:
+      # -- enable PodDisruptionBudget
+      # ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+      enabled: false
+      # -- Minimum number/percentage of pods that should remain scheduled.
+      # When it's set, maxUnavailable must be disabled by `maxUnavailable: null`
+      minAvailable: null
+      # -- Maximum number/percentage of pods that may be made unavailable
+      maxUnavailable: 1
 
     # -- Resource requests and limits for the clustermesh-apiserver container of the clustermesh-apiserver deployment, such as
     #     resources:
@@ -1771,3 +1841,7 @@ cgroup:
     enabled: true
   # -- Configure cgroup root where cgroup2 filesystem is mounted on the host (see also: `cgroup.autoMount`)
   hostRoot: /run/cilium/cgroupv2
+
+# -- Configure whether to enable auto detect of terminating state for endpoints
+# in order to support graceful termination.
+enableK8sTerminatingEndpoint: true

@@ -4,11 +4,11 @@
 package v2
 
 import (
-	k8sconst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	k8sconst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 )
 
 const (
@@ -23,7 +23,7 @@ const (
 	//
 	// Maintainers: Run ./Documentation/check-crd-compat-table.sh for each release
 	// Developers: Bump patch for each change in the CRD schema.
-	CustomResourceDefinitionSchemaVersion = "1.24.1"
+	CustomResourceDefinitionSchemaVersion = "1.24.2"
 
 	// CustomResourceDefinitionSchemaVersionKey is key to label which holds the CRD schema version
 	CustomResourceDefinitionSchemaVersionKey = "io.cilium.k8s.crd.schema.version"

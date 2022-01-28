@@ -6,16 +6,16 @@ package watchers
 import (
 	"sync"
 
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/client-go/tools/cache"
+
 	"github.com/cilium/cilium/pkg/k8s"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/lock"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
-
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/client-go/tools/cache"
 )
 
 func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncControllers *sync.WaitGroup) {
@@ -36,11 +36,12 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 					if ciliumNode := k8s.ObjToCiliumNode(obj); ciliumNode != nil {
 						valid = true
 						n := nodeTypes.ParseCiliumNode(ciliumNode)
+						errs := k.CiliumNodeChain.OnAddCiliumNode(ciliumNode, swgNodes)
 						if n.IsLocal() {
 							return
 						}
 						k.nodeDiscoverManager.NodeUpdated(n)
-						k.K8sEventProcessed(metricCiliumNode, metricCreate, true)
+						k.K8sEventProcessed(metricCiliumNode, metricCreate, errs == nil)
 					}
 				},
 				UpdateFunc: func(oldObj, newObj interface{}) {
@@ -54,11 +55,12 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 								return
 							}
 							n := nodeTypes.ParseCiliumNode(ciliumNode)
+							errs := k.CiliumNodeChain.OnUpdateCiliumNode(oldCN, ciliumNode, swgNodes)
 							if n.IsLocal() {
 								return
 							}
 							k.nodeDiscoverManager.NodeUpdated(n)
-							k.K8sEventProcessed(metricCiliumNode, metricUpdate, true)
+							k.K8sEventProcessed(metricCiliumNode, metricUpdate, errs == nil)
 						}
 					}
 				},
@@ -71,6 +73,10 @@ func (k *K8sWatcher) ciliumNodeInit(ciliumNPClient *k8s.K8sCiliumClient, asyncCo
 					}
 					valid = true
 					n := nodeTypes.ParseCiliumNode(ciliumNode)
+					errs := k.CiliumNodeChain.OnDeleteCiliumNode(ciliumNode, swgNodes)
+					if errs != nil {
+						valid = false
+					}
 					k.nodeDiscoverManager.NodeDeleted(n)
 				},
 			},

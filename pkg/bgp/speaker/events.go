@@ -6,13 +6,14 @@ package speaker
 
 import (
 	"context"
-
-	"github.com/cilium/cilium/pkg/bgp/fence"
-	"github.com/cilium/cilium/pkg/k8s"
+	"fmt"
 
 	"github.com/sirupsen/logrus"
 	"go.universe.tf/metallb/pkg/k8s/types"
 	metallbspr "go.universe.tf/metallb/pkg/speaker"
+
+	"github.com/cilium/cilium/pkg/bgp/fence"
+	"github.com/cilium/cilium/pkg/k8s"
 )
 
 // Op enumerates the operation an event
@@ -25,6 +26,21 @@ const (
 	Update
 	Delete
 )
+
+func (o Op) String() string {
+	switch o {
+	case Undefined:
+		return "Undefined"
+	case Add:
+		return "Add"
+	case Update:
+		return "Update"
+	case Delete:
+		return "Delete"
+	default:
+		return fmt.Sprintf("Unknown(%d)", o)
+	}
+}
 
 // svcEvent holds the extracted fields from a K8s service event
 // which are of interest to the BGP package.

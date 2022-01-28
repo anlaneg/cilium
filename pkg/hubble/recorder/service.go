@@ -14,6 +14,9 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	recorderpb "github.com/cilium/cilium/api/v1/recorder"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/hubble/recorder/pcap"
@@ -25,9 +28,6 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/recorder"
 	"github.com/cilium/cilium/pkg/u8proto"
-
-	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "hubble-recorder")
@@ -213,6 +213,8 @@ func (s *Service) Record(stream recorderpb.Recorder_RecordServer) error {
 
 const fileExistsRetries = 100
 
+var allowedFileChars = regexp.MustCompile("[^a-zA-Z0-9_.-]")
+
 func createPcapFile(basedir, prefix string) (f *os.File, filePath string, err error) {
 	try := 0
 	for {
@@ -220,7 +222,8 @@ func createPcapFile(basedir, prefix string) (f *os.File, filePath string, err er
 		random := rand.Uint32()
 		nodeName := nodeTypes.GetAbsoluteNodeName()
 		name := fmt.Sprintf("%s_%d_%d_%s.pcap", prefix, startTime, random, nodeName)
-		filePath = path.Join(basedir, name)
+		sanitizedName := allowedFileChars.ReplaceAllLiteralString(name, "_")
+		filePath = path.Join(basedir, sanitizedName)
 		f, err = os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			if os.IsExist(err) {

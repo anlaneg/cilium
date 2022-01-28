@@ -4,16 +4,18 @@ updates:
     directory: /
     schedule:
       interval: daily
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 5
     rebase-strategy: "disabled"
     ignore:
         # using a cilium-specific fork
       - dependency-name: "github.com/miekg/dns"
-        # newer versions break our CI
-      - dependency-name: "github.com/onsi/ginkgo"
         # k8s dependencies will be updated manually along with tests
       - dependency-name: "k8s.io/*"
       - dependency-name: "sigs.k8s.io/*"
+        # cloud provider SDKs are updated too frequently, update them manually
+      - dependency-name: "github.com/aliyun/alibaba-cloud-sdk-go"
+      - dependency-name: "github.com/aws/*"
+      - dependency-name: "github.com/Azure/*"
     labels:
     - kind/enhancement
     - release-note/misc
@@ -22,7 +24,18 @@ updates:
     directory: /
     schedule:
       interval: daily
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 5
+    rebase-strategy: "disabled"
+    labels:
+    - kind/enhancement
+    - release-note/misc
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    target-branch: "v1.11"
+    open-pull-requests-limit: 5
     rebase-strategy: "disabled"
     labels:
     - kind/enhancement
@@ -33,7 +46,7 @@ updates:
     schedule:
       interval: daily
     target-branch: "v1.10"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 5
     rebase-strategy: "disabled"
     labels:
     - kind/enhancement
@@ -44,18 +57,7 @@ updates:
     schedule:
       interval: daily
     target-branch: "v1.9"
-    open-pull-requests-limit: 1
-    rebase-strategy: "disabled"
-    labels:
-    - kind/enhancement
-    - release-note/misc
-
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: daily
-    target-branch: "v1.8"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 5
     rebase-strategy: "disabled"
     labels:
     - kind/enhancement

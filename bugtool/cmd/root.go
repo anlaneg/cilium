@@ -18,11 +18,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cilium/cilium/pkg/components"
-	"github.com/cilium/cilium/pkg/defaults"
-
 	"github.com/cilium/workerpool"
 	"github.com/spf13/cobra"
+
+	"github.com/cilium/cilium/pkg/components"
+	"github.com/cilium/cilium/pkg/defaults"
 )
 
 // BugtoolRootCmd is the top level command for the bugtool.
@@ -307,6 +307,7 @@ func runAll(commands []string, cmdDir string, k8sPods []string) {
 			continue
 		}
 
+		cmd := cmd // https://golang.org/doc/faq#closures_and_goroutines
 		err := wp.Submit(cmd, func(_ context.Context) error {
 			if strings.Contains(cmd, "xfrm state") {
 				//  Output of 'ip -s xfrm state' needs additional processing to replace
@@ -398,7 +399,7 @@ func writeCmdToFile(cmdDir, prompt string, k8sPods []string, enableMarkdown bool
 		// produced might have useful information
 		if bytes.Contains(output, []byte("```")) || !enableMarkdown {
 			// Already contains Markdown, print as is.
-			fmt.Fprint(f, output)
+			fmt.Fprint(f, string(output))
 		} else if enableMarkdown && len(output) > 0 {
 			// Write prompt as header and the output as body, and/or error but delete empty output.
 			fmt.Fprint(f, fmt.Sprintf("# %s\n\n```\n%s\n```\n", prompt, output))

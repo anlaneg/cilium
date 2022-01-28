@@ -13,13 +13,13 @@ package metrics
 import (
 	"net/http"
 
-	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/version"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
+
+	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/version"
 )
 
 const (
@@ -193,6 +193,11 @@ var (
 	// EndpointRegenerationTimeStats is the total time taken to regenerate
 	// endpoints, labeled by span name and status ("success" or "failure")
 	EndpointRegenerationTimeStats = NoOpObserverVec
+
+	// EndpointPropagationDelay is the delay between creation of local CiliumEndpoint
+	// and update for that CiliumEndpoint received through CiliumEndpointSlice.
+	// Measure of local CEP roundtrip time with CiliumEndpointSlice feature enabled.
+	EndpointPropagationDelay = NoOpObserverVec
 
 	// Policy
 	// Policy is the number of policies loaded into the agent
@@ -441,6 +446,7 @@ type Configuration struct {
 	EndpointRegenerationCountEnabled        bool
 	EndpointStateCountEnabled               bool
 	EndpointRegenerationTimeStatsEnabled    bool
+	EndpointPropagationDelayEnabled         bool
 	PolicyCountEnabled                      bool
 	PolicyRegenerationCountEnabled          bool
 	PolicyRegenerationTimeStatsEnabled      bool
@@ -528,6 +534,7 @@ func DefaultMetrics() map[string]struct{} {
 		Namespace + "_drop_bytes_total":                                              {},
 		Namespace + "_forward_count_total":                                           {},
 		Namespace + "_forward_bytes_total":                                           {},
+		Namespace + "_endpoint_propagation_delay_seconds":                            {},
 		Namespace + "_" + SubsystemDatapath + "_conntrack_dump_resets_total":         {},
 		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_runs_total":             {},
 		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_key_fallbacks_total":    {},
@@ -1247,6 +1254,18 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, ArpingRequestsTotal)
 			c.ArpingRequestsTotalEnabled = true
+
+		case Namespace + "_endpoint_propagation_delay_seconds":
+			EndpointPropagationDelay = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Name:      "endpoint_propagation_delay_seconds",
+				Help:      "CiliumEndpoint roundtrip propagation delay in seconds",
+				Buckets:   []float64{.05, .1, 1, 5, 30, 60, 120, 240, 300, 600},
+			}, []string{})
+
+			collectors = append(collectors, EndpointPropagationDelay)
+			c.EndpointPropagationDelayEnabled = true
+
 		}
 	}
 
@@ -1267,13 +1286,13 @@ func (gwt *GaugeWithThreshold) Set(value float64) {
 	if gwt.active && !overThreshold {
 		gwt.active = !Unregister(gwt.gauge)
 		if gwt.active {
-			log.WithField("metric", gwt.gauge.Desc().String()).Warning("Failed to unregister metric")
+			logrus.WithField("metric", gwt.gauge.Desc().String()).Warning("Failed to unregister metric")
 		}
 	} else if !gwt.active && overThreshold {
 		err := Register(gwt.gauge)
 		gwt.active = err == nil
 		if err != nil {
-			log.WithField("metric", gwt.gauge.Desc().String()).WithError(err).Warning("Failed to register metric")
+			logrus.WithField("metric", gwt.gauge.Desc().String()).WithError(err).Warning("Failed to register metric")
 		}
 	}
 

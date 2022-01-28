@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-
-	. "github.com/onsi/gomega"
 )
 
 // The 5.4 CI job is intended to catch BPF complexity regressions and as such
@@ -189,6 +189,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sChaosTest", func() {
 
 		AfterAll(func() {
 			_ = kubectl.Delete(netperfManifest)
+			ExpectAllPodsTerminated(kubectl)
 		})
 
 		AfterEach(func() {

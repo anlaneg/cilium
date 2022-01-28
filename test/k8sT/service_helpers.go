@@ -17,12 +17,12 @@ import (
 	"text/template"
 	"time"
 
-	. "github.com/cilium/cilium/test/ginkgo-ext"
-	"github.com/cilium/cilium/test/helpers"
-
 	"github.com/asaskevich/govalidator"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
+
+	. "github.com/cilium/cilium/test/ginkgo-ext"
+	"github.com/cilium/cilium/test/helpers"
 )
 
 func getHTTPLink(host string, port int32) string {
@@ -1306,4 +1306,22 @@ func testDSR(kubectl *helpers.Kubectl, ni *nodesInfo, sourcePortForCTGCtest int)
 	_ = kubectl.CiliumExecMustSucceed(context.TODO(), pod, "cilium bpf ct flush global", "Unable to flush CT maps")
 	res = kubectl.CiliumExecContext(context.TODO(), pod, fmt.Sprintf("cilium bpf nat list | grep %d", sourcePortForCTGCtest))
 	res.ExpectFail("NAT entry was not evicted")
+}
+
+func waitForServiceBackendPods(kubectl *helpers.Kubectl, podLabel string, expectedPodCount int) (pods []string) {
+	filter := "-l " + podLabel
+	err := kubectl.WaitforPods(helpers.DefaultNamespace, filter, helpers.HelperTimeout)
+	ExpectWithOffset(1, err).Should(BeNil(), "Pods [%s] failed to come up", podLabel)
+	pods, err = kubectl.GetPodNames(helpers.DefaultNamespace, podLabel)
+	ExpectWithOffset(1, err).Should(BeNil(), "Cannot retrieve pod names by filter %s", podLabel)
+	ExpectWithOffset(1, len(pods)).To(Equal(expectedPodCount), "Unexpected number of service backend pods")
+	podIPs, err := kubectl.GetPodsIPs(helpers.DefaultNamespace, podLabel)
+	ExpectWithOffset(1, err).Should(BeNil(), "Cannot retrieve pod IPs for %s", podLabel)
+	for _, ip := range podIPs {
+		err = kubectl.WaitForServiceBackend(helpers.K8s1, ip)
+		ExpectWithOffset(1, err).Should(BeNil(), "Failed waiting for %s backend entry on k8s1", ip)
+		err = kubectl.WaitForServiceBackend(helpers.K8s2, ip)
+		ExpectWithOffset(1, err).Should(BeNil(), "Failed waiting for %s backend entry on k8s2", ip)
+	}
+	return
 }

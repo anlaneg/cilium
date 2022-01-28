@@ -15,6 +15,8 @@ Clone and Provision Environment
 
 #. Make sure you have a `GitHub account <https://github.com/join>`_
 #. Fork the Cilium repository to your GitHub user or organization.
+#. Turn off GitHub actions for your fork as described in the `GitHub Docs <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#managing-github-actions-permissions-for-your-repository>`_.
+   #. This is recommended to avoid unnecessary CI notification failures on the fork.
 #. Clone your ``${YOUR_GITHUB_USERNAME_OR_ORG}/cilium`` fork into your ``GOPATH``, and setup the base repository as ``upstream`` remote:
 
    .. code-block:: shell-session
@@ -215,8 +217,11 @@ Getting a pull request merged
    ``/test`` as described in :ref:`trigger_phrases`. If you are a core team
    member, you may trigger the CI run yourself.
 
-   #. Hound: basic ``golang/lint`` static code analyzer. You need to make the
-      puppy happy.
+   #. Basic static code analyzer by Github Action and Travis CI. Golang linter
+      suggestions are added in-line on PRs. For other failed jobs, please refer
+      to build log for required action (e.g. Please run ``go mod tidy && go mod
+      vendor`` and submit your changes, etc).
+
    #. :ref:`ci_jenkins`: Will run a series of tests:
 
       #. Unit tests
@@ -290,7 +295,7 @@ Pull requests review process for committers
    example below, the committer belonging to the CI team is re-requesting a
    review for other team members to review the PR. This allows other team
    members belonging to the CI team to see the PR as part of the PRs that
-   require review in the `filter provided above <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+review-requested%3A%40me+sort%3Aupdated-asc>`_
+   require review in the `filter <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+review-requested%3A%40me+sort%3Aupdated-asc>`_
 
    .. image:: ../../images/re-request-review.png
       :align: center
@@ -316,9 +321,9 @@ every week. The following steps describe how to perform those duties. Please
 submit changes to these steps if you have found a better way to perform each
 duty.
 
-* `People in a Janitor hat this week <https://github.com/orgs/cilium/teams/janitors/members>`_
-* `People in a Triage hat this week <https://github.com/orgs/cilium/teams/triage/members>`_
-* `People in a Backport hat this week <https://github.com/orgs/cilium/teams/backporter/members>`_
+* `People in a Janitor hat this week <https://github.com/orgs/cilium/teams/tophat/members>`_
+* `People in a Triage hat this week <https://github.com/orgs/cilium/teams/tophat/members>`_
+* `People in a Backport hat this week <https://github.com/orgs/cilium/teams/tophat/members>`_
 
 Pull request review process for Janitors team
 ---------------------------------------------
@@ -333,7 +338,7 @@ Pull request review process for Janitors team
 Dedicated expectation time for each member of Janitors team: Follow the next
 steps 1 to 2 times per day. Works best if done first thing in the working day.
 
-#. Review all PRs requesting for review in `for you <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+team-review-requested%3Acilium%2Fjanitors+sort%3Aupdated-asc>`_;
+#. Review all PRs requesting for review in `for you <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+team-review-requested%3Acilium%2Ftophat+sort%3Aupdated-asc>`_;
 
 #. If this PR was opened by a non-committer (e.g. external contributor) please
    assign yourself to that PR and make sure to keep track the PR gets reviewed
@@ -473,8 +478,6 @@ original author of that PR directly so they can backport the PR themselves.
 
 Follow the :ref:`backport_process` guide to know how to perform this task.
 
-.. _dev_coo:
-
 Coordination
 ++++++++++++
 
@@ -503,6 +506,8 @@ been merged, then please coordinate with the previous / next backporter to
 check what the status is and establish who will work on getting the backports
 into the tree (for instance by investigating CI failures and addressing review
 feedback). There's leeway to negotiate depending on who has time available.
+
+.. _dev_coo:
 
 Developer's Certificate of Origin
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -562,4 +567,3 @@ then you just add a line saying:
    Signed-off-by: Random J Developer <random@developer.example.org>
 
 Use your real name (sorry, no pseudonyms or anonymous contributions.)
-

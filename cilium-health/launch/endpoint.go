@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/vishvananda/netlink"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
@@ -34,10 +37,8 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/pidfile"
+	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/sysctl"
-
-	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/vishvananda/netlink"
 )
 
 const (
@@ -226,6 +227,7 @@ type EndpointAdder interface {
 // cleanup of prior cilium-health endpoint instances.
 func LaunchAsEndpoint(baseCtx context.Context,
 	owner regeneration.Owner,
+	policyGetter policyRepoGetter,
 	n *nodeTypes.Node,
 	mtuConfig mtu.Configuration,
 	epMgr EndpointAdder,
@@ -302,7 +304,7 @@ func LaunchAsEndpoint(baseCtx context.Context,
 
 	pidfile := filepath.Join(option.Config.StateDir, PidfilePath)
 	prog := "ip"
-	args := []string{"netns", "exec", netNSName, binaryName, "--pidfile", pidfile}
+	args := []string{"netns", "exec", netNSName, binaryName, "--listen", strconv.Itoa(option.Config.ClusterHealthPort), "--pidfile", pidfile}
 	cmd.SetTarget(prog)
 	cmd.SetArgs(args)
 	log.Debugf("Spawning health endpoint with command %q %q", prog, args)
@@ -311,7 +313,7 @@ func LaunchAsEndpoint(baseCtx context.Context,
 	}
 
 	// Create the endpoint
-	ep, err := endpoint.NewEndpointFromChangeModel(baseCtx, owner, proxy, allocator, info)
+	ep, err := endpoint.NewEndpointFromChangeModel(baseCtx, owner, policyGetter, proxy, allocator, info)
 	if err != nil {
 		return nil, fmt.Errorf("Error while creating endpoint model: %s", err)
 	}
@@ -364,6 +366,10 @@ func LaunchAsEndpoint(baseCtx context.Context,
 	metrics.SubprocessStart.WithLabelValues(ciliumHealth).Inc()
 
 	return client, nil
+}
+
+type policyRepoGetter interface {
+	GetPolicyRepository() *policy.Repository
 }
 
 type routingConfigurer interface {

@@ -187,11 +187,11 @@ allocation:
 
 ``spec.eni.first-interface-index``
   The index of the first ENI to use for IP allocation, e.g. if the node has
-  ``eth0``, ``eth1``, ``eth2`` and FirstInterfaceIndex is set to 0, then only
+  ``eth0``, ``eth1``, ``eth2`` and FirstInterfaceIndex is set to 1, then only
   ``eth1`` and ``eth2`` will be used for IP allocation, ``eth0`` will be
   ignored for PodIP allocation.
 
-  If unspecified, this value defaults to 1 which means that ``eth0`` will not
+  If unspecified, this value defaults to 0 which means that ``eth0`` will
   be used for pod IPs.
 
 ``spec.eni.security-group-tags``
@@ -405,7 +405,7 @@ ENI Deletion Policy
 ENIs can be marked for deletion when the EC2 instance to which the ENI is
 attached to is terminated. In order to enable this, the option
 ``spec.eni.delete-on-termination`` can be enabled. If enabled, the ENI
-is modifying after creation using ``ModifyNetworkInterface`` to specify this
+is modified after creation using ``ModifyNetworkInterfaceAttribute`` to specify this
 deletion policy.
 
 Node Termination
@@ -430,7 +430,7 @@ perform ENI creation and IP allocation:
  * ``DescribeSecurityGroups``
  * ``CreateNetworkInterface``
  * ``AttachNetworkInterface``
- * ``ModifyNetworkInterface``
+ * ``ModifyNetworkInterfaceAttribute``
  * ``AssignPrivateIpAddresses``
  * ``CreateTags``
 

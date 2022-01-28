@@ -235,7 +235,7 @@ ctx_adjust_hroom(struct xdp_md *ctx, const __s32 len_diff, const __u32 mode,
 		case 48: /* struct {ipv6hdr + icmp6hdr} */
 			break;
 		case 40: /* struct ipv6hdr */
-		case 24: /* struct dsr_opt_v6 */
+		case 22: /* struct dsr_opt_v6 */
 			if (data + move_len_v6 + len_diff <= data_end)
 				__bpf_memmove_fwd(data, data + len_diff,
 						  move_len_v6);
@@ -256,6 +256,15 @@ ctx_redirect(const struct xdp_md *ctx, int ifindex, const __u32 flags)
 		return XDP_TX;
 
 	return redirect(ifindex, flags);
+}
+
+static __always_inline __maybe_unused int
+ctx_redirect_peer(const struct xdp_md *ctx __maybe_unused,
+		  int ifindex __maybe_unused,
+		  const __u32 flags __maybe_unused)
+{
+	/* bpf_redirect_peer() is available only in TC BPF. */
+	return -ENOTSUP;
 }
 
 static __always_inline __maybe_unused __u64
@@ -301,7 +310,7 @@ ctx_load_meta(const struct xdp_md *ctx __maybe_unused, const __u64 off)
 }
 
 //自报文中提取protocol
-static __always_inline __maybe_unused __u32
+static __always_inline __maybe_unused __u16
 ctx_get_protocol(const struct xdp_md *ctx)
 {
 	void *data_end = ctx_data_end(ctx);

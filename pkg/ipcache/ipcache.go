@@ -6,6 +6,8 @@ package ipcache
 import (
 	"net"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/lock"
@@ -13,7 +15,6 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/source"
-	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -82,6 +83,10 @@ type IPCache struct {
 	// This map is returned to users so all updates must be made into a fresh map that
 	// is then swapped in place while 'mutex' is being held.
 	namedPorts policy.NamedPortMultiMap
+
+	// k8sSyncedChecker knows how to check for whether the K8s watcher cache
+	// has been fully synced.
+	k8sSyncedChecker k8sSyncedChecker
 }
 
 // NewIPCache returns a new IPCache with the mappings of endpoint IP to security
@@ -217,6 +222,25 @@ func (ipc *IPCache) updateNamedPorts() (namedPortsChanged bool) {
 // k8sMeta contains Kubernetes-specific metadata such as pod namespace and pod
 // name belonging to the IP (may be nil).
 func (ipc *IPCache) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *K8sMetadata, newIdentity Identity) (namedPortsChanged bool, err error) {
+	ipc.mutex.Lock()
+	defer ipc.mutex.Unlock()
+	return ipc.upsertLocked(ip, hostIP, hostKey, k8sMeta, newIdentity, false /* !force */)
+}
+
+// upsertLocked adds / updates the provided IP and identity into the IPCache,
+// assuming that the IPCache lock has been taken. Warning, do not use force
+// unless you know exactly what you're doing. Forcing adding / updating the
+// IPCache will not take into account the source of the identity and bypasses
+// the overwrite logic! Once GH-18301 is addressed, there will be no need for
+// any force logic.
+func (ipc *IPCache) upsertLocked(
+	ip string,
+	hostIP net.IP,
+	hostKey uint8,
+	k8sMeta *K8sMetadata,
+	newIdentity Identity,
+	force bool,
+) (namedPortsChanged bool, err error) {
 	var newNamedPorts policy.NamedPortMap
 	if k8sMeta != nil {
 		newNamedPorts = k8sMeta.NamedPorts
@@ -238,9 +262,6 @@ func (ipc *IPCache) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *K8s
 		}
 	}
 
-	ipc.mutex.Lock()
-	defer ipc.mutex.Unlock()
-
 	var cidr *net.IPNet
 	var oldIdentity *Identity
 	callbackListeners := true
@@ -251,7 +272,7 @@ func (ipc *IPCache) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *K8s
 
 	cachedIdentity, found := ipc.ipToIdentityCache[ip]
 	if found {
-		if !source.AllowOverwrite(cachedIdentity.Source, newIdentity.Source) {
+		if !force && !source.AllowOverwrite(cachedIdentity.Source, newIdentity.Source) {
 			return false, NewErrOverwrite(cachedIdentity.Source, newIdentity.Source)
 		}
 
@@ -492,6 +513,18 @@ func (ipc *IPCache) GetNamedPorts() (npm policy.NamedPortMultiMap) {
 	return npm
 }
 
+// DeleteOnMetadataMatch removes the provided IP to security identity mapping from the IPCache
+// if the metadata cache holds the same "owner" metadata as the triggering pod event.
+func (ipc *IPCache) DeleteOnMetadataMatch(IP string, source source.Source, namespace, name string) (namedPortsChanged bool) {
+	ipc.mutex.Lock()
+	defer ipc.mutex.Unlock()
+	k8sMeta := ipc.getK8sMetadata(IP)
+	if k8sMeta != nil && k8sMeta.Namespace == namespace && k8sMeta.PodName == name {
+		return ipc.deleteLocked(IP, source)
+	}
+	return false
+}
+
 // Delete removes the provided IP-to-security-identity mapping from the IPCache.
 func (ipc *IPCache) Delete(IP string, source source.Source) (namedPortsChanged bool) {
 	ipc.mutex.Lock()
@@ -579,6 +612,12 @@ func (ipc *IPCache) LookupByHostRLocked(hostIPv4, hostIPv6 net.IP) (cidrs []net.
 	return cidrs
 }
 
+// RegisterK8sWaiter registers the object that checks for wehther the K8s cache
+// has been fully synced.
+func (ipc *IPCache) RegisterK8sSyncedChecker(c k8sSyncedChecker) {
+	ipc.k8sSyncedChecker = c
+}
+
 // Equal returns true if two K8sMetadata pointers contain the same data or are
 // both nil.
 func (m *K8sMetadata) Equal(o *K8sMetadata) bool {
@@ -596,4 +635,10 @@ func (m *K8sMetadata) Equal(o *K8sMetadata) bool {
 		}
 	}
 	return m.Namespace == o.Namespace && m.PodName == o.PodName
+}
+
+// k8sCacheIsSynced is an interface for checking if the K8s watcher cache has
+// been fully synced.
+type k8sSyncedChecker interface {
+	K8sCacheIsSynced() bool
 }

@@ -16,9 +16,10 @@ import (
 	"time"
 )
 
-// Describes one or more of your VPN connections. For more information, see AWS
-// Site-to-Site VPN (https://docs.aws.amazon.com/vpn/latest/s2svpn/VPC_VPN.html) in
-// the AWS Site-to-Site VPN User Guide.
+// Describes one or more of your VPN connections. For more information, see Amazon
+// Web Services Site-to-Site VPN
+// (https://docs.aws.amazon.com/vpn/latest/s2svpn/VPC_VPN.html) in the Amazon Web
+// Services Site-to-Site VPN User Guide.
 func (c *Client) DescribeVpnConnections(ctx context.Context, params *DescribeVpnConnectionsInput, optFns ...func(*Options)) (*DescribeVpnConnectionsOutput, error) {
 	if params == nil {
 		params = &DescribeVpnConnectionsInput{}
@@ -234,8 +235,17 @@ func NewVpnConnectionAvailableWaiter(client DescribeVpnConnectionsAPIClient, opt
 // is the maximum wait duration the waiter will wait. The maxWaitDur is required
 // and must be greater than zero.
 func (w *VpnConnectionAvailableWaiter) Wait(ctx context.Context, params *DescribeVpnConnectionsInput, maxWaitDur time.Duration, optFns ...func(*VpnConnectionAvailableWaiterOptions)) error {
+	_, err := w.WaitForOutput(ctx, params, maxWaitDur, optFns...)
+	return err
+}
+
+// WaitForOutput calls the waiter function for VpnConnectionAvailable waiter and
+// returns the output of the successful operation. The maxWaitDur is the maximum
+// wait duration the waiter will wait. The maxWaitDur is required and must be
+// greater than zero.
+func (w *VpnConnectionAvailableWaiter) WaitForOutput(ctx context.Context, params *DescribeVpnConnectionsInput, maxWaitDur time.Duration, optFns ...func(*VpnConnectionAvailableWaiterOptions)) (*DescribeVpnConnectionsOutput, error) {
 	if maxWaitDur <= 0 {
-		return fmt.Errorf("maximum wait time for waiter must be greater than zero")
+		return nil, fmt.Errorf("maximum wait time for waiter must be greater than zero")
 	}
 
 	options := w.options
@@ -248,7 +258,7 @@ func (w *VpnConnectionAvailableWaiter) Wait(ctx context.Context, params *Describ
 	}
 
 	if options.MinDelay > options.MaxDelay {
-		return fmt.Errorf("minimum waiter delay %v must be lesser than or equal to maximum waiter delay of %v.", options.MinDelay, options.MaxDelay)
+		return nil, fmt.Errorf("minimum waiter delay %v must be lesser than or equal to maximum waiter delay of %v.", options.MinDelay, options.MaxDelay)
 	}
 
 	ctx, cancelFn := context.WithTimeout(ctx, maxWaitDur)
@@ -276,10 +286,10 @@ func (w *VpnConnectionAvailableWaiter) Wait(ctx context.Context, params *Describ
 
 		retryable, err := options.Retryable(ctx, params, out, err)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !retryable {
-			return nil
+			return out, nil
 		}
 
 		remainingTime -= time.Since(start)
@@ -292,16 +302,16 @@ func (w *VpnConnectionAvailableWaiter) Wait(ctx context.Context, params *Describ
 			attempt, options.MinDelay, options.MaxDelay, remainingTime,
 		)
 		if err != nil {
-			return fmt.Errorf("error computing waiter delay, %w", err)
+			return nil, fmt.Errorf("error computing waiter delay, %w", err)
 		}
 
 		remainingTime -= delay
 		// sleep for the delay amount before invoking a request
 		if err := smithytime.SleepWithContext(ctx, delay); err != nil {
-			return fmt.Errorf("request cancelled while waiting, %w", err)
+			return nil, fmt.Errorf("request cancelled while waiting, %w", err)
 		}
 	}
-	return fmt.Errorf("exceeded max wait time for VpnConnectionAvailable waiter")
+	return nil, fmt.Errorf("exceeded max wait time for VpnConnectionAvailable waiter")
 }
 
 func vpnConnectionAvailableStateRetryable(ctx context.Context, input *DescribeVpnConnectionsInput, output *DescribeVpnConnectionsOutput, err error) (bool, error) {
@@ -449,8 +459,17 @@ func NewVpnConnectionDeletedWaiter(client DescribeVpnConnectionsAPIClient, optFn
 // is the maximum wait duration the waiter will wait. The maxWaitDur is required
 // and must be greater than zero.
 func (w *VpnConnectionDeletedWaiter) Wait(ctx context.Context, params *DescribeVpnConnectionsInput, maxWaitDur time.Duration, optFns ...func(*VpnConnectionDeletedWaiterOptions)) error {
+	_, err := w.WaitForOutput(ctx, params, maxWaitDur, optFns...)
+	return err
+}
+
+// WaitForOutput calls the waiter function for VpnConnectionDeleted waiter and
+// returns the output of the successful operation. The maxWaitDur is the maximum
+// wait duration the waiter will wait. The maxWaitDur is required and must be
+// greater than zero.
+func (w *VpnConnectionDeletedWaiter) WaitForOutput(ctx context.Context, params *DescribeVpnConnectionsInput, maxWaitDur time.Duration, optFns ...func(*VpnConnectionDeletedWaiterOptions)) (*DescribeVpnConnectionsOutput, error) {
 	if maxWaitDur <= 0 {
-		return fmt.Errorf("maximum wait time for waiter must be greater than zero")
+		return nil, fmt.Errorf("maximum wait time for waiter must be greater than zero")
 	}
 
 	options := w.options
@@ -463,7 +482,7 @@ func (w *VpnConnectionDeletedWaiter) Wait(ctx context.Context, params *DescribeV
 	}
 
 	if options.MinDelay > options.MaxDelay {
-		return fmt.Errorf("minimum waiter delay %v must be lesser than or equal to maximum waiter delay of %v.", options.MinDelay, options.MaxDelay)
+		return nil, fmt.Errorf("minimum waiter delay %v must be lesser than or equal to maximum waiter delay of %v.", options.MinDelay, options.MaxDelay)
 	}
 
 	ctx, cancelFn := context.WithTimeout(ctx, maxWaitDur)
@@ -491,10 +510,10 @@ func (w *VpnConnectionDeletedWaiter) Wait(ctx context.Context, params *DescribeV
 
 		retryable, err := options.Retryable(ctx, params, out, err)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !retryable {
-			return nil
+			return out, nil
 		}
 
 		remainingTime -= time.Since(start)
@@ -507,16 +526,16 @@ func (w *VpnConnectionDeletedWaiter) Wait(ctx context.Context, params *DescribeV
 			attempt, options.MinDelay, options.MaxDelay, remainingTime,
 		)
 		if err != nil {
-			return fmt.Errorf("error computing waiter delay, %w", err)
+			return nil, fmt.Errorf("error computing waiter delay, %w", err)
 		}
 
 		remainingTime -= delay
 		// sleep for the delay amount before invoking a request
 		if err := smithytime.SleepWithContext(ctx, delay); err != nil {
-			return fmt.Errorf("request cancelled while waiting, %w", err)
+			return nil, fmt.Errorf("request cancelled while waiting, %w", err)
 		}
 	}
-	return fmt.Errorf("exceeded max wait time for VpnConnectionDeleted waiter")
+	return nil, fmt.Errorf("exceeded max wait time for VpnConnectionDeleted waiter")
 }
 
 func vpnConnectionDeletedStateRetryable(ctx context.Context, input *DescribeVpnConnectionsInput, output *DescribeVpnConnectionsOutput, err error) (bool, error) {

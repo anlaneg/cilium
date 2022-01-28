@@ -6,8 +6,14 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/go-openapi/runtime/middleware"
+	"github.com/go-openapi/strfmt"
+	"github.com/sirupsen/logrus"
+	versionapi "k8s.io/apimachinery/pkg/version"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
@@ -36,11 +42,6 @@ import (
 	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/status"
 	"github.com/cilium/cilium/pkg/version"
-	"github.com/sirupsen/logrus"
-
-	"github.com/go-openapi/runtime/middleware"
-	"github.com/go-openapi/strfmt"
-	versionapi "k8s.io/apimachinery/pkg/version"
 )
 
 const (
@@ -114,14 +115,14 @@ func (d *Daemon) getK8sStatus() *models.K8sStatus {
 
 func (d *Daemon) getMasqueradingStatus() *models.Masquerading {
 	s := &models.Masquerading{
-		Enabled: option.Config.EnableIPv4Masquerade || option.Config.EnableIPv6Masquerade,
+		Enabled: option.Config.MasqueradingEnabled(),
 		EnabledProtocols: &models.MasqueradingEnabledProtocols{
 			IPV4: option.Config.EnableIPv4Masquerade,
 			IPV6: option.Config.EnableIPv6Masquerade,
 		},
 	}
 
-	if !option.Config.EnableIPv4Masquerade && !option.Config.EnableIPv6Masquerade {
+	if !option.Config.MasqueradingEnabled() {
 		return s
 	}
 
@@ -196,6 +197,17 @@ func (d *Daemon) getClockSourceStatus() *models.ClockSource {
 	return s
 }
 
+func (d *Daemon) getCNIChainingStatus() *models.CNIChainingStatus {
+	// CNI chaining is enabled only from CILIUM_CNI_CHAINING_MODE env
+	mode := os.Getenv("CILIUM_CNI_CHAINING_MODE")
+	if len(mode) == 0 {
+		mode = models.CNIChainingStatusModeNone
+	}
+	return &models.CNIChainingStatus{
+		Mode: mode,
+	}
+}
+
 func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 	var mode string
 	switch option.Config.KubeProxyReplacement {
@@ -234,6 +246,7 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 		ExternalIPs:           &models.KubeProxyReplacementFeaturesExternalIPs{},
 		HostReachableServices: &models.KubeProxyReplacementFeaturesHostReachableServices{},
 		SessionAffinity:       &models.KubeProxyReplacementFeaturesSessionAffinity{},
+		GracefulTermination:   &models.KubeProxyReplacementFeaturesGracefulTermination{},
 	}
 	if option.Config.EnableNodePort {
 		features.NodePort.Enabled = true
@@ -273,6 +286,9 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 	}
 	if option.Config.EnableSessionAffinity {
 		features.SessionAffinity.Enabled = true
+	}
+	if option.Config.EnableK8sTerminatingEndpoint {
+		features.GracefulTermination.Enabled = true
 	}
 
 	return &models.KubeProxyReplacement{
@@ -500,7 +516,7 @@ func (c *clusterNodesClient) NodeNeighborRefresh(ctx context.Context, node nodeT
 	return
 }
 
-func (c *clusterNodesClient) NodeCleanNeighbors() {
+func (c *clusterNodesClient) NodeCleanNeighbors(migrateOnly bool) {
 	// no-op
 	return
 }
@@ -980,6 +996,7 @@ func (d *Daemon) startStatusCollector() {
 	d.statusResponse.HostRouting = d.getHostRoutingStatus()
 	d.statusResponse.ClockSource = d.getClockSourceStatus()
 	d.statusResponse.BpfMaps = d.getBPFMapStatus()
+	d.statusResponse.CniChaining = d.getCNIChainingStatus()
 
 	d.statusCollector = status.NewCollector(probes, status.Config{})
 

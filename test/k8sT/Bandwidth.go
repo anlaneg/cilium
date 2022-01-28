@@ -6,13 +6,13 @@ package k8sTest
 import (
 	"fmt"
 
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-
-	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("K8sBandwidthTest", func() {
+var _ = SkipDescribeIf(helpers.DoesNotRunOnNetNextKernel, "K8sBandwidthTest", func() {
 	var (
 		kubectl        *helpers.Kubectl
 		ciliumFilename string
@@ -30,12 +30,16 @@ var _ = Describe("K8sBandwidthTest", func() {
 	})
 
 	AfterAll(func() {
-		_ = kubectl.Delete(demoYAML)
+		kubectl.Delete(demoYAML)
 		ExpectAllPodsTerminated(kubectl)
+
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
+		ExpectAllPodsTerminated(kubectl)
+
 		kubectl.CloseSSHClient()
 	})
 
-	SkipContextIf(helpers.DoesNotRunOnNetNextKernel, "Checks Bandwidth Rate-Limiting", func() {
+	Context("Checks Bandwidth Rate-Limiting", func() {
 		const (
 			testDS10       = "run=netperf-10"
 			testDS25       = "run=netperf-25"
@@ -59,10 +63,6 @@ var _ = Describe("K8sBandwidthTest", func() {
 
 		JustAfterEach(func() {
 			kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-		})
-
-		AfterAll(func() {
-			UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		})
 
 		waitForTestPods := func() {

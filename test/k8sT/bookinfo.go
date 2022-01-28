@@ -6,10 +6,10 @@ package k8sTest
 import (
 	"fmt"
 
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-
-	. "github.com/onsi/gomega"
 )
 
 // The 5.4 CI job is intended to catch BPF complexity regressions and as such
@@ -32,10 +32,6 @@ var _ = SkipDescribeIf(func() bool {
 
 	JustAfterEach(func() {
 		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-	})
-
-	AfterEach(func() {
-		ExpectAllPodsTerminated(kubectl)
 	})
 
 	AfterAll(func() {
@@ -84,6 +80,7 @@ var _ = SkipDescribeIf(func() bool {
 				// Explicitly do not check result to avoid having assertions in AfterAll.
 				_ = kubectl.Delete(resourcePath)
 			}
+			ExpectAllPodsTerminated(kubectl)
 		})
 
 		It("Tests bookinfo demo", func() {

@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-
-	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("K8sHealthTest", func() {
@@ -26,7 +26,9 @@ var _ = Describe("K8sHealthTest", func() {
 			kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
 
 			ciliumFilename = helpers.TimestampFilename("cilium.yaml")
-			DeployCiliumAndDNS(kubectl, ciliumFilename)
+			DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
+				"clusterHealthPort": "9940", // tests use of custom port
+			})
 		})
 
 		AfterFailed(func() {
@@ -37,11 +39,8 @@ var _ = Describe("K8sHealthTest", func() {
 			kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
 		})
 
-		AfterEach(func() {
-			ExpectAllPodsTerminated(kubectl)
-		})
-
 		AfterAll(func() {
+			ExpectAllPodsTerminated(kubectl)
 			UninstallCiliumFromManifest(kubectl, ciliumFilename)
 			kubectl.CloseSSHClient()
 		})
@@ -83,8 +82,8 @@ var _ = Describe("K8sHealthTest", func() {
 			Expect(status.Stdout()).ShouldNot(ContainSubstring("error"))
 
 			apiPaths := []string{
-				"endpoint.icmp",
-				"endpoint.http",
+				"health-endpoint.primary-address.icmp",
+				"health-endpoint.primary-address.http",
 				"host.primary-address.icmp",
 				"host.primary-address.http",
 			}

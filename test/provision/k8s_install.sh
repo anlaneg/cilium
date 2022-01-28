@@ -13,7 +13,6 @@ export CILIUM_CONFIG_DIR="/opt/cilium"
 export PROVISIONSRC="/tmp/provision/"
 export SRC_FOLDER="/home/vagrant/go/src/github.com/cilium/cilium"
 export SYSTEMD_SERVICES="$SRC_FOLDER/contrib/systemd"
-MOUNT_SYSTEMD="sys-fs-bpf.mount"
 
 NODE=$1
 IP=$2
@@ -22,7 +21,7 @@ IPv6=$4
 CONTAINER_RUNTIME=$5
 
 # Kubeadm default parameters
-export KUBEADM_ADDR='192.168.36.11'
+export KUBEADM_ADDR='192.168.56.11'
 export KUBEADM_POD_CIDR='10.10.0.0/16'
 export KUBEADM_V1BETA2_POD_CIDR='10.10.0.0/16,fd02::/112'
 export KUBEADM_SVC_CIDR='10.96.0.0/12'
@@ -82,12 +81,12 @@ cat <<EOF >> /etc/hosts
 ::1     localhost ip6-localhost ip6-loopback
 ff02::1 ip6-allnodes
 ff02::2 ip6-allrouters
-192.168.36.11 k8s1
-192.168.36.12 k8s2
-192.168.36.13 k8s3
-192.168.36.14 k8s4
-192.168.36.15 k8s5
-192.168.36.16 k8s6
+192.168.56.11 k8s1
+192.168.56.12 k8s2
+192.168.56.13 k8s3
+192.168.56.14 k8s4
+192.168.56.15 k8s5
+192.168.56.16 k8s6
 EOF
 
 # Configure default IPv6 route without this connectivity from host to
@@ -308,7 +307,7 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.19.13"
+        K8S_FULL_VERSION="1.19.16"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
         KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
@@ -322,13 +321,13 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.20.9"
+        K8S_FULL_VERSION="1.20.15"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
         KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
-        CONTROLLER_FEATURE_GATES="EndpointSlice=true"
-        API_SERVER_FEATURE_GATES="EndpointSlice=true"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
         ;;
     "1.21")
         # kubeadm 1.21 requires conntrack to be installed, we can remove this
@@ -336,13 +335,13 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.21.3"
+        K8S_FULL_VERSION="1.21.9"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
         KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
-        CONTROLLER_FEATURE_GATES="EndpointSlice=true"
-        API_SERVER_FEATURE_GATES="EndpointSlice=true"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
         ;;
     "1.22")
         # kubeadm 1.22 requires conntrack to be installed, we can remove this
@@ -350,13 +349,27 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.22.0"
+        K8S_FULL_VERSION="1.22.6"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
         KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA3}"
-        CONTROLLER_FEATURE_GATES="EndpointSlice=true"
-        API_SERVER_FEATURE_GATES="EndpointSlice=true"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        ;;
+    "1.23")
+        # kubeadm 1.23 requires conntrack to be installed, we can remove this
+        # once we have upgraded the VM image version.
+        sudo apt-get install -y conntrack
+        KUBERNETES_CNI_VERSION="0.8.7"
+        KUBERNETES_CNI_OS="-linux"
+        K8S_FULL_VERSION="1.23.2"
+        KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
+        KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA3}"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
         ;;
 esac
 
@@ -367,7 +380,7 @@ fi
 #Install kubernetes
 set +e
 case $K8S_VERSION in
-    "1.16"|"1.17"|"1.18"|"1.19"|"1.20"|"1.21"|"1.22")
+    "1.16"|"1.17"|"1.18"|"1.19"|"1.20"|"1.21"|"1.22"|"1.23")
         install_k8s_using_packages \
             kubernetes-cni=${KUBERNETES_CNI_VERSION}* \
             kubelet=${K8S_FULL_VERSION}* \
@@ -406,9 +419,7 @@ fi
 
 sudo mkdir -p ${CILIUM_CONFIG_DIR}
 
-sudo cp "$SYSTEMD_SERVICES/$MOUNT_SYSTEMD" /etc/systemd/system/
-sudo systemctl enable $MOUNT_SYSTEMD
-sudo systemctl restart $MOUNT_SYSTEMD
+sudo mount bpffs /sys/fs/bpf -t bpf
 sudo rm -rfv /var/lib/kubelet || true
 
 if [[ "${PRELOAD_VM}" == "true" ]]; then

@@ -11,6 +11,9 @@ import (
 	"fmt"
 	"testing"
 
+	. "gopkg.in/check.v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/checker"
@@ -23,10 +26,7 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/cilium/cilium/pkg/testutils"
-
-	. "gopkg.in/check.v1"
-	"k8s.io/apimachinery/pkg/types"
+	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -92,8 +92,9 @@ var (
 type DummySelectorCacheUser struct{}
 
 func testNewPolicyRepository() *policy.Repository {
-	repo := policy.NewPolicyRepository(nil, nil)
-	repo.GetSelectorCache().SetLocalIdentityNotifier(testutils.NewDummyIdentityNotifier())
+	idAllocator := testidentity.NewMockIdentityAllocator(nil)
+	repo := policy.NewPolicyRepository(idAllocator, nil, nil)
+	repo.GetSelectorCache().SetLocalIdentityNotifier(testidentity.NewDummyIdentityNotifier())
 	return repo
 }
 

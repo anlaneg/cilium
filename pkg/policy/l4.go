@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	cilium "github.com/cilium/proxy/go/cilium/api"
+	"github.com/sirupsen/logrus"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/iana"
 	"github.com/cilium/cilium/pkg/identity"
@@ -23,9 +26,6 @@ import (
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/u8proto"
-	cilium "github.com/cilium/proxy/go/cilium/api"
-
-	"github.com/sirupsen/logrus"
 )
 
 // __canSkipArgs is a wrapper structure to store all boolean conditions for the
@@ -1051,12 +1051,6 @@ func (l4 *L4Policy) HasEnvoyRedirect() bool {
 // HasProxylibRedirect returns true if the L4 policy contains at least one port redirection to Proxylib
 func (l4 *L4Policy) HasProxylibRedirect() bool {
 	return l4 != nil && (l4.Ingress.HasProxylibRedirect() || l4.Egress.HasProxylibRedirect())
-}
-
-// RequiresConntrack returns true if if the L4 configuration requires
-// connection tracking to be enabled.
-func (l4 *L4Policy) RequiresConntrack() bool {
-	return l4 != nil && (len(l4.Ingress) > 0 || len(l4.Egress) > 0)
 }
 
 func (l4 *L4Policy) GetModel() *models.L4Policy {

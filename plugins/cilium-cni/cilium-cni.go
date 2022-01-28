@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright 2016-2021 Authors of Cilium
 
 // Ensure build fails on versions of Go that are not supported by Cilium.
 // This build tag should be kept in sync with the version specified in go.mod.
@@ -16,6 +16,18 @@ import (
 	"runtime"
 	"sort"
 
+	"github.com/cilium/ebpf"
+	"github.com/containernetworking/cni/pkg/skel"
+	cniTypes "github.com/containernetworking/cni/pkg/types"
+	cniTypesVer "github.com/containernetworking/cni/pkg/types/040"
+	cniVersion "github.com/containernetworking/cni/pkg/version"
+	"github.com/containernetworking/plugins/pkg/ns"
+	gops "github.com/google/gops/agent"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/client"
@@ -25,8 +37,8 @@ import (
 	"github.com/cilium/cilium/pkg/defaults"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
-	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/hooks"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/sysctl"
@@ -38,18 +50,12 @@ import (
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/generic-veth"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/portmap"
 	"github.com/cilium/cilium/plugins/cilium-cni/types"
-	"github.com/cilium/ebpf"
+)
 
-	"github.com/containernetworking/cni/pkg/skel"
-	cniTypes "github.com/containernetworking/cni/pkg/types"
-	cniTypesVer "github.com/containernetworking/cni/pkg/types/current"
-	cniVersion "github.com/containernetworking/cni/pkg/version"
-	"github.com/containernetworking/plugins/pkg/ns"
-	gops "github.com/google/gops/agent"
-	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
-	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
+const (
+	// defaultLogMaxBackups is to make sure that we have an upper bound on disk space used by
+	// CNI file logging (e.g. < 7 * 100 MB).
+	defaultLogMaxBackups = 7
 )
 
 var (
@@ -263,7 +269,19 @@ func setupLogging(n *types.NetConf) error {
 	logOptions := logging.LogOptions{
 		logging.FormatOpt: f,
 	}
-	return logging.SetupLogging([]string{}, logOptions, "cilium-cni", n.EnableDebug)
+	err := logging.SetupLogging([]string{}, logOptions, "cilium-cni", n.EnableDebug)
+	if err != nil {
+		return err
+	}
+
+	if len(n.LogFile) != 0 {
+		logging.AddHooks(hooks.NewFileRotationLogHook(n.LogFile,
+			hooks.EnableCompression(),
+			hooks.WithMaxBackups(defaultLogMaxBackups),
+		))
+	}
+
+	return nil
 }
 
 func cmdAdd(args *skel.CmdArgs) (err error) {
@@ -357,10 +375,6 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 
 	addLabels := models.Labels{}
-
-	for _, label := range n.Args.Mesos.NetworkInfo.Labels.Labels {
-		addLabels = append(addLabels, fmt.Sprintf("%s:%s=%s", labels.LabelSourceMesos, label.Key, label.Value))
-	}
 
 	configResult, err := c.ConfigGet()
 	if err != nil {

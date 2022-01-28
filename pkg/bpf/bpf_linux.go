@@ -15,13 +15,13 @@ import (
 	"runtime"
 	"unsafe"
 
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
+
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/spanstat"
-
-	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 // CreateMap creates a Map of type mapType, with key size keySize, a value size of
@@ -668,53 +668,4 @@ func TestDummyProg(progType ProgType, attachType uint32) error {
 	runtime.KeepAlive(&bpfAttr)
 
 	return errno
-}
-
-type BpfMapInfo struct {
-	Type       uint32
-	Id         uint32
-	KeySize    uint32
-	ValueSize  uint32
-	MaxEntries uint32
-	MapFlags   uint32
-}
-
-// GetMapInfoByFd returns map info for a map which is pointed by the given fd.
-func GetMapInfoByFd(fd uint32) (*BpfMapInfo, error) {
-	info := BpfMapInfo{}
-	uba := struct {
-		bpfFd   uint32
-		infoLen uint32
-		info    uint64
-	}{
-		uint32(fd),
-		uint32(unsafe.Sizeof(info)),
-		uint64(uintptr(unsafe.Pointer(&info))),
-	}
-
-	var duration *spanstat.SpanStat
-	if option.Config.MetricsConfig.BPFSyscallDurationEnabled {
-		duration = spanstat.Start()
-	}
-
-	ret, _, err := unix.Syscall(
-		unix.SYS_BPF,
-		BPF_OBJ_GET_INFO_BY_FD,
-		uintptr(unsafe.Pointer(&uba)),
-		unsafe.Sizeof(uba),
-	)
-	runtime.KeepAlive(&uba)
-
-	if option.Config.MetricsConfig.BPFSyscallDurationEnabled {
-		metrics.BPFSyscallDuration.WithLabelValues(metricOpGetMapInfoByFD, metrics.Errno2Outcome(err)).Observe(duration.End(err == 0).Total().Seconds())
-	}
-
-	if err != 0 {
-		return nil, fmt.Errorf("Unable to get BPF map info by fd %d: %w", fd, err)
-	}
-	if ret != 0 {
-		return nil, fmt.Errorf("Unable to get BPF map info by fd %d: %d", fd, ret)
-	}
-
-	return &info, nil
 }

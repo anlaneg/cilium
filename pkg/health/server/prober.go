@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/servak/go-fastping"
+	"github.com/sirupsen/logrus"
+
 	"github.com/cilium/cilium/api/v1/health/models"
 	ciliumModels "github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/health/probe"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-
-	"github.com/servak/go-fastping"
-	"github.com/sirupsen/logrus"
 )
 
 // healthReport is a snapshot of the health of the cluster.
@@ -81,7 +81,7 @@ func (p *prober) getResults() *healthReport {
 			continue
 		}
 		primaryIP := node.PrimaryIP()
-		healthIP := node.HealthIP()
+		primaryHealthIP := node.HealthIP()
 
 		secondaryAddresses := []*models.PathStatus{}
 		for _, ip := range node.SecondaryIPs() {
@@ -98,8 +98,20 @@ func (p *prober) getResults() *healthReport {
 			},
 		}
 
-		if healthIP != "" {
-			status.Endpoint = p.copyResultRLocked(healthIP)
+		secondaryEndpointAddresses := []*models.PathStatus{}
+		for _, ip := range node.SecondaryHealthIPs() {
+			if addr := p.copyResultRLocked(ip); addr != nil {
+				secondaryEndpointAddresses = append(secondaryEndpointAddresses, addr)
+			}
+		}
+
+		if primaryHealthIP != "" {
+			primaryEndpointAddress := p.copyResultRLocked(primaryHealthIP)
+			status.Endpoint = primaryEndpointAddress
+			status.HealthEndpoint = &models.EndpointStatus{
+				PrimaryAddress:     primaryEndpointAddress,
+				SecondaryAddresses: secondaryEndpointAddresses,
+			}
 		}
 
 		resultMap[node.Name] = status
@@ -344,7 +356,8 @@ func newProber(s *Server, nodes nodeMap) *prober {
 		nodes:        make(nodeMap),
 	}
 	prober.MaxRTT = s.ProbeDeadline
-
+	// FIXME: Doubling the default payload size to 16 is a workaround for GH-18177
+	prober.Size = 2 * fastping.TimeSliceLength
 	prober.setNodes(nodes, nil)
 	prober.OnRecv = func(addr *net.IPAddr, rtt time.Duration) {
 		prober.Lock()

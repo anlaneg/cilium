@@ -81,14 +81,22 @@
      - Enables pre-allocation of eBPF map values. This increases memory usage but can reduce latency.
      - bool
      - ``false``
+   * - bpf.root
+     - Configure the mount point for the BPF filesystem
+     - string
+     - ``"/sys/fs/bpf"``
    * - certgen
      - Configure certificate generation for Hubble integration. If hubble.tls.auto.method=cronJob, these values are used for the Kubernetes CronJob which will be scheduled regularly to (re)generate any certificates not provided manually.
      - object
-     - ``{"image":{"pullPolicy":"Always","repository":"quay.io/cilium/certgen","tag":"v0.1.5"},"podLabels":{},"ttlSecondsAfterFinished":1800}``
+     - ``{"image":{"pullPolicy":"Always","repository":"quay.io/cilium/certgen","tag":"v0.1.5"},"podLabels":{},"tolerations":[],"ttlSecondsAfterFinished":1800}``
    * - certgen.podLabels
      - Labels to be added to hubble-certgen pods
      - object
      - ``{}``
+   * - certgen.tolerations
+     - Node tolerations for pod assignment on nodes with taints ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+     - list
+     - ``[]``
    * - certgen.ttlSecondsAfterFinished
      - Seconds after which the completed job pod will be deleted
      - int
@@ -137,6 +145,18 @@
      - Annotations to be added to clustermesh-apiserver pods
      - object
      - ``{}``
+   * - clustermesh.apiserver.podDisruptionBudget.enabled
+     - enable PodDisruptionBudget ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+     - bool
+     - ``false``
+   * - clustermesh.apiserver.podDisruptionBudget.maxUnavailable
+     - Maximum number/percentage of pods that may be made unavailable
+     - int
+     - ``1``
+   * - clustermesh.apiserver.podDisruptionBudget.minAvailable
+     - Minimum number/percentage of pods that should remain scheduled. When it's set, maxUnavailable must be disabled by ``maxUnavailable: null``
+     - string
+     - ``nil``
    * - clustermesh.apiserver.podLabels
      - Labels to be added to clustermesh-apiserver pods
      - object
@@ -234,7 +254,7 @@
      - string
      - ``"/opt/cni/bin"``
    * - cni.chainingMode
-     - Configure chaining on top of other CNI plugins. Possible values:  - none  - generic-veth  - aws-cni  - portmap
+     - Configure chaining on top of other CNI plugins. Possible values:  - none  - aws-cni  - flannel  - generic-veth  - portmap
      - string
      - ``"none"``
    * - cni.confFileMountPath
@@ -265,6 +285,10 @@
      - Install the CNI configuration and binary files into the filesystem.
      - bool
      - ``true``
+   * - cni.logFile
+     - Configure the log file for CNI logging with retention policy of 7 days. Disable CNI file logging by setting this field to empty explicitly.
+     - string
+     - ``"/var/run/cilium/cilium-cni.log"``
    * - containerRuntime
      - Configure container runtime specific integration.
      - object
@@ -286,7 +310,7 @@
      - string
      - ``"/var/run/cilium"``
    * - datapathMode
-     - Configure which datapath mode should be used for configuring container connectivity. Valid options are "veth" or "ipvlan".
+     - Configure which datapath mode should be used for configuring container connectivity. Valid options are "veth" or "ipvlan". Deprecated, to be removed in v1.12.
      - string
      - ``"veth"``
    * - debug.enabled
@@ -301,6 +325,10 @@
      - Enables egress gateway (beta) to redirect and SNAT the traffic that leaves the cluster.
      - object
      - ``{"enabled":false}``
+   * - enableCiliumEndpointSlice
+     - Enable CiliumEndpointSlice feature.
+     - bool
+     - ``false``
    * - enableCnpStatusUpdates
      - Whether to enable CNP status updates.
      - bool
@@ -321,8 +349,12 @@
      - Configures the use of the KVStore to optimize Kubernetes event handling by mirroring it into the KVstore for reduced overhead in large clusters.
      - bool
      - ``false``
+   * - enableK8sTerminatingEndpoint
+     - Configure whether to enable auto detect of terminating state for endpoints in order to support graceful termination.
+     - bool
+     - ``true``
    * - enableXTSocketFallback
-     - Enables the fallback compatibility solution for when the xt_socket kernel module is missing and it is needed for the datapath L7 redirection to work properly. See documentation for details on when this can be disabled: http://docs.cilium.io/en/stable/install/system_requirements/#admin-kernel-version.
+     - Enables the fallback compatibility solution for when the xt_socket kernel module is missing and it is needed for the datapath L7 redirection to work properly. See documentation for details on when this can be disabled: https://docs.cilium.io/en/stable/operations/system_requirements/#linux-kernel.
      - bool
      - ``true``
    * - encryption.enabled
@@ -461,10 +493,18 @@
      - Annotations to be added to cilium-etcd-operator pods
      - object
      - ``{}``
-   * - etcd.podDisruptionBudget
-     - PodDisruptionBudget settings ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-     - object
-     - ``{"enabled":true,"maxUnavailable":2}``
+   * - etcd.podDisruptionBudget.enabled
+     - enable PodDisruptionBudget ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+     - bool
+     - ``false``
+   * - etcd.podDisruptionBudget.maxUnavailable
+     - Maximum number/percentage of pods that may be made unavailable
+     - int
+     - ``1``
+   * - etcd.podDisruptionBudget.minAvailable
+     - Minimum number/percentage of pods that should remain scheduled. When it's set, maxUnavailable must be disabled by ``maxUnavailable: null``
+     - string
+     - ``nil``
    * - etcd.podLabels
      - Labels to be added to cilium-etcd-operator pods
      - object
@@ -574,7 +614,7 @@
      - string
      - ``":4244"``
    * - hubble.metrics
-     - Hubble metrics configuration. See https://docs.cilium.io/en/stable/configuration/metrics/#hubble-metrics for more comprehensive documentation about Hubble metrics.
+     - Hubble metrics configuration. See https://docs.cilium.io/en/stable/operations/metrics/#hubble-metrics for more comprehensive documentation about Hubble metrics.
      - object
      - ``{"enabled":null,"port":9091,"serviceAnnotations":{},"serviceMonitor":{"enabled":false,"labels":{}}}``
    * - hubble.metrics.enabled
@@ -625,6 +665,18 @@
      - Annotations to be added to hubble-relay pods
      - object
      - ``{}``
+   * - hubble.relay.podDisruptionBudget.enabled
+     - enable PodDisruptionBudget ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+     - bool
+     - ``false``
+   * - hubble.relay.podDisruptionBudget.maxUnavailable
+     - Maximum number/percentage of pods that may be made unavailable
+     - int
+     - ``1``
+   * - hubble.relay.podDisruptionBudget.minAvailable
+     - Minimum number/percentage of pods that should remain scheduled. When it's set, maxUnavailable must be disabled by ``maxUnavailable: null``
+     - string
+     - ``nil``
    * - hubble.relay.podLabels
      - Labels to be added to hubble-relay pods
      - object
@@ -649,6 +701,10 @@
      - Roll out Hubble Relay pods automatically when configmap is updated.
      - bool
      - ``false``
+   * - hubble.relay.securityContext
+     - hubble-relay security context
+     - object
+     - ``{}``
    * - hubble.relay.sortBufferDrainTimeout
      - When the per-request flows sort buffer is not full, a flow is drained every time this timeout is reached (only affects requests in follow-mode) (e.g. "1s").
      - string
@@ -764,7 +820,7 @@
    * - hubble.ui.ingress
      - hubble-ui ingress configuration.
      - object
-     - ``{"annotations":{},"enabled":false,"hosts":["chart-example.local"],"tls":[]}``
+     - ``{"annotations":{},"className":"","enabled":false,"hosts":["chart-example.local"],"tls":[]}``
    * - hubble.ui.nodeSelector
      - Node labels for pod assignment ref: https://kubernetes.io/docs/user-guide/node-selection/
      - object
@@ -773,6 +829,18 @@
      - Annotations to be added to hubble-ui pods
      - object
      - ``{}``
+   * - hubble.ui.podDisruptionBudget.enabled
+     - enable PodDisruptionBudget ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+     - bool
+     - ``false``
+   * - hubble.ui.podDisruptionBudget.maxUnavailable
+     - Maximum number/percentage of pods that may be made unavailable
+     - int
+     - ``1``
+   * - hubble.ui.podDisruptionBudget.minAvailable
+     - Minimum number/percentage of pods that should remain scheduled. When it's set, maxUnavailable must be disabled by ``maxUnavailable: null``
+     - string
+     - ``nil``
    * - hubble.ui.podLabels
      - Labels to be added to hubble-ui pods
      - object
@@ -854,17 +922,25 @@
      - int
      - ``24``
    * - ipam.operator.clusterPoolIPv4PodCIDR
-     - IPv4 CIDR range to delegate to individual nodes for IPAM.
+     - Deprecated in favor of ipam.operator.clusterPoolIPv4PodCIDRList. IPv4 CIDR range to delegate to individual nodes for IPAM.
      - string
      - ``"10.0.0.0/8"``
+   * - ipam.operator.clusterPoolIPv4PodCIDRList
+     - IPv4 CIDR list range to delegate to individual nodes for IPAM.
+     - list
+     - ``[]``
    * - ipam.operator.clusterPoolIPv6MaskSize
      - IPv6 CIDR mask size to delegate to individual nodes for IPAM.
      - int
      - ``120``
    * - ipam.operator.clusterPoolIPv6PodCIDR
-     - IPv6 CIDR range to delegate to individual nodes for IPAM.
+     - Deprecated in favor of ipam.operator.clusterPoolIPv6PodCIDRList. IPv6 CIDR range to delegate to individual nodes for IPAM.
      - string
      - ``"fd00::/104"``
+   * - ipam.operator.clusterPoolIPv6PodCIDRList
+     - IPv6 CIDR list range to delegate to individual nodes for IPAM.
+     - list
+     - ``[]``
    * - ipv4.enabled
      - Enable IPv4 support.
      - bool
@@ -874,7 +950,7 @@
      - bool
      - ``false``
    * - ipvlan.enabled
-     - Enable the IPVLAN datapath
+     - Enable the IPVLAN datapath (deprecated)
      - bool
      - ``false``
    * - k8s
@@ -894,9 +970,9 @@
      - string
      - ``""``
    * - l2NeighDiscovery.arping-refresh-period
-     - Set period for arping
+     - Override the agent's default neighbor resolution refresh period.
      - string
-     - ``"5m"``
+     - ``"30s"``
    * - l2NeighDiscovery.enabled
      - Enable L2 neighbor discovery in the agent
      - bool
@@ -926,7 +1002,7 @@
      - object
      - ``{}``
    * - monitor
-     - Specify the IPv4 CIDR for native routing (ie to avoid IP masquerade for). This value corresponds to the configured cluster-cidr. ipv4NativeRoutingCIDR:
+     - cilium-monitor sidecar.
      - object
      - ``{"enabled":false}``
    * - monitor.enabled
@@ -993,10 +1069,6 @@
      - Annotations to be added to node-init pods.
      - object
      - ``{}``
-   * - nodeinit.podDisruptionBudget
-     - PodDisruptionBudget settings ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-     - object
-     - ``{"enabled":true,"maxUnavailable":2}``
    * - nodeinit.podLabels
      - Labels to be added to node-init pods.
      - object
@@ -1073,10 +1145,18 @@
      - Annotations to be added to cilium-operator pods
      - object
      - ``{}``
-   * - operator.podDisruptionBudget
-     - PodDisruptionBudget settings ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-     - object
-     - ``{"enabled":false,"maxUnavailable":1}``
+   * - operator.podDisruptionBudget.enabled
+     - enable PodDisruptionBudget ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+     - bool
+     - ``false``
+   * - operator.podDisruptionBudget.maxUnavailable
+     - Maximum number/percentage of pods that may be made unavailable
+     - int
+     - ``1``
+   * - operator.podDisruptionBudget.minAvailable
+     - Minimum number/percentage of pods that should remain scheduled. When it's set, maxUnavailable must be disabled by ``maxUnavailable: null``
+     - string
+     - ``nil``
    * - operator.podLabels
      - Labels to be added to cilium-operator pods
      - object
@@ -1133,10 +1213,6 @@
      - Annotations to be added to agent pods
      - object
      - ``{}``
-   * - podDisruptionBudget
-     - PodDisruptionBudget settings ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-     - object
-     - ``{"enabled":true,"maxUnavailable":2}``
    * - podLabels
      - Labels to be added to agent pods
      - object
@@ -1181,10 +1257,18 @@
      - Annotations to be added to preflight pods
      - object
      - ``{}``
-   * - preflight.podDisruptionBudget
-     - PodDisruptionBudget settings ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
-     - object
-     - ``{"enabled":true,"maxUnavailable":2}``
+   * - preflight.podDisruptionBudget.enabled
+     - enable PodDisruptionBudget ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+     - bool
+     - ``false``
+   * - preflight.podDisruptionBudget.maxUnavailable
+     - Maximum number/percentage of pods that may be made unavailable
+     - int
+     - ``1``
+   * - preflight.podDisruptionBudget.minAvailable
+     - Minimum number/percentage of pods that should remain scheduled. When it's set, maxUnavailable must be disabled by ``maxUnavailable: null``
+     - string
+     - ``nil``
    * - preflight.podLabels
      - Labels to be added to the preflight pod.
      - object

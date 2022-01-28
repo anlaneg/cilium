@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"time"
 
+	"gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/controller"
@@ -21,8 +23,6 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
-
-	"gopkg.in/check.v1"
 )
 
 var (
@@ -49,7 +49,7 @@ func (e endpointStatusConfiguration) EndpointStatusIsEnabled(name string) bool {
 }
 
 func (s *EndpointSuite) newEndpoint(c *check.C, spec endpointGeneratorSpec) *Endpoint {
-	e, err := NewEndpointFromChangeModel(context.TODO(), s, &FakeEndpointProxy{}, s.mgr, &models.EndpointChangeRequest{
+	e, err := NewEndpointFromChangeModel(context.TODO(), s, s, &FakeEndpointProxy{}, s.mgr, &models.EndpointChangeRequest{
 		Addressing: &models.AddressPair{},
 		ID:         200,
 		Labels: models.Labels{
@@ -263,7 +263,7 @@ func (s *EndpointSuite) TestgetEndpointPolicyMapState(c *check.C) {
 	fooLbls := labels.Labels{"": labels.ParseLabel("foo")}
 	fooIdentity, _, err := e.allocator.AllocateIdentity(context.Background(), fooLbls, false)
 	c.Assert(err, check.Equals, nil)
-	defer s.mgr.Release(context.Background(), fooIdentity)
+	defer s.mgr.Release(context.Background(), fooIdentity, false)
 
 	e.desiredPolicy = policy.NewEndpointPolicy(s.repo)
 	e.desiredPolicy.IngressPolicyEnabled = true

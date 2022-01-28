@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"testing"
 
+	"gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/cidr"
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
@@ -19,8 +21,6 @@ import (
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/option"
 	serviceStore "github.com/cilium/cilium/pkg/service/store"
-
-	"gopkg.in/check.v1"
 )
 
 func (s *K8sSuite) TestGetAnnotationIncludeExternal(c *check.C) {
@@ -156,6 +156,9 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 	defer func() {
 		option.Config.EnableNodePort = oldNodePort
 	}()
+	objMeta.Annotations = map[string]string{
+		annotationTopologyAwareHints: "auto",
+	}
 	k8sSvc = &slim_corev1.Service{
 		ObjectMeta: objMeta,
 		Spec: slim_corev1.ServiceSpec{
@@ -209,6 +212,7 @@ func (s *K8sSuite) TestParseService(c *check.C) {
 		K8sExternalIPs:           map[string]net.IP{},
 		LoadBalancerIPs:          map[string]net.IP{},
 		Type:                     loadbalancer.SVCTypeLoadBalancer,
+		TopologyAware:            true,
 	})
 }
 
@@ -618,7 +622,7 @@ func TestService_Equals(t *testing.T) {
 						},
 					},
 					K8sExternalIPs: map[string]net.IP{
-						"2.2.2.2": net.ParseIP("2.2.2.2"),
+						"10.0.0.2": net.ParseIP("10.0.0.2"),
 					},
 					Labels: map[string]string{
 						"foo": "bar",
@@ -821,7 +825,7 @@ func (s *K8sSuite) TestNewClusterService(c *check.C) {
 		},
 		Subsets: []slim_corev1.EndpointSubset{
 			{
-				Addresses: []slim_corev1.EndpointAddress{{IP: "2.2.2.2"}},
+				Addresses: []slim_corev1.EndpointAddress{{IP: "10.0.0.2"}},
 				Ports: []slim_corev1.EndpointPort{
 					{
 						Name:     "http-test-svc",
@@ -843,7 +847,7 @@ func (s *K8sSuite) TestNewClusterService(c *check.C) {
 			"127.0.0.1": {},
 		},
 		Backends: map[string]serviceStore.PortConfiguration{
-			"2.2.2.2": {
+			"10.0.0.2": {
 				"http-test-svc": {Protocol: loadbalancer.TCP, Port: 8080},
 			},
 		},

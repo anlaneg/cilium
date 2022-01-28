@@ -9,18 +9,20 @@ package k8s
 import (
 	"sort"
 
+	. "gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/pkg/checker"
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
-
-	. "gopkg.in/check.v1"
+	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 )
 
 func (s *K8sSuite) TestTranslatorDirect(c *C) {
-	repo := policy.NewPolicyRepository(nil, nil)
+	idAllocator := testidentity.NewMockIdentityAllocator(nil)
+	repo := policy.NewPolicyRepository(idAllocator, nil, nil)
 
 	tag1 := labels.LabelArray{labels.ParseLabel("tag1")}
 	serviceInfo := ServiceID{
@@ -123,7 +125,8 @@ func (s *K8sSuite) TestServiceMatches(c *C) {
 }
 
 func (s *K8sSuite) TestTranslatorLabels(c *C) {
-	repo := policy.NewPolicyRepository(nil, nil)
+	idAllocator := testidentity.NewMockIdentityAllocator(nil)
+	repo := policy.NewPolicyRepository(idAllocator, nil, nil)
 	svcLabels := map[string]string{
 		"app": "tested-service",
 	}

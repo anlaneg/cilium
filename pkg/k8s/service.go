@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	v1 "k8s.io/api/core/v1"
+
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/comparator"
@@ -21,10 +24,9 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	serviceStore "github.com/cilium/cilium/pkg/service/store"
-
-	"github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
 )
+
+const annotationTopologyAwareHints = "service.kubernetes.io/topology-aware-hints"
 
 func getAnnotationIncludeExternal(svc *slim_corev1.Service) bool {
 	if value, ok := svc.ObjectMeta.Annotations[annotation.GlobalService]; ok {
@@ -40,6 +42,14 @@ func getAnnotationShared(svc *slim_corev1.Service) bool {
 	}
 
 	return getAnnotationIncludeExternal(svc)
+}
+
+func getAnnotationTopologyAwareHints(svc *slim_corev1.Service) bool {
+	if value, ok := svc.ObjectMeta.Annotations[annotationTopologyAwareHints]; ok {
+		return strings.ToLower(value) == "auto"
+	}
+
+	return false
 }
 
 // isValidServiceFrontendIP returns true if the provided service frontend IP address type
@@ -209,6 +219,8 @@ func ParseService(svc *slim_corev1.Service, nodeAddressing datapath.NodeAddressi
 		}
 	}
 
+	svcInfo.TopologyAware = getAnnotationTopologyAwareHints(svc)
+
 	return svcID, svcInfo
 }
 
@@ -323,6 +335,10 @@ type Service struct {
 	// Type is the internal service type
 	// +deepequal-gen=false
 	Type loadbalancer.SVCType
+
+	// TopologyAware denotes whether service endpoints might have topology aware
+	// hints
+	TopologyAware bool
 }
 
 // DeepEqual returns true if both the receiver and 'o' are deeply equal.
@@ -428,8 +444,21 @@ func NewService(ips []net.IP, externalIPs, loadBalancerIPs, loadBalancerSourceRa
 		loadBalancerSourceCIDRs[cidr.String()] = cidr
 	}
 
+	// If EnableNodePort is not true we do not want to process
+	// events which only differ in external or load balancer IPs.
+	// By omitting these IPs in the returned Service object, they
+	// are no longer considered in equality checks and thus save
+	// CPU cycles processing events Cilium will not act upon.
 	if option.Config.EnableNodePort {
 		k8sExternalIPs = parseIPs(externalIPs)
+		k8sLoadBalancerIPs = parseIPs(loadBalancerIPs)
+	} else if option.Config.BGPAnnounceLBIP {
+		// The BGP LB Announcement feature requires that
+		// loadBalancerIPs be parsed. This is because
+		// an event must occur when a Service's Status field
+		// is updated with a new Ingress, ultimately triggering a
+		// BGP announcement. If we do not parse loadBalancerIPs
+		// this will not occur.
 		k8sLoadBalancerIPs = parseIPs(loadBalancerIPs)
 	}
 

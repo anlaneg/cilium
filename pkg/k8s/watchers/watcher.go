@@ -14,6 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/tools/cache"
+	k8s_metrics "k8s.io/client-go/tools/metrics"
+
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
@@ -42,12 +48,6 @@ import (
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/redirectpolicy"
-
-	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/tools/cache"
-	k8s_metrics "k8s.io/client-go/tools/metrics"
 )
 
 const (
@@ -63,6 +63,7 @@ const (
 	k8sAPIGroupCiliumEndpointV2                 = "cilium/v2::CiliumEndpoint"
 	k8sAPIGroupCiliumLocalRedirectPolicyV2      = "cilium/v2::CiliumLocalRedirectPolicy"
 	k8sAPIGroupCiliumEgressNATPolicyV2          = "cilium/v2::CiliumEgressNATPolicy"
+	k8sAPIGroupCiliumEndpointSliceV2Alpha1      = "cilium/v2alpha1::CiliumEndpointSlice"
 	K8sAPIGroupEndpointSliceV1Beta1Discovery    = "discovery/v1beta1::EndpointSlice"
 	K8sAPIGroupEndpointSliceV1Discovery         = "discovery/v1::EndpointSlice"
 
@@ -129,6 +130,7 @@ type policyManager interface {
 }
 
 type policyRepository interface {
+	GetSelectorCache() *policy.SelectorCache
 	TranslateRules(translator policy.Translator) (*policy.TranslationResult, error)
 }
 
@@ -156,8 +158,8 @@ type bgpSpeakerManager interface {
 	OnUpdateEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice) error
 }
 type egressGatewayManager interface {
-	AddEgressPolicy(config egressgateway.PolicyConfig) (bool, error)
-	DeleteEgressPolicy(configID types.NamespacedName) error
+	OnAddEgressPolicy(config egressgateway.PolicyConfig)
+	OnDeleteEgressPolicy(configID types.NamespacedName)
 	OnUpdateEndpoint(endpoint *k8sTypes.CiliumEndpoint)
 	OnDeleteEndpoint(endpoint *k8sTypes.CiliumEndpoint)
 }
@@ -182,6 +184,12 @@ type K8sWatcher struct {
 	// On k8s Node events all registered subscriber.Node implementations will
 	// have their event handling methods called in order of registration.
 	NodeChain *subscriber.NodeChain
+
+	// CiliumNodeChain is the root of a notification chain for CiliumNode events.
+	// This CiliumNodeChain allows registration of subscriber.CiliumNode implementations.
+	// On CiliumNode events all registered subscriber.CiliumNode implementations will
+	// have their event handling methods called in order of registration.
+	CiliumNodeChain *subscriber.CiliumNodeChain
 
 	endpointManager endpointManager
 
@@ -240,6 +248,7 @@ func NewK8sWatcher(
 		bgpSpeakerManager:     bgpSpeakerManager,
 		egressGatewayManager:  egressGatewayManager,
 		NodeChain:             subscriber.NewNodeChain(),
+		CiliumNodeChain:       subscriber.NewCiliumNodeChain(),
 		cfg:                   cfg,
 	}
 }
@@ -323,6 +332,8 @@ func (k *K8sWatcher) resourceGroups() []string {
 	// with the right service -> backend (k8s endpoints) translation.
 	if k8s.SupportsEndpointSlice() {
 		k8sGroups = append(k8sGroups, K8sAPIGroupEndpointSliceV1Beta1Discovery)
+	} else if k8s.SupportsEndpointSliceV1() {
+		k8sGroups = append(k8sGroups, K8sAPIGroupEndpointSliceV1Discovery)
 	}
 	k8sGroups = append(k8sGroups, K8sAPIGroupEndpointV1Core)
 
@@ -335,6 +346,7 @@ func (k *K8sWatcher) resourceGroups() []string {
 		synced.CRDResourceName(v2.CLRPName):       k8sAPIGroupCiliumLocalRedirectPolicyV2,
 		synced.CRDResourceName(v2.CEWName):        "SKIP", // Handled in clustermesh-apiserver/
 		synced.CRDResourceName(v2alpha1.CENPName): k8sAPIGroupCiliumEgressNATPolicyV2,
+		synced.CRDResourceName(v2alpha1.CESName):  k8sAPIGroupCiliumEndpointSliceV2Alpha1,
 	}
 	ciliumResources := synced.AgentCRDResourceNames()
 	ciliumGroups := make([]string, 0, len(ciliumResources))
@@ -443,8 +455,9 @@ func (k *K8sWatcher) EnableK8sWatcher(ctx context.Context, resources []string) e
 		case k8sAPIGroupCiliumClusterwideNetworkPolicyV2:
 			k.ciliumClusterwideNetworkPoliciesInit(ciliumNPClient)
 		case k8sAPIGroupCiliumEndpointV2:
-			asyncControllers.Add(1)
-			go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)
+			k.initCiliumEndpointOrSlices(ciliumNPClient, asyncControllers)
+		case k8sAPIGroupCiliumEndpointSliceV2Alpha1:
+			// no-op; handled in k8sAPIGroupCiliumEndpointV2
 		case k8sAPIGroupCiliumLocalRedirectPolicyV2:
 			k.ciliumLocalRedirectPolicyInit(ciliumNPClient)
 		case k8sAPIGroupCiliumEgressNATPolicyV2:
@@ -626,6 +639,7 @@ func genCartesianProduct(
 						IP:     parsedIP,
 						L4Addr: *backendPort,
 					},
+					Terminating: backend.Terminating,
 				})
 			}
 		}
@@ -828,5 +842,18 @@ func (k *K8sWatcher) GetStore(name string) cache.Store {
 		return k.podStore
 	default:
 		return nil
+	}
+}
+
+// initCiliumEndpointOrSlices intializes the ciliumEndpoints or ciliumEndpointSlice
+func (k *K8sWatcher) initCiliumEndpointOrSlices(ciliumNPClient *k8s.K8sCiliumClient, asyncControllers *sync.WaitGroup) {
+	// If CiliumEndpointSlice feature is enabled, Cilium-agent watches CiliumEndpointSlice
+	// objects instead of CiliumEndpoints. Hence, skip watching CiliumEndpoints if CiliumEndpointSlice
+	// feature is enabled.
+	asyncControllers.Add(1)
+	if option.Config.EnableCiliumEndpointSlice {
+		go k.ciliumEndpointSliceInit(ciliumNPClient, asyncControllers)
+	} else {
+		go k.ciliumEndpointsInit(ciliumNPClient, asyncControllers)
 	}
 }

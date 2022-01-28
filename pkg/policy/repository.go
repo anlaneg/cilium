@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	cilium "github.com/cilium/proxy/go/cilium/api"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/identity"
@@ -21,7 +23,6 @@ import (
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/cilium/proxy/go/cilium/api"
 )
 
 type CertificateManager interface {
@@ -154,12 +155,12 @@ func (p *Repository) GetPolicyCache() *PolicyCache {
 }
 
 // NewPolicyRepository creates a new policy repository.
-func NewPolicyRepository(idCache cache.IdentityCache, certManager CertificateManager) *Repository {
+func NewPolicyRepository(idAllocator cache.IdentityAllocator, idCache cache.IdentityCache, certManager CertificateManager) *Repository {
 	repoChangeQueue := eventqueue.NewEventQueueBuffered("repository-change-queue", option.Config.PolicyQueueSize)
 	ruleReactionQueue := eventqueue.NewEventQueueBuffered("repository-reaction-queue", option.Config.PolicyQueueSize)
 	repoChangeQueue.Run()
 	ruleReactionQueue.Run()
-	selectorCache := NewSelectorCache(idCache)
+	selectorCache := NewSelectorCache(idAllocator, idCache)
 
 	repo := &Repository{
 		revision:              1,
@@ -659,7 +660,6 @@ func (p *Repository) resolvePolicyLocked(securityIdentity *identity.Identity) (*
 		Revision:             p.GetRevision(),
 		SelectorCache:        p.GetSelectorCache(),
 		L4Policy:             NewL4Policy(p.GetRevision()),
-		CIDRPolicy:           NewCIDRPolicy(),
 		IngressPolicyEnabled: ingressEnabled,
 		EgressPolicyEnabled:  egressEnabled,
 	}
@@ -690,13 +690,6 @@ func (p *Repository) resolvePolicyLocked(securityIdentity *identity.Identity) (*
 		if err != nil {
 			return nil, err
 		}
-
-		newCIDRIngressPolicy := matchingRules.resolveCIDRPolicy(&ingressCtx)
-		if err := newCIDRIngressPolicy.Validate(); err != nil {
-			return nil, err
-		}
-
-		calculatedPolicy.CIDRPolicy.Ingress = newCIDRIngressPolicy.Ingress
 		calculatedPolicy.L4Policy.Ingress = newL4IngressPolicy
 	}
 
@@ -705,13 +698,6 @@ func (p *Repository) resolvePolicyLocked(securityIdentity *identity.Identity) (*
 		if err != nil {
 			return nil, err
 		}
-
-		newCIDREgressPolicy := matchingRules.resolveCIDRPolicy(&egressCtx)
-		if err := newCIDREgressPolicy.Validate(); err != nil {
-			return nil, err
-		}
-
-		calculatedPolicy.CIDRPolicy.Egress = newCIDREgressPolicy.Egress
 		calculatedPolicy.L4Policy.Egress = newL4EgressPolicy
 	}
 

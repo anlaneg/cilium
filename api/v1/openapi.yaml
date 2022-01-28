@@ -1778,6 +1778,9 @@ definitions:
       encryption:
         description: Status of transparent encryption
         "$ref": "#/definitions/EncryptionStatus"
+      cni-chaining:
+        description: Status of CNI chaining
+        "$ref": "#/definitions/CNIChainingStatus"
   Status:
     description: Status of an individual component
     type: object
@@ -1995,6 +1998,15 @@ definitions:
                 items:
                   type: string
           sessionAffinity:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
+            type: object
+            properties:
+              enabled:
+                type: boolean
+          gracefulTermination:
             description: |-
 
 
@@ -3070,6 +3082,7 @@ definitions:
       Policy specs.
 
       +deepequal-gen=true
+      +k8s:deepcopy-gen=true
     type: array
     items:
       "$ref": "#/definitions/Port"
@@ -3091,6 +3104,20 @@ definitions:
       wireguard:
         description: Status of the Wireguard agent
         "$ref": "#/definitions/WireguardStatus"
+  CNIChainingStatus:
+    description: |-
+      Status of CNI chaining
+
+      +k8s:deepcopy-gen=true
+    properties:
+      mode:
+        type: string
+        enum:
+          - none
+          - aws-cni
+          - flannel
+          - generic-veth
+          - portmap
   WireguardStatus:
     description: |-
       Status of the Wireguard agent

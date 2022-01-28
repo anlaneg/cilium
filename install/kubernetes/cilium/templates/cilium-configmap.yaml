@@ -34,7 +34,9 @@
 
 {{- /* Default values when 1.10 was initially deployed */ -}}
 {{- if semverCompare ">=1.10" (default "1.10" .Values.upgradeCompatibility) -}}
-{{- $defaultKubeProxyReplacement = "disabled" -}}
+  {{- $defaultKubeProxyReplacement = "disabled" -}}
+  {{- /* Needs to be explicitly disabled because it was enabled on all versions >=v1.8 above. */ -}}
+  {{- $defaultBpfMasquerade = "false" -}}
 {{- end -}}
 
 {{- $ipam := (coalesce .Values.ipam.mode $defaultIPAM) -}}
@@ -91,7 +93,7 @@ data:
   # - "crd" stores identities in kubernetes as CRDs (custom resource definition).
   #   These can be queried with:
   #     kubectl get ciliumid
-  # - "kvstore" stores identities in a kvstore, etcd or consul, that is
+  # - "kvstore" stores identities in an etcd kvstore, that is
   #   configured below. Cilium versions before 1.6 supported only the kvstore
   #   backend. Upgrades from these older cilium versions should continue using
   #   the kvstore by commenting out the identity-allocation-mode below, or
@@ -403,6 +405,7 @@ data:
   #  - none
   #  - aws-cni
   #  - flannel
+  #  - generic-veth
   #  - portmap (Enables HostPort support for Cilium)
   cni-chaining-mode: {{ .Values.cni.chainingMode }}
 
@@ -496,6 +499,10 @@ data:
   ipv4-native-routing-cidr: {{ .Values.ipv4NativeRoutingCIDR }}
 {{- end }}
 
+{{- if hasKey .Values "ipv6NativeRoutingCIDR" }}
+  ipv6-native-routing-cidr: {{ .Values.ipv6NativeRoutingCIDR }}
+{{- end }}
+
 {{- if hasKey .Values "fragmentTracking" }}
   enable-ipv4-fragment-tracking: {{ .Values.fragmentTracking | quote }}
 {{- else if (ne $fragmentTracking "true") }}
@@ -569,6 +576,9 @@ data:
 {{- end }}
 {{- if hasKey .Values.loadBalancer "dsrDispatch" }}
   bpf-lb-dsr-dispatch: {{ .Values.loadBalancer.dsrDispatch | quote }}
+{{- end }}
+{{- if hasKey .Values.loadBalancer "serviceTopology" }}
+  enable-service-topology: {{ .Values.loadBalancer.serviceTopology | quote }}
 {{- end }}
 
 {{- end }}
@@ -707,11 +717,19 @@ data:
 
 {{- if eq $ipam "cluster-pool" }}
 {{- if .Values.ipv4.enabled }}
+  {{- if .Values.ipam.operator.clusterPoolIPv4PodCIDRList }}
+  cluster-pool-ipv4-cidr: {{ .Values.ipam.operator.clusterPoolIPv4PodCIDRList | join " " | quote }}
+  {{- else }}
   cluster-pool-ipv4-cidr: {{ .Values.ipam.operator.clusterPoolIPv4PodCIDR | quote }}
-  cluster-pool-ipv4-mask-size: {{ .Values.ipam.operator.clusterPoolIPv4MaskSize | quote  }}
+  {{- end }}
+  cluster-pool-ipv4-mask-size: {{ .Values.ipam.operator.clusterPoolIPv4MaskSize | quote }}
 {{- end }}
 {{- if .Values.ipv6.enabled }}
+  {{- if .Values.ipam.operator.clusterPoolIPv6PodCIDRList }}
+  cluster-pool-ipv6-cidr: {{ .Values.ipam.operator.clusterPoolIPv6PodCIDRList | join " " | quote }}
+  {{- else }}
   cluster-pool-ipv6-cidr: {{ .Values.ipam.operator.clusterPoolIPv6PodCIDR | quote }}
+  {{- end }}
   cluster-pool-ipv6-mask-size: {{ .Values.ipam.operator.clusterPoolIPv6MaskSize | quote }}
 {{- end }}
 {{- end }}
@@ -723,7 +741,7 @@ data:
 {{- end }}
 
 {{- if .Values.egressGateway.enabled }}
-  enable-egress-gateway: "true"
+  enable-ipv4-egress-gateway: "true"
 {{- end }}
 
 {{- if .Values.enableK8sEventHandover }}
@@ -762,6 +780,10 @@ data:
   bgp-announce-pod-cidr: {{ .Values.bgp.announce.podCIDR | quote }}
 {{- end}}
 
+{{- if hasKey .Values.bpf "root" }}
+  bpf-root: {{ .Values.bpf.root | quote }}
+{{- end }}
+
 {{- if hasKey .Values.cgroup "hostRoot" }}
   cgroup-root: {{ .Values.cgroup.hostRoot | quote }}
 {{- end }}
@@ -769,6 +791,14 @@ data:
 {{- if hasKey .Values.bpf "vlanBypass" }}
   # A space separated list of explicitly allowed vlan id's
   vlan-bpf-bypass: {{ .Values.bpf.vlanBypass | join " " | quote }}
+{{- end }}
+
+{{- if .Values.enableCiliumEndpointSlice }}
+  enable-cilium-endpoint-slice: "true"
+{{- end }}
+
+{{- if hasKey .Values "enableK8sTerminatingEndpoint" }}
+  enable-k8s-terminating-endpoint: {{ .Values.enableK8sTerminatingEndpoint | quote }}
 {{- end }}
 
 {{- if .Values.extraConfig }}

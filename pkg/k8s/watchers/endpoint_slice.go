@@ -6,13 +6,6 @@ package watchers
 import (
 	"sync"
 
-	"github.com/cilium/cilium/pkg/k8s"
-	"github.com/cilium/cilium/pkg/k8s/informer"
-	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
-	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
-	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/option"
-
 	v1 "k8s.io/api/core/v1"
 	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -20,6 +13,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/cilium/cilium/pkg/k8s"
+	"github.com/cilium/cilium/pkg/k8s/informer"
+	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
+	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 // endpointSlicesInit returns true if the cluster contains endpoint slices.
@@ -160,6 +160,8 @@ func (k *K8sWatcher) updateK8sEndpointSliceV1(eps *slim_discover_v1.EndpointSlic
 	if option.Config.BGPAnnounceLBIP {
 		k.bgpSpeakerManager.OnUpdateEndpointSliceV1(eps)
 	}
+
+	k.addKubeAPIServerServiceEPSliceV1(eps)
 }
 
 func (k *K8sWatcher) updateK8sEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice, swgEps *lock.StoppableWaitGroup) {
@@ -168,6 +170,42 @@ func (k *K8sWatcher) updateK8sEndpointSliceV1Beta1(eps *slim_discover_v1beta1.En
 	if option.Config.BGPAnnounceLBIP {
 		k.bgpSpeakerManager.OnUpdateEndpointSliceV1Beta1(eps)
 	}
+
+	k.addKubeAPIServerServiceEPSliceV1Beta1(eps)
+}
+
+func (k *K8sWatcher) addKubeAPIServerServiceEPSliceV1(eps *slim_discover_v1.EndpointSlice) {
+	if eps == nil ||
+		eps.GetLabels()[slim_discover_v1.LabelServiceName] != "kubernetes" ||
+		eps.Namespace != "default" {
+		return
+	}
+
+	desiredIPs := make(map[string]struct{})
+	for _, e := range eps.Endpoints {
+		for _, addr := range e.Addresses {
+			desiredIPs[addr] = struct{}{}
+		}
+	}
+
+	k.handleKubeAPIServerServiceEPChanges(desiredIPs)
+}
+
+func (k *K8sWatcher) addKubeAPIServerServiceEPSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice) {
+	if eps == nil ||
+		eps.GetLabels()[slim_discover_v1beta1.LabelServiceName] != "kubernetes" ||
+		eps.Namespace != "default" {
+		return
+	}
+
+	desiredIPs := make(map[string]struct{})
+	for _, e := range eps.Endpoints {
+		for _, addr := range e.Addresses {
+			desiredIPs[addr] = struct{}{}
+		}
+	}
+
+	k.handleKubeAPIServerServiceEPChanges(desiredIPs)
 }
 
 // initEndpointsOrSlices initializes either the "Endpoints" or "EndpointSlice"

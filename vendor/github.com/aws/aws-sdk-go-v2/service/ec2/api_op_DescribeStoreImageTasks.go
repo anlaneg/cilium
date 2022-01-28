@@ -19,10 +19,10 @@ import (
 // shows the estimated progress as a percentage. Tasks are listed in reverse
 // chronological order. Currently, only tasks from the past 31 days can be viewed.
 // To use this API, you must have the required permissions. For more information,
-// see Permissions for storing and restoring AMIs using S3
+// see Permissions for storing and restoring AMIs using Amazon S3
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ami-store-restore.html#ami-s3-permissions)
 // in the Amazon Elastic Compute Cloud User Guide. For more information, see Store
-// and restore an AMI using S3
+// and restore an AMI using Amazon S3
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ami-store-restore.html) in
 // the Amazon Elastic Compute Cloud User Guide.
 func (c *Client) DescribeStoreImageTasks(ctx context.Context, params *DescribeStoreImageTasksInput, optFns ...func(*Options)) (*DescribeStoreImageTasksOutput, error) {
@@ -200,12 +200,13 @@ func NewDescribeStoreImageTasksPaginator(client DescribeStoreImageTasksAPIClient
 		client:    client,
 		params:    params,
 		firstPage: true,
+		nextToken: params.NextToken,
 	}
 }
 
 // HasMorePages returns a boolean indicating whether more pages are available
 func (p *DescribeStoreImageTasksPaginator) HasMorePages() bool {
-	return p.firstPage || p.nextToken != nil
+	return p.firstPage || (p.nextToken != nil && len(*p.nextToken) != 0)
 }
 
 // NextPage retrieves the next DescribeStoreImageTasks page.
@@ -232,7 +233,10 @@ func (p *DescribeStoreImageTasksPaginator) NextPage(ctx context.Context, optFns 
 	prevToken := p.nextToken
 	p.nextToken = result.NextToken
 
-	if p.options.StopOnDuplicateToken && prevToken != nil && p.nextToken != nil && *prevToken == *p.nextToken {
+	if p.options.StopOnDuplicateToken &&
+		prevToken != nil &&
+		p.nextToken != nil &&
+		*prevToken == *p.nextToken {
 		p.nextToken = nil
 	}
 

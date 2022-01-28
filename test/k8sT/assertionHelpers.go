@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"time"
 
+	. "github.com/onsi/gomega"
+
 	"github.com/cilium/cilium/test/config"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-	. "github.com/onsi/gomega"
 )
 
 var longTimeout = 10 * time.Minute
@@ -104,7 +105,7 @@ func ExpectCiliumPreFlightInstallReady(vm *helpers.Kubectl) {
 
 // DeployCiliumAndDNS deploys DNS and cilium into the kubernetes cluster
 func DeployCiliumAndDNS(vm *helpers.Kubectl, ciliumFilename string) {
-	DeployCiliumOptionsAndDNS(vm, ciliumFilename, map[string]string{"debug.verbose": "flow"})
+	DeployCiliumOptionsAndDNS(vm, ciliumFilename, map[string]string{})
 }
 
 func redeployCilium(vm *helpers.Kubectl, ciliumFilename string, options map[string]string) {
@@ -174,7 +175,29 @@ func optionChangeRequiresPodRedeploy(prev, next map[string]string) bool {
 		b = opt
 	}
 
-	return a != b
+	if a != b {
+		return true
+	}
+
+	// Switching on and off KPR affects who is handling service traffic.
+	// E.g., off => on some traffic might be handled by iptables. For existing
+	// connections it might not have enough of state information which could
+	// lead to connection interruptions. To avoid it, restart the pods to restart
+	// such connections.
+	a = "disabled"
+	if opt, ok := prev["kubeProxyReplacement"]; ok {
+		a = opt
+	}
+	b = "disabled"
+	if opt, ok := next["kubeProxyReplacement"]; ok {
+		b = opt
+	}
+
+	if a != b {
+		return true
+	}
+
+	return false
 }
 
 // DeployCiliumOptionsAndDNS deploys DNS and cilium with options into the kubernetes cluster

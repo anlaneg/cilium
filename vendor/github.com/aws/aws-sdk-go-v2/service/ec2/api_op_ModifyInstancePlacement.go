@@ -24,11 +24,10 @@ import (
 // * Change the Dedicated Host with which an
 // instance is associated.
 //
-// * Change the instance tenancy of an instance from host
-// to dedicated, or from dedicated to host.
+// * Change the instance tenancy of an instance.
 //
-// * Move an instance to or from a
-// placement group
+// * Move
+// an instance to or from a placement group
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html).
 //
 // At
@@ -74,10 +73,13 @@ type ModifyInstancePlacementInput struct {
 	// The ARN of the host resource group in which to place the instance.
 	HostResourceGroupArn *string
 
-	// Reserved for future use.
+	// The number of the partition in which to place the instance. Valid only if the
+	// placement group strategy is set to partition.
 	PartitionNumber *int32
 
-	// The tenancy for the instance.
+	// The tenancy for the instance. For T3 instances, you can't change the tenancy
+	// from dedicated to host, or from host to dedicated. Attempting to make one of
+	// these unsupported tenancy changes results in the InvalidTenancy error code.
 	Tenancy types.HostTenancy
 
 	noSmithyDocumentSerde

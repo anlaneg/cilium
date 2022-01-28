@@ -7,12 +7,11 @@ import (
 	"context"
 	"strings"
 
+	peerpb "github.com/cilium/cilium/api/v1/peer"
 	"github.com/cilium/cilium/pkg/datapath"
 	ciliumDefaults "github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/hubble/defaults"
 	"github.com/cilium/cilium/pkg/node/types"
-
-	peerpb "github.com/cilium/cilium/api/v1/peer"
 )
 
 // handler implements the datapath.NodeHandler interface so that it can be
@@ -120,7 +119,7 @@ func (h handler) NodeNeighborRefresh(_ context.Context, _ types.Node) {
 	return
 }
 
-func (h handler) NodeCleanNeighbors() {
+func (h handler) NodeCleanNeighbors(migrateOnly bool) {
 	// no-op
 	return
 }

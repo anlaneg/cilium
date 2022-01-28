@@ -13,9 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cilium/cilium/pkg/checker"
 	"github.com/stretchr/testify/assert"
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/cilium/pkg/checker"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -318,6 +319,45 @@ func (s *LabelsSuite) TestLabelsK8sStringMap(c *C) {
 	// overwrites "a" from K8s and "a" from Unspec, and "b" from
 	// reserved overwrites "b" from any.
 	c.Assert(lblsAll.K8sStringMap(), checker.Equals, map[string]string{"container.a": "2", "reserved.b": "2"})
+}
+
+func TestLabels_Has(t *testing.T) {
+	tests := []struct {
+		name string
+		l    Labels
+		in   Label
+		want bool
+	}{
+		{
+			name: "empty labels",
+			l:    Labels{},
+			in:   NewLabel("foo", "bar", "my-source"),
+			want: false,
+		},
+		{
+			name: "has label",
+			l: Labels{
+				"foo":   NewLabel("foo", "bar", "any"),
+				"other": NewLabel("other", "bar", ""),
+			},
+			in:   NewLabel("foo", "bar", "my-source"),
+			want: true,
+		},
+		{
+			name: "does not have label",
+			l: Labels{
+				"foo":   NewLabel("foo", "bar", "any"),
+				"other": NewLabel("other", "bar", ""),
+			},
+			in:   NewLabel("nope", "", ""),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.l.Has(tt.in))
+		})
+	}
 }
 
 func TestLabels_GetFromSource(t *testing.T) {

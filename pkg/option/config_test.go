@@ -14,13 +14,14 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/cilium/cilium/pkg/cidr"
-	"github.com/cilium/cilium/pkg/defaults"
-	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/google/go-cmp/cmp"
 	flag "github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/cilium/pkg/cidr"
+	"github.com/cilium/cilium/pkg/defaults"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 )
 
 func (s *OptionSuite) TestValidateIPv6ClusterAllocCIDR(c *C) {
@@ -541,6 +542,66 @@ func TestCheckIPv4NativeRoutingCIDR(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.d.checkIPv4NativeRoutingCIDR()
+			if tt.wantErr && err == nil {
+				t.Error("expected error, but got nil")
+			}
+		})
+	}
+
+}
+
+func TestCheckIPv6NativeRoutingCIDR(t *testing.T) {
+	tests := []struct {
+		name    string
+		d       *DaemonConfig
+		wantErr bool
+	}{
+		{
+			name: "with native routing cidr",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade:  true,
+				EnableIPv6Masquerade:  true,
+				Tunnel:                TunnelDisabled,
+				IPv6NativeRoutingCIDR: cidr.MustParseCIDR("fd00::/120"),
+				EnableIPv6:            true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "without native routing cidr and no masquerade",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade: false,
+				EnableIPv6Masquerade: false,
+				Tunnel:               TunnelDisabled,
+				EnableIPv6:           true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "without native routing cidr and tunnel enabled",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade: true,
+				EnableIPv6Masquerade: true,
+				Tunnel:               TunnelVXLAN,
+				EnableIPv6:           true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "without native routing cidr and tunnel disabled",
+			d: &DaemonConfig{
+				EnableIPv4Masquerade: true,
+				EnableIPv6Masquerade: true,
+				Tunnel:               TunnelDisabled,
+				EnableIPv6:           true,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.d.checkIPv6NativeRoutingCIDR()
 			if tt.wantErr && err == nil {
 				t.Error("expected error, but got nil")
 			}

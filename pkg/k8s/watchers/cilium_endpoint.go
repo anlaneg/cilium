@@ -7,6 +7,10 @@ import (
 	"net"
 	"sync"
 
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/client-go/tools/cache"
+
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s"
@@ -19,10 +23,6 @@ import (
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/source"
 	"github.com/cilium/cilium/pkg/u8proto"
-
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/client-go/tools/cache"
 )
 
 func (k *K8sWatcher) ciliumEndpointsInit(ciliumNPClient *k8s.K8sCiliumClient, asyncControllers *sync.WaitGroup) {
@@ -200,7 +200,7 @@ func (k *K8sWatcher) endpointUpdated(oldEndpoint, endpoint *types.CiliumEndpoint
 		}
 	}
 
-	if option.Config.EnableEgressGateway {
+	if option.Config.EnableIPv4EgressGateway {
 		k.egressGatewayManager.OnUpdateEndpoint(endpoint)
 	}
 }
@@ -210,22 +210,16 @@ func (k *K8sWatcher) endpointDeleted(endpoint *types.CiliumEndpoint) {
 		namedPortsChanged := false
 		for _, pair := range endpoint.Networking.Addressing {
 			if pair.IPV4 != "" {
-				k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(pair.IPV4)
-				if k8sMeta != nil && k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
-					portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV4, source.CustomResource)
-					if portsChanged {
-						namedPortsChanged = true
-					}
+				portsChanged := ipcache.IPIdentityCache.DeleteOnMetadataMatch(pair.IPV4, source.CustomResource, endpoint.Namespace, endpoint.Name)
+				if portsChanged {
+					namedPortsChanged = true
 				}
 			}
 
 			if pair.IPV6 != "" {
-				k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(pair.IPV6)
-				if k8sMeta != nil && k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
-					portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV6, source.CustomResource)
-					if portsChanged {
-						namedPortsChanged = true
-					}
+				portsChanged := ipcache.IPIdentityCache.DeleteOnMetadataMatch(pair.IPV6, source.CustomResource, endpoint.Namespace, endpoint.Name)
+				if portsChanged {
+					namedPortsChanged = true
 				}
 			}
 		}
@@ -233,7 +227,7 @@ func (k *K8sWatcher) endpointDeleted(endpoint *types.CiliumEndpoint) {
 			k.policyManager.TriggerPolicyUpdates(true, "Named ports deleted")
 		}
 	}
-	if option.Config.EnableEgressGateway {
+	if option.Config.EnableIPv4EgressGateway {
 		k.egressGatewayManager.OnDeleteEndpoint(endpoint)
 	}
 }

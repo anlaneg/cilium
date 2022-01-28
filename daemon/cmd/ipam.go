@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-openapi/runtime/middleware"
+	"github.com/go-openapi/swag"
+
 	"github.com/cilium/cilium/api/v1/models"
 	ipamapi "github.com/cilium/cilium/api/v1/server/restapi/ipam"
 	"github.com/cilium/cilium/pkg/api"
@@ -22,9 +25,6 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
-
-	"github.com/go-openapi/runtime/middleware"
-	"github.com/go-openapi/swag"
 )
 
 type postIPAM struct {
@@ -309,6 +309,11 @@ func (d *Daemon) allocateIPs() error {
 
 	if option.Config.EnableIPv6 {
 		log.Infof("  IPv6 allocation prefix: %s", node.GetIPv6AllocRange())
+
+		if c := option.Config.GetIPv6NativeRoutingCIDR(); c != nil {
+			log.Infof("  IPv6 native routing prefix: %s", c.String())
+		}
+
 		log.Infof("  IPv6 router address: %s", node.GetIPv6Router())
 
 		if addrs, err := d.datapath.LocalNodeAddressing().IPv6().LocalAddresses(); err != nil {

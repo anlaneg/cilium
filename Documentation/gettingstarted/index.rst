@@ -66,7 +66,6 @@ Advanced Networking
    alibabacloud-eni
    kube-router
    bird
-   ipvlan
    encryption
    host-services
    kubeproxy-free
@@ -76,6 +75,7 @@ Advanced Networking
    local-redirect-policy
    bgp
    egress-gateway
+   ciliumendpointslice
 
 Cluster Mesh
 ------------

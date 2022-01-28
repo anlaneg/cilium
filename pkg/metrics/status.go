@@ -4,11 +4,11 @@
 package metrics
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
+
 	clientPkg "github.com/cilium/cilium/pkg/client"
 	healthClientPkg "github.com/cilium/cilium/pkg/health/client"
-
-	"github.com/prometheus/client_golang/prometheus"
-	log "github.com/sirupsen/logrus"
 )
 
 type statusCollector struct {
@@ -24,12 +24,12 @@ type statusCollector struct {
 func newStatusCollector() *statusCollector {
 	ciliumClient, err := clientPkg.NewClient("")
 	if err != nil {
-		log.WithError(err).Fatal("Error while creating Cilium API client")
+		logrus.WithError(err).Fatal("Error while creating Cilium API client")
 	}
 
 	healthClient, err := healthClientPkg.NewClient("")
 	if err != nil {
-		log.WithError(err).Fatal("Error while creating cilium-health API client")
+		logrus.WithError(err).Fatal("Error while creating cilium-health API client")
 	}
 
 	return &statusCollector{
@@ -68,7 +68,7 @@ func (s *statusCollector) Describe(ch chan<- *prometheus.Desc) {
 func (s *statusCollector) Collect(ch chan<- prometheus.Metric) {
 	statusResponse, err := s.ciliumClient.Daemon.GetHealthz(nil)
 	if err != nil {
-		log.WithError(err).Error("Error while getting Cilium status")
+		logrus.WithError(err).Error("Error while getting Cilium status")
 		return
 	}
 
@@ -113,7 +113,7 @@ func (s *statusCollector) Collect(ch chan<- prometheus.Metric) {
 
 	healthStatusResponse, err := s.healthClient.Connectivity.GetStatus(nil)
 	if err != nil {
-		log.WithError(err).Error("Error while getting cilium-health status")
+		logrus.WithError(err).Error("Error while getting cilium-health status")
 		return
 	}
 
@@ -128,14 +128,17 @@ func (s *statusCollector) Collect(ch chan<- prometheus.Metric) {
 	)
 
 	for _, nodeStatus := range healthStatusResponse.Payload.Nodes {
-		switch healthClientPkg.GetPathConnectivityStatusType(healthClientPkg.GetHostPrimaryAddress(nodeStatus)) {
-		case healthClientPkg.ConnStatusUnreachable:
-			unreachableNodes++
+		for _, addr := range healthClientPkg.GetAllHostAddresses(nodeStatus) {
+			if healthClientPkg.GetPathConnectivityStatusType(addr) == healthClientPkg.ConnStatusUnreachable {
+				unreachableNodes++
+				break
+			}
 		}
-		if nodeStatus.Endpoint != nil {
-			switch healthClientPkg.GetPathConnectivityStatusType(nodeStatus.Endpoint) {
-			case healthClientPkg.ConnStatusUnreachable:
+
+		for _, addr := range healthClientPkg.GetAllEndpointAddresses(nodeStatus) {
+			if healthClientPkg.GetPathConnectivityStatusType(addr) == healthClientPkg.ConnStatusUnreachable {
 				unreachableEndpoints++
+				break
 			}
 		}
 	}

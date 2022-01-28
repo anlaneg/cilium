@@ -10,15 +10,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cilium/cilium/pkg/k8s"
-	k8sconstv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
-	k8sconstv2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
-	"github.com/cilium/cilium/pkg/k8s/synced"
-	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
-	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/versioncheck"
-
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -28,6 +19,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/yaml"
+
+	"github.com/cilium/cilium/pkg/k8s"
+	k8sconstv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	k8sconstv2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	"github.com/cilium/cilium/pkg/k8s/synced"
+	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/versioncheck"
 )
 
 const (
@@ -57,6 +57,9 @@ const (
 
 	// CENPCRDName is the full name of the CENP CRD.
 	CENPCRDName = k8sconstv2alpha1.CENPKindDefinition + "/" + k8sconstv2alpha1.CustomResourceDefinitionVersion
+
+	// CESCRDName is the full name of the CES CRD.
+	CESCRDName = k8sconstv2alpha1.CESKindDefinition + "/" + k8sconstv2alpha1.CustomResourceDefinitionVersion
 )
 
 var (
@@ -82,6 +85,7 @@ func CreateCustomResourceDefinitions(clientset apiextensionsclient.Interface) er
 		synced.CRDResourceName(k8sconstv2.CEWName):        createCEWCRD,
 		synced.CRDResourceName(k8sconstv2.CLRPName):       createCLRPCRD,
 		synced.CRDResourceName(k8sconstv2alpha1.CENPName): createCENPCRD,
+		synced.CRDResourceName(k8sconstv2alpha1.CESName):  createCESCRD,
 	}
 	for _, r := range synced.AllCRDResourceNames() {
 		fn, ok := resourceToCreateFnMapping[r]
@@ -120,6 +124,9 @@ var (
 
 	//go:embed crds/v2alpha1/ciliumegressnatpolicies.yaml
 	crdsv2Alpha1Ciliumegressnatpolicies []byte
+
+	//go:embed crds/v2alpha1/ciliumendpointslices.yaml
+	crdsv2Alpha1Ciliumendpointslices []byte
 )
 
 // GetPregeneratedCRD returns the pregenerated CRD based on the requested CRD
@@ -151,6 +158,8 @@ func GetPregeneratedCRD(crdName string) apiextensionsv1.CustomResourceDefinition
 		crdBytes = crdsCiliumlocalredirectpolicies
 	case CENPCRDName:
 		crdBytes = crdsv2Alpha1Ciliumegressnatpolicies
+	case CESCRDName:
+		crdBytes = crdsv2Alpha1Ciliumendpointslices
 	default:
 		scopedLog.Fatal("Pregenerated CRD does not exist")
 	}
@@ -260,6 +269,19 @@ func createCENPCRD(clientset apiextensionsclient.Interface) error {
 		clientset,
 		CENPCRDName,
 		constructV1CRD(k8sconstv2alpha1.CENPName, ciliumCRD),
+		newDefaultPoller(),
+	)
+}
+
+// createCESCRD creates and updates the CiliumEndpointSlice CRD. It should be
+// called on agent startup but is idempotent and safe to call again.
+func createCESCRD(clientset apiextensionsclient.Interface) error {
+	ciliumCRD := GetPregeneratedCRD(CESCRDName)
+
+	return createUpdateCRD(
+		clientset,
+		CESCRDName,
+		constructV1CRD(k8sconstv2alpha1.CESName, ciliumCRD),
 		newDefaultPoller(),
 	)
 }

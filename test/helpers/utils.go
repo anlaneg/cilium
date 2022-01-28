@@ -15,15 +15,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cilium/cilium/pkg/rand"
-	"github.com/cilium/cilium/pkg/versioncheck"
-	"github.com/cilium/cilium/test/config"
-	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
-
 	"github.com/blang/semver/v4"
 	"github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"golang.org/x/sys/unix"
+
+	"github.com/cilium/cilium/pkg/rand"
+	"github.com/cilium/cilium/pkg/versioncheck"
+	"github.com/cilium/cilium/test/config"
+	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 )
 
 // ensure that our random numbers are seeded differently on each run
@@ -416,8 +416,10 @@ func getK8sSupportedConstraints(ciliumVersion string) (semver.Range, error) {
 		return nil, err
 	}
 	switch {
+	case IsCiliumV1_12(cst):
+		return versioncheck.MustCompile(">=1.16.0 <1.24.0"), nil
 	case IsCiliumV1_11(cst):
-		return versioncheck.MustCompile(">=1.16.0 <1.23.0"), nil
+		return versioncheck.MustCompile(">=1.16.0 <1.24.0"), nil
 	case IsCiliumV1_10(cst):
 		return versioncheck.MustCompile(">=1.16.0 <1.22.0"), nil
 	case IsCiliumV1_9(cst):
@@ -517,8 +519,7 @@ func DoesNotRunOn419Kernel() bool {
 	return !RunsOn419Kernel()
 }
 
-// RunsOn419OrLaterKernel checks whether a test case is running on the bpf-next,
-// 4.19.x (x > 57), or 5.4 kernels.
+// RunsOn419OrLaterKernel checks whether a test case is running on 4.19.x (x > 57) or later kernel
 func RunsOn419OrLaterKernel() bool {
 	return RunsOnNetNextKernel() || RunsOn419Kernel() || RunsOn54Kernel()
 }
@@ -527,6 +528,16 @@ func RunsOn419OrLaterKernel() bool {
 // RunsOn419OrLaterKernel.
 func DoesNotRunOn419OrLaterKernel() bool {
 	return !RunsOn419OrLaterKernel()
+}
+
+// RunsOn54OrLaterKernel checks whether a test case is running on 5.4 or later kernel
+func RunsOn54OrLaterKernel() bool {
+	return RunsOnNetNextKernel() || RunsOn54Kernel()
+}
+
+// DoesNotRunOn54OrLaterKernel is the complement function of RunsOn54OrLaterKernel
+func DoesNotRunOn54OrLaterKernel() bool {
+	return !RunsOn54OrLaterKernel()
 }
 
 // RunsOnGKE returns true if the tests are running on GKE.
@@ -590,12 +601,12 @@ func RunsWithoutKubeProxy() bool {
 }
 
 // ExistNodeWithoutCilium returns true if there is a node in a cluster which does
-// not run cilium.
+// not run Cilium.
 func ExistNodeWithoutCilium() bool {
-	return GetNodeWithoutCilium() != ""
+	return len(GetNodesWithoutCilium()) > 0
 }
 
-// DoesNotExistNodeWithoutCilium is the complement function of ExistNodeWithoutCilium
+// DoesNotExistNodeWithoutCilium is the complement function of ExistNodeWithoutCilium.
 func DoesNotExistNodeWithoutCilium() bool {
 	return !ExistNodeWithoutCilium()
 }
@@ -630,9 +641,34 @@ func (kub *Kubectl) HasBPFNodePort(pod string) bool {
 	return strings.Contains(lines[0], "true")
 }
 
-// GetNodeWithoutCilium returns a name of a node which does not run cilium.
-func GetNodeWithoutCilium() string {
-	return os.Getenv("NO_CILIUM_ON_NODE")
+// GetNodesWithoutCilium returns a slice of names for nodes that do not run
+// Cilium.
+func GetNodesWithoutCilium() []string {
+	if os.Getenv("NO_CILIUM_ON_NODES") == "" {
+		if os.Getenv("NO_CILIUM_ON_NODE") == "" {
+			return []string{}
+		}
+		return []string{os.Getenv("NO_CILIUM_ON_NODE")}
+	}
+	return strings.Split(os.Getenv("NO_CILIUM_ON_NODES"), ",")
+}
+
+// GetFirstNodeWithoutCilium returns the first node that does not run Cilium.
+// It's the responsibility of the caller to check that there are nodes without
+// Cilium.
+func GetFirstNodeWithoutCilium() string {
+	noCiliumNodes := GetNodesWithoutCilium()
+	return noCiliumNodes[0]
+}
+
+// IsNodeWithoutCilium returns true if node node doesn't run Cilium.
+func IsNodeWithoutCilium(node string) bool {
+	for _, n := range GetNodesWithoutCilium() {
+		if n == node {
+			return true
+		}
+	}
+	return false
 }
 
 // GetLatestImageVersion infers which docker tag should be used
@@ -700,4 +736,15 @@ func DualStackSupportBeta() bool {
 	}
 
 	return GetCurrentIntegration() == "" && supportedVersions(k8sVersion)
+}
+
+// CiliumEndpointSliceFeatureEnabled returns true only if the environment has a kubernetes version
+// greater than or equal to 1.21.
+func CiliumEndpointSliceFeatureEnabled() bool {
+	k8sVersionGreaterEqual121 := versioncheck.MustCompile(">=1.21.0")
+	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
+	if err != nil {
+		return false
+	}
+	return k8sVersionGreaterEqual121(k8sVersion) && GetCurrentIntegration() == ""
 }

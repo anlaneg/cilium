@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/spf13/cobra"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/command"
-	"github.com/spf13/cobra"
 )
 
 var matchPattern string
@@ -53,8 +55,13 @@ var MetricsListCmd = &cobra.Command{
 			label := ""
 			if len(metric.Labels) > 0 {
 				labelArray := []string{}
-				for key, value := range metric.Labels {
-					labelArray = append(labelArray, fmt.Sprintf(`%s="%s"`, key, value))
+				keys := make([]string, 0, len(metric.Labels))
+				for k := range metric.Labels {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					labelArray = append(labelArray, fmt.Sprintf(`%s="%s"`, k, metric.Labels[k]))
 				}
 				label = strings.Join(labelArray, " ")
 			}

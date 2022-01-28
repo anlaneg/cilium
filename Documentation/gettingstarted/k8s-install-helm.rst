@@ -48,7 +48,7 @@ Install Cilium
           helm install cilium |CHART_RELEASE| \\
             --namespace kube-system
 
-    .. group-tab:: GCP/GKE
+    .. group-tab:: GKE
 
        .. include:: requirements-gke.rst
 
@@ -73,7 +73,7 @@ Install Cilium
             --set cni.binPath=/home/kubernetes/bin \\
             --set gke.enabled=true \\
             --set ipam.mode=kubernetes \\
-            --set nativeRoutingCIDR=$NATIVE_CIDR
+            --set ipv4NativeRoutingCIDR=$NATIVE_CIDR
 
        The NodeInit DaemonSet is required to prepare the GKE nodes as nodes are added
        to the cluster. The NodeInit DaemonSet will perform the following actions:
@@ -81,7 +81,7 @@ Install Cilium
        * Reconfigure kubelet to run in CNI mode
        * Mount the eBPF filesystem
 
-    .. group-tab:: Azure/AKS
+    .. group-tab:: AKS
 
        .. include:: requirements-aks.rst
 
@@ -142,7 +142,7 @@ Install Cilium
             --set enableIPv4Masquerade=false \\
             --set nodeinit.enabled=true
 
-    .. group-tab:: AWS/EKS
+    .. group-tab:: EKS
 
        .. include:: requirements-eks.rst
 

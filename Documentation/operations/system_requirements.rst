@@ -33,16 +33,15 @@ When running Cilium as a native process on your host (i.e. **not** running the
 When running Cilium without Kubernetes these additional requirements
 must be met:
 
-- :ref:`req_kvstore` etcd >= 3.1.0 or consul >= 0.6.4
+- :ref:`req_kvstore` etcd >= 3.1.0
 
 ======================== ========================== ===================
 Requirement              Minimum Version            In cilium container
 ======================== ========================== ===================
 `Linux kernel`_          >= 4.9.17                  no
 Key-Value store (etcd)   >= 3.1.0                   no
-Key-Value store (consul) >= 0.6.4                   no
 clang+LLVM               >= 10.0                    yes
-iproute2                 >= 5.0.0 [#iproute2_foot]_ yes
+iproute2                 >= 5.9.0 [#iproute2_foot]_ yes
 ======================== ========================== ===================
 
 .. [#iproute2_foot] Requires support for eBPF templating as documented
@@ -104,6 +103,9 @@ RancherOS_                 >= 1.5.5
 Linux Kernel
 ============
 
+Base Requirements
+~~~~~~~~~~~~~~~~~
+
 Cilium leverages and builds on the kernel eBPF functionality as well as various
 subsystems which integrate with eBPF. Therefore, host systems are required to
 run Linux kernel version 4.9.17 or later to run a Cilium agent. More recent
@@ -133,6 +135,21 @@ linked, either choice is valid.
    Users running Linux 4.10 or earlier with Cilium CIDR policies may face
    :ref:`cidr_limitations`.
 
+Requirements for Iptables-based Masquerading
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you are not using BPF for masquerading (``enable-bpf-masquerade=false``, the
+default value), then you will need the following kernel configuration options.
+
+::
+
+        CONFIG_NETFILTER_XT_SET=m
+        CONFIG_IP_SET=m
+        CONFIG_IP_SET_HASH_IP=m
+
+Requirements for L7 and FQDN Policies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 L7 proxy redirection currently uses ``TPROXY`` iptables actions as well
 as ``socket`` matches. For L7 redirection to work as intended kernel
 configuration must include the following modules:
@@ -140,6 +157,7 @@ configuration must include the following modules:
 ::
 
         CONFIG_NETFILTER_XT_TARGET_TPROXY=m
+        CONFIG_NETFILTER_XT_TARGET_CT=m
         CONFIG_NETFILTER_XT_MATCH_MARK=m
         CONFIG_NETFILTER_XT_MATCH_SOCKET=m
 
@@ -162,6 +180,46 @@ by adding the following to the helm configuration command line:
      --set enableXTSocketFallback=false
 
 .. _features_kernel_matrix:
+
+Requirements for IPsec
+~~~~~~~~~~~~~~~~~~~~~~
+
+The :ref:`encryption_ipsec` feature requires a lot of kernel configuration
+options, most of which to enable the actual encryption. Note that the
+specific options required depend on the algorithm. The list below
+corresponds to requirements for GMC-128-AES.
+
+::
+
+        CONFIG_XFRM=y
+        CONFIG_XFRM_OFFLOAD=y
+        CONFIG_XFRM_STATISTICS=y
+        CONFIG_XFRM_ALGO=m
+        CONFIG_XFRM_USER=m
+        CONFIG_INET{,6}_ESP=m
+        CONFIG_INET{,6}_IPCOMP=m
+        CONFIG_INET{,6}_XFRM_TUNNEL=m
+        CONFIG_INET{,6}_TUNNEL=m
+        CONFIG_INET_XFRM_MODE_TUNNEL=m
+        CONFIG_CRYPTO_AEAD=m
+        CONFIG_CRYPTO_AEAD2=m
+        CONFIG_CRYPTO_GCM=m
+        CONFIG_CRYPTO_SEQIV=m
+        CONFIG_CRYPTO_CBC=m
+        CONFIG_CRYPTO_HMAC=m
+        CONFIG_CRYPTO_SHA256=m
+        CONFIG_CRYPTO_AES=m
+
+Requirements for the Bandwidth Manager
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The :ref:`bandwidth-manager` requires the following kernel configuration option
+to change the packet scheduling algorithm.
+
+::
+
+        CONFIG_NET_SCH_FQ=m
+
 
 Required Kernel Versions for Advanced Features
 ==============================================
@@ -186,6 +244,7 @@ Full support for :ref:`session-affinity`    >= 5.7
 BPF-based proxy redirection                 >= 5.7
 BPF-based host routing                      >= 5.10
 Socket-level LB bypass in pod netns         >= 5.7
+:ref:`egress-gateway`                       >= 5.2
 =========================================== ===============================
 
 .. _req_kvstore:
@@ -198,7 +257,6 @@ synchronize and distribute security identities across all cluster
 nodes. The following Key-Value stores are currently supported:
 
 - etcd >= 3.1.0
-- consul >= 0.6.4
 
 Cilium can be used without a Key-Value store when CRD-based state
 management is used with Kubernetes. This is the default for new Cilium
@@ -238,19 +296,10 @@ iproute2_ is a low level tool used to configure various networking related
 subsystems of the Linux kernel. Cilium uses iproute2 to configure networking
 and ``tc``, which is part of iproute2, to load eBPF programs into the kernel.
 
-The version of iproute2 must include the eBPF templating patches. See the
-links in the table below for documentation on how to install the correct
-version of iproute2 for your distribution.
+The version of iproute2 must include the eBPF templating patches. Also, it
+depends on Cilium's libbpf fork. See `Cilium iproute2 source`_ for more details.
 
-================= =========================
-Distribution      Link
-================= =========================
-Binary (OpenSUSE) `Open Build Service`_
-Source            `Cilium iproute2 source`_
-================= =========================
-
-.. _`Open Build Service`: https://build.opensuse.org/package/show/security:netfilter/iproute2
-.. _`Cilium iproute2 source`: https://github.com/cilium/iproute2/tree/static-data
+.. _`Cilium iproute2 source`: https://github.com/cilium/iproute2/
 
 .. _firewall_requirements:
 

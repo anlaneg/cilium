@@ -12,7 +12,7 @@ $NETNEXT_SERVER_VERSION= (ENV['NETNEXT_SERVER_VERSION'] || $NETNEXT_SERVER_VERSI
 
 $BUILD_NUMBER = ENV['BUILD_NUMBER'] || "0"
 $JOB_NAME = ENV['JOB_BASE_NAME'] || "LOCAL"
-$K8S_VERSION = ENV['K8S_VERSION'] || "1.22"
+$K8S_VERSION = ENV['K8S_VERSION'] || "1.23"
 $K8S_NODES = (ENV['K8S_NODES'] || "2").to_i
 $NFS = ENV['NFS']=="0"? false : true
 $NFS_OPTS = (ENV['NFS_OPTS'] || "nolock").split(",")
@@ -28,7 +28,7 @@ $HUBBLE_RELAY_TAG = ENV['HUBBLE_RELAY_TAG'] || ""
 $PRELOAD_VM = ENV['PRELOAD_VM'] || "false"
 $PROVISION_EXTERNAL_WORKLOAD = ENV['PROVISION_EXTERNAL_WORKLOAD'] || "false"
 $SKIP_K8S_PROVISION = ENV['SKIP_K8S_PROVISION'] || "false"
-$NO_CILIUM_ON_NODE = ENV['NO_CILIUM_ON_NODE'] || ""
+$NO_CILIUM_ON_NODES = ENV['NO_CILIUM_ON_NODES'] || ENV['NO_CILIUM_ON_NODE'] || ""
 $KUBEPROXY = (ENV['KUBEPROXY'] || "1")
 $RACE = ENV['RACE'] || ""
 $LOCKDEBUG = ENV['LOCKDEBUG'] || ""
@@ -100,10 +100,10 @@ Vagrant.configure("2") do |config|
         server.vm.hostname = "runtime"
 
         server.vm.network "private_network",
-            ip: "192.168.36.10",
+            ip: "192.168.56.10",
             virtualbox__intnet: "cilium-k8s#{$BUILD_NUMBER}-#{$JOB_NAME}-#{$K8S_VERSION}"
         server.vm.network "private_network",
-            ip: "192.168.37.10",
+            ip: "192.168.57.10",
             virtualbox__intnet: "cilium-k8s-2#{$BUILD_NUMBER}-#{$JOB_NAME}-#{$K8S_VERSION}"
 
         # @TODO: Clean this one when https://github.com/hashicorp/vagrant/issues/9822 is fixed.
@@ -119,7 +119,7 @@ Vagrant.configure("2") do |config|
         # This network is only used by NFS
         if $NFS
             # This network is only used by NFS
-            server.vm.network "private_network", ip: "192.168.38.10"
+            server.vm.network "private_network", ip: "192.168.58.10"
             server.vm.synced_folder cilium_dir, cilium_path, type: "nfs", nfs_udp: false, mount_options: $NFS_OPTS
         else
             server.vm.synced_folder cilium_dir, cilium_path
@@ -145,7 +145,8 @@ Vagrant.configure("2") do |config|
                 vb.customize ["modifyvm", :id, "--hwvirtex", "on"]
                 vb.cpus = $CPU
                 vb.memory = $MEMORY
-                if "k8s#{i}" == $NO_CILIUM_ON_NODE
+                no_cilium_nodes = $NO_CILIUM_ON_NODES.split(',')
+                if no_cilium_nodes.include? "k8s#{i}"
                   vb.memory = $MEMORY / 2
                   vb.cpus = 1
                 end
@@ -172,10 +173,10 @@ Vagrant.configure("2") do |config|
                   auto_correct: true
             end
             server.vm.network "private_network",
-                ip: "192.168.36.1#{i}",
+                ip: "192.168.56.1#{i}",
                 virtualbox__intnet: "cilium-k8s#{$BUILD_NUMBER}-#{$JOB_NAME}-#{$K8S_VERSION}"
             server.vm.network "private_network",
-                ip: "192.168.37.1#{i}",
+                ip: "192.168.57.1#{i}",
                 virtualbox__intnet: "cilium-k8s-2#{$BUILD_NUMBER}-#{$JOB_NAME}-#{$K8S_VERSION}"
 
             # @TODO: Clean this one when https://github.com/hashicorp/vagrant/issues/9822 is fixed.
@@ -190,7 +191,7 @@ Vagrant.configure("2") do |config|
 
             if $NFS
                 # This network is only used by NFS
-                server.vm.network "private_network", ip: "192.168.38.1#{i}"
+                server.vm.network "private_network", ip: "192.168.58.1#{i}"
                 server.vm.synced_folder cilium_dir, cilium_path, type: "nfs", nfs_udp: false, mount_options: $NFS_OPTS
             else
                 server.vm.synced_folder cilium_dir, cilium_path
@@ -203,7 +204,7 @@ Vagrant.configure("2") do |config|
             server.vm.provision "shell" do |sh|
                 sh.path = "./provision/k8s_install.sh"
                 sh.args = [
-                    "k8s#{i}", "192.168.36.1#{i}", "#{$K8S_VERSION}",
+                    "k8s#{i}", "192.168.56.1#{i}", "#{$K8S_VERSION}",
                     "#{$IPv6}", "#{$CONTAINER_RUNTIME}", "#{$CNI_INTEGRATION}"]
                 sh.env = {"CILIUM_IMAGE" => "#{$CILIUM_IMAGE}",
                           "CILIUM_TAG" => "#{$CILIUM_TAG}",

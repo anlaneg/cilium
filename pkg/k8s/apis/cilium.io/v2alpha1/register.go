@@ -4,11 +4,11 @@
 package v2alpha1
 
 import (
-	k8sconst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	k8sconst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 )
 
 const (
@@ -23,7 +23,7 @@ const (
 	//
 	// Maintainers: Run ./Documentation/check-crd-compat-table.sh for each release
 	// Developers: Bump patch for each change in the CRD schema.
-	CustomResourceDefinitionSchemaVersion = "1.24.1"
+	CustomResourceDefinitionSchemaVersion = "1.24.2"
 
 	// CustomResourceDefinitionSchemaVersionKey is key to label which holds the CRD schema version
 	CustomResourceDefinitionSchemaVersionKey = "io.cilium.k8s.crd.schema.version"
@@ -41,6 +41,20 @@ const (
 
 	// CENPName is the full name of Cilium Egress NAT Policy
 	CENPName = CENPPluralName + "." + CustomResourceDefinitionGroup
+
+	// Cilium Endpoint Slice (CES)
+
+	// CESSingularName is the singular name of Cilium Endpoint Slice
+	CESSingularName = "ciliumendpointslice"
+
+	// CESPluralName is the plural name of Cilium Endpoint Slice
+	CESPluralName = "ciliumendpointslices"
+
+	// CESKindDefinition is the kind name of Cilium Endpoint Slice
+	CESKindDefinition = "CiliumEndpointSlice"
+
+	// CESName is the full name of Cilium Endpoint Slice
+	CESName = CESPluralName + "." + CustomResourceDefinitionGroup
 )
 
 // SchemeGroupVersion is group version used to register these objects
@@ -86,6 +100,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&CiliumEgressNATPolicy{},
 		&CiliumEgressNATPolicyList{},
+		&CiliumEndpointSlice{},
+		&CiliumEndpointSliceList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

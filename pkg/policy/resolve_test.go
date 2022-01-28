@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sirupsen/logrus"
+	. "gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
@@ -19,10 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
-	"github.com/cilium/cilium/pkg/testutils/allocator"
-
-	"github.com/sirupsen/logrus"
-	. "gopkg.in/check.v1"
+	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 )
 
 var (
@@ -193,8 +193,10 @@ func (d DummyOwner) PolicyDebug(fields logrus.Fields, msg string) {
 }
 
 func bootstrapRepo(ruleGenFunc func(int) api.Rules, numRules int, c *C) *Repository {
-	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
-	testRepo := NewPolicyRepository(mgr.GetIdentityCache(), nil)
+	mgr := cache.NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
+	ids := mgr.GetIdentityCache()
+	fakeAllocator := testidentity.NewMockIdentityAllocator(ids)
+	testRepo := NewPolicyRepository(fakeAllocator, ids, nil)
 
 	SetPolicyEnabled(option.DefaultEnforcement)
 	GenerateNumIdentities(3000)
@@ -319,7 +321,6 @@ func (ds *PolicyTestSuite) TestL7WithIngressWildcard(c *C) {
 				},
 				Egress: L4PolicyMap{},
 			},
-			CIDRPolicy:           policy.CIDRPolicy,
 			IngressPolicyEnabled: true,
 			EgressPolicyEnabled:  false,
 		},
@@ -415,7 +416,6 @@ func (ds *PolicyTestSuite) TestL7WithLocalHostWildcardd(c *C) {
 				},
 				Egress: L4PolicyMap{},
 			},
-			CIDRPolicy:           policy.CIDRPolicy,
 			IngressPolicyEnabled: true,
 			EgressPolicyEnabled:  false,
 		},
@@ -500,7 +500,6 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressWildcard(c *C) {
 				},
 				Egress: L4PolicyMap{},
 			},
-			CIDRPolicy:           policy.CIDRPolicy,
 			IngressPolicyEnabled: true,
 			EgressPolicyEnabled:  false,
 		},
@@ -640,7 +639,6 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 				},
 				Egress: L4PolicyMap{},
 			},
-			CIDRPolicy:           policy.CIDRPolicy,
 			IngressPolicyEnabled: true,
 			EgressPolicyEnabled:  false,
 		},

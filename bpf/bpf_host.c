@@ -812,7 +812,7 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 	 * PACKET_HOST or otherwise fixup MAC addresses.
 	 */
 	if (encrypt_iface)
-		return redirect(encrypt_iface, 0);
+		return ctx_redirect(ctx, encrypt_iface, 0);
 #endif
 	return CTX_ACT_OK;
 }
@@ -860,7 +860,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 	bpf_clear_meta(ctx);
 
 	if (from_host) {
-		int trace = TRACE_FROM_HOST;
+		enum trace_point trace = TRACE_FROM_HOST;
 		bool from_proxy;
 
 		from_proxy = inherit_identity_from_host(ctx, &identity);
@@ -950,8 +950,7 @@ handle_netdev(struct __ctx_buff *ctx, const bool from_host)
 		return send_drop_notify(ctx, SECLABEL, WORLD_ID, 0, ret,
 					CTX_ACT_DROP, METRIC_EGRESS);
 #else
-		send_trace_notify(ctx, TRACE_TO_STACK, HOST_ID, 0, 0, 0,
-				  REASON_FORWARDED, 0);
+		send_trace_notify(ctx, TRACE_TO_STACK, HOST_ID, 0, 0, 0, 0, 0);
 		/* Pass unknown traffic to the stack */
 		return CTX_ACT_OK;
 #endif /* ENABLE_HOST_FIREWALL */
@@ -1098,7 +1097,7 @@ out:
 					      METRIC_EGRESS);
 #endif
 	send_trace_notify(ctx, TRACE_TO_NETWORK, src_id, 0, 0,
-			  0, ret, monitor);
+			  0, 0, monitor);
 
 	return ret;
 }
@@ -1142,11 +1141,6 @@ int to_host(struct __ctx_buff *ctx)
 	 */
 	ctx_change_type(ctx, PACKET_HOST);
 #endif
-
-	if (!traced)
-		send_trace_notify(ctx, TRACE_TO_STACK, src_id, 0, 0,
-				  CILIUM_IFINDEX, ret, 0);
-
 #ifdef ENABLE_HOST_FIREWALL
 	if (!validate_ethertype(ctx, &proto)) {
 		ret = DROP_UNSUPPORTED_L2;
@@ -1183,6 +1177,10 @@ out:
 	if (IS_ERR(ret))
 		return send_drop_notify_error(ctx, src_id, ret, CTX_ACT_DROP,
 					      METRIC_INGRESS);
+
+	if (!traced)
+		send_trace_notify(ctx, TRACE_TO_STACK, src_id, 0, 0,
+				  CILIUM_IFINDEX, 0, 0);
 
 	return ret;
 }

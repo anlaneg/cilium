@@ -10,14 +10,14 @@ import (
 	"net"
 	"runtime"
 
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
+	. "gopkg.in/check.v1"
+
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
-	"golang.org/x/sys/unix"
-
-	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
-	. "gopkg.in/check.v1"
 )
 
 type DevicesSuite struct {
@@ -172,6 +172,23 @@ func (s *DevicesSuite) TestExpandDevices(c *C) {
 		// 2. Check that expansion fails if devices are specified but yields empty expansion
 		option.Config.Devices = []string{"none+"}
 		c.Assert(expandDevices(), NotNil)
+	})
+}
+
+func (s *DevicesSuite) TestExpandDirectRoutingDevice(c *C) {
+	s.withFreshNetNS(c, func() {
+		c.Assert(createDummy("dummy0", "192.168.0.1/24", false), IsNil)
+		c.Assert(createDummy("dummy1", "192.168.1.2/24", false), IsNil)
+		c.Assert(createDummy("unmatched", "192.168.4.5/24", false), IsNil)
+
+		// 1. Check expansion works and non-matching prefixes are ignored
+		option.Config.DirectRoutingDevice = "dummy+"
+		c.Assert(expandDirectRoutingDevice(), IsNil)
+		c.Assert(option.Config.DirectRoutingDevice, Equals, "dummy0")
+
+		// 2. Check that expansion fails if directRoutingDevice is specified but yields empty expansion
+		option.Config.DirectRoutingDevice = "none+"
+		c.Assert(expandDirectRoutingDevice(), NotNil)
 	})
 }
 

@@ -126,7 +126,7 @@ e.g.:
 .. code-block:: shell-session
 
    $ cilium status
-   KVStore:                Ok   etcd: 1/1 connected: https://192.168.33.11:2379 - 3.2.7 (Leader)
+   KVStore:                Ok   etcd: 1/1 connected: https://192.168.60.11:2379 - 3.2.7 (Leader)
    ContainerRuntime:       Ok
    Kubernetes:             Ok   OK
    Kubernetes APIs:        ["core/v1::Endpoint", "extensions/v1beta1::Ingress", "core/v1::Node", "CustomResourceDefinition", "cilium/v2::CiliumNetworkPolicy", "networking.k8s.io/v1::NetworkPolicy", "core/v1::Service"]
@@ -208,37 +208,6 @@ in the last three minutes:
 
 You may also use ``-o json`` to obtain more detailed information about each
 flow event.
-
-In the following example the first command extracts the numeric security
-identities for all dropped flows which originated in the ``default/xwing`` pod
-in the last three minutes. The numeric security identity can then be used
-together with the Cilium CLI to obtain more information about why a particular
-flow was dropped:
-
-.. code-block:: shell-session
-
-   $ kubectl exec -n kube-system cilium-77lk6 -- \
-       hubble observe --since 3m --type drop --from-pod default/xwing -o json | \
-       jq .destination.identity | sort -u
-   788
-   $ kubectl exec -n kube-system cilium-77lk6 -- \
-       cilium policy trace --src-k8s-pod default:xwing --dst-identity 788
-   ----------------------------------------------------------------
-
-   Tracing From: [k8s:class=xwing, k8s:io.cilium.k8s.policy.cluster=default, k8s:io.cilium.k8s.policy.serviceaccount=default, k8s:io.kubernetes.pod.namespace=default, k8s:org=alliance] => To: [k8s:class=deathstar, k8s:io.cilium.k8s.policy.cluster=default, k8s:io.cilium.k8s.policy.serviceaccount=default, k8s:io.kubernetes.pod.namespace=default, k8s:org=empire] Ports: [0/ANY]
-
-   Resolving ingress policy for [k8s:class=deathstar k8s:io.cilium.k8s.policy.cluster=default k8s:io.cilium.k8s.policy.serviceaccount=default k8s:io.kubernetes.pod.namespace=default k8s:org=empire]
-   * Rule {"matchLabels":{"any:class":"deathstar","any:org":"empire","k8s:io.kubernetes.pod.namespace":"default"}}: selected
-       Allows from labels {"matchLabels":{"any:org":"empire","k8s:io.kubernetes.pod.namespace":"default"}}
-         No label match for [k8s:class=xwing k8s:io.cilium.k8s.policy.cluster=default k8s:io.cilium.k8s.policy.serviceaccount=default k8s:io.kubernetes.pod.namespace=default k8s:org=alliance]
-   1/1 rules selected
-   Found no allow rule
-   Ingress verdict: denied
-
-   Final verdict: DENIED
-
-Please refer to the :ref:`policy troubleshooting guide<policy_tracing>` for
-more details about how to troubleshoot policy related drops.
 
 .. note::
    **Hubble Relay**  allows you to query multiple Hubble instances
@@ -468,6 +437,32 @@ If pod networking is not managed by Cilium. Ingress and egress policy rules
 selecting the respective pods will not be applied. See the section
 :ref:`network_policy` for more details.
 
+For a quick assessment of whether any pods are not managed by Cilium, the
+`Cilium CLI <https://github.com/cilium/cilium-cli>`_ will print the number
+of managed pods. If this prints that all of the pods are managed by Cilium,
+then there is no problem:
+
+.. code-block:: shell-session
+
+   $ cilium status
+       /¯¯\
+    /¯¯\__/¯¯\    Cilium:         OK
+    \__/¯¯\__/    Operator:       OK
+    /¯¯\__/¯¯\    Hubble:         OK
+    \__/¯¯\__/    ClusterMesh:    disabled
+       \__/
+
+   Deployment        cilium-operator    Desired: 2, Ready: 2/2, Available: 2/2
+   Deployment        hubble-relay       Desired: 1, Ready: 1/1, Available: 1/1
+   Deployment        hubble-ui          Desired: 1, Ready: 1/1, Available: 1/1
+   DaemonSet         cilium             Desired: 2, Ready: 2/2, Available: 2/2
+   Containers:       cilium-operator    Running: 2
+                     hubble-relay       Running: 1
+                     hubble-ui          Running: 1
+                     cilium             Running: 2
+   Cluster Pods:     5/5 managed by Cilium
+   ...
+
 You can run the following script to list the pods which are *not* managed by
 Cilium:
 
@@ -481,9 +476,6 @@ Cilium:
    kube-system/kube-dns-54cccfbdf8-zmv2c
    kube-system/kubernetes-dashboard-77d8b98585-g52k5
    kube-system/storage-provisioner
-
-See section :ref:`policy_tracing` for details and examples on how to use the
-policy tracing feature.
 
 Understand the rendering of your policy
 ---------------------------------------
@@ -586,7 +578,7 @@ Understanding etcd status
 The etcd status is reported when running ``cilium status``. The following line
 represents the status of etcd::
 
-   KVStore:  Ok  etcd: 1/1 connected, lease-ID=29c6732d5d580cb5, lock lease-ID=29c6732d5d580cb7, has-quorum=true: https://192.168.33.11:2379 - 3.4.9 (Leader)
+   KVStore:  Ok  etcd: 1/1 connected, lease-ID=29c6732d5d580cb5, lock lease-ID=29c6732d5d580cb7, has-quorum=true: https://192.168.60.11:2379 - 3.4.9 (Leader)
 
 OK:
   The overall status. Either ``OK`` or ``Failure``.
@@ -606,7 +598,7 @@ has-quorum:
 consecutive-errors:
   Number of consecutive quorum errors. Only printed if errors are present.
 
-https://192.168.33.11:2379 - 3.4.9 (Leader):
+https://192.168.60.11:2379 - 3.4.9 (Leader):
   List of all etcd endpoints stating the etcd version and whether the
   particular endpoint is currently the elected leader. If an etcd endpoint
   cannot be reached, the error is shown.
@@ -644,7 +636,7 @@ cluster size. The larger the cluster, the longer the `interval
 Example of a status with a quorum failure which has not yet reached the
 threshold::
 
-    KVStore: Ok   etcd: 1/1 connected, lease-ID=29c6732d5d580cb5, lock lease-ID=29c6732d5d580cb7, has-quorum=2m2.778966915s since last heartbeat update has been received, consecutive-errors=1: https://192.168.33.11:2379 - 3.4.9 (Leader)
+    KVStore: Ok   etcd: 1/1 connected, lease-ID=29c6732d5d580cb5, lock lease-ID=29c6732d5d580cb7, has-quorum=2m2.778966915s since last heartbeat update has been received, consecutive-errors=1: https://192.168.60.11:2379 - 3.4.9 (Leader)
 
 Example of a status with the number of quorum failures exceeding the threshold::
 
@@ -842,7 +834,7 @@ State Propagation
            },
            endpoints: (map[k8s.ServiceID]*k8s.Endpoints) (len=2) {
              (k8s.ServiceID) kube-system/kube-dns: (*k8s.Endpoints)(0xc0000103c0)(10.16.127.105:53/TCP,10.16.127.105:53/UDP,10.16.127.105:9153/TCP),
-             (k8s.ServiceID) default/kubernetes: (*k8s.Endpoints)(0xc0000103f8)(192.168.33.11:6443/TCP)
+             (k8s.ServiceID) default/kubernetes: (*k8s.Endpoints)(0xc0000103f8)(192.168.60.11:6443/TCP)
            },
            externalEndpoints: (map[k8s.ServiceID]k8s.externalEndpoints) {
            }

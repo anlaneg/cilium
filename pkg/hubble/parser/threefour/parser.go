@@ -11,6 +11,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+
 	pb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath/link"
@@ -21,11 +26,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/monitor"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
-
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Parser is a parser for L3/L4 payloads
@@ -488,6 +488,10 @@ func decodeICMPv6(icmp *layers.ICMPv6) *pb.Layer4 {
 	}
 }
 
+func isReply(reason uint8) bool {
+	return reason & ^monitor.TraceReasonEncryptMask == monitor.TraceReasonCtReply
+}
+
 func decodeIsReply(tn *monitor.TraceNotify, pvn *monitor.PolicyVerdictNotify) *wrapperspb.BoolValue {
 	switch {
 	case tn != nil && monitorAPI.TraceObservationPointHasConnState(tn.ObsPoint):
@@ -495,7 +499,19 @@ func decodeIsReply(tn *monitor.TraceNotify, pvn *monitor.PolicyVerdictNotify) *w
 		// tracking state available. For certain trace point
 		// events, we do not know if it actually was a reply or not.
 		return &wrapperspb.BoolValue{
-			Value: tn.Reason & ^monitor.TraceReasonEncryptMask == monitor.TraceReasonCtReply,
+			Value: isReply(tn.Reason),
+		}
+	case tn != nil && tn.ObsPoint == monitorAPI.TraceToNetwork && tn.Reason > 0:
+		// FIXME(GH-18460): Even though the BPF programs emitting TraceToNetwork
+		// do have access to connection tracking state, that state is currently
+		// not exposed to userspace by all trace points. Therefore TraceToNetwork
+		// is currently excluded in TraceObservationPointHasConnState.
+		// However, the NodePort return path in handle_ipv4_from_lxc does
+		// populate tn.Reason, and always has with a non-zero value due it
+		// only being used for replies. Therefore, if tn.Reason is non-zero,
+		// we can safely determine if the traced packet was a reply or not.
+		return &wrapperspb.BoolValue{
+			Value: isReply(tn.Reason),
 		}
 	case pvn != nil && pvn.Verdict >= 0:
 		// Forwarded PolicyVerdictEvents are emitted for the first packet of

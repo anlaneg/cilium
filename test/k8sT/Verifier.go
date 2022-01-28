@@ -9,10 +9,10 @@ import (
 	"os"
 	"strings"
 
+	. "github.com/onsi/gomega"
+
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
-
-	. "github.com/onsi/gomega"
 )
 
 const (
@@ -140,6 +140,7 @@ var _ = Describe("K8sVerifier", func() {
 
 	AfterAll(func() {
 		kubectl.DeleteResource("pod", podName)
+		ExpectAllPodsTerminated(kubectl)
 	})
 
 	It("Runs the kernel verifier against Cilium's BPF datapath", func() {

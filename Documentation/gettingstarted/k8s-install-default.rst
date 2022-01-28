@@ -149,7 +149,7 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
        <https://github.com/weaveworks/eksctl>`_ for instructions on how to
        install ``eksctl`` and prepare your account.
 
-       .. code-block:: shell-session
+       .. code-block:: none
 
            export NAME="$(whoami)-$RANDOM"
            cat <<EOF >eks-config.yaml
@@ -185,7 +185,7 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
 
     .. group-tab:: minikube
 
-       Install minikube >= v1.5.2 as per minikube documentation: 
+       Install minikube >= v1.12 as per minikube documentation: 
        `Install Minikube <https://kubernetes.io/docs/tasks/tools/install-minikube/>`_.
        The following command will bring up a single node minikube cluster prepared for installing cilium.
 
@@ -229,7 +229,7 @@ You can install Cilium on any Kubernetes cluster. Pick one of the options below:
 
           cilium install
 
-    .. group-tab:: GCP/GKE
+    .. group-tab:: GKE
 
        .. include:: requirements-gke.rst
 
@@ -241,7 +241,7 @@ You can install Cilium on any Kubernetes cluster. Pick one of the options below:
 
            cilium install
 
-    .. group-tab:: Azure/AKS
+    .. group-tab:: AKS
 
        .. include:: requirements-aks.rst
 
@@ -253,7 +253,7 @@ You can install Cilium on any Kubernetes cluster. Pick one of the options below:
 
            cilium install --azure-resource-group "${AZURE_RESOURCE_GROUP}"
 
-    .. group-tab:: AWS/EKS
+    .. group-tab:: EKS
 
        .. include:: requirements-eks.rst
 
@@ -291,14 +291,14 @@ You can install Cilium on any Kubernetes cluster. Pick one of the options below:
     .. group-tab:: k3s
 
        .. include:: requirements-k3s.rst
-      
+
        **Install Cilium:**
 
        Install Cilium into your newly created Kubernetes cluster:
 
        .. code-block:: shell-session
 
-           cilium install
+           KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium install
 
 
 If the installation fails for some reason, run ``cilium status`` to retrieve

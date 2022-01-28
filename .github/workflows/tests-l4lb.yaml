@@ -56,10 +56,8 @@ concurrency:
     ${{
       (github.event_name == 'schedule' && github.sha) ||
       (github.event_name == 'issue_comment' && (
-        startsWith(github.event.comment.body, 'ci-l4lb') && !startsWith(github.event.comment.body, 'ci-l4lb-') ||
-        startsWith(github.event.comment.body, '/ci-l4lb') && !startsWith(github.event.comment.body, '/ci-l4lb-') ||
-        startsWith(github.event.comment.body, 'test-me-please') && !startsWith(github.event.comment.body, 'test-me-please-') ||
-        startsWith(github.event.comment.body, '/test') && !startsWith(github.event.comment.body, '/test-')
+        github.event.comment.body == '/ci-l4lb' ||
+        github.event.comment.body == '/test'
       ) && github.event.issue.number) ||
       (github.event_name == 'pull_request' && github.event.pull_request.number)
     }}
@@ -73,12 +71,10 @@ jobs:
     name: Deduce required tests from code changes
     if: |
       (github.event_name == 'issue_comment' && (
-        startsWith(github.event.comment.body, 'ci-l4lb') && !startsWith(github.event.comment.body, 'ci-l4lb-') ||
-        startsWith(github.event.comment.body, '/ci-l4lb') && !startsWith(github.event.comment.body, '/ci-l4lb-') ||
-        startsWith(github.event.comment.body, 'test-me-please') && !startsWith(github.event.comment.body, 'test-me-please-') ||
-        startsWith(github.event.comment.body, '/test') && !startsWith(github.event.comment.body, '/test-')
+        github.event.comment.body == '/ci-l4lb' ||
+        github.event.comment.body == '/test'
       )) ||
-      (github.event_name == 'schedule' && github.repository == 'cilium/cilium') ||
+      github.event_name == 'schedule' ||
       github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
@@ -88,7 +84,7 @@ jobs:
       # paths-filter to work.
       - name: Checkout code
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
       - name: Retrieve pull request's base and head
@@ -119,12 +115,10 @@ jobs:
     name: Setup & Test
     if: |
       (github.event_name == 'issue_comment' && (
-        startsWith(github.event.comment.body, 'ci-l4lb') && !startsWith(github.event.comment.body, 'ci-l4lb-') ||
-        startsWith(github.event.comment.body, '/ci-l4lb') && !startsWith(github.event.comment.body, '/ci-l4lb-') ||
-        startsWith(github.event.comment.body, 'test-me-please') && !startsWith(github.event.comment.body, 'test-me-please-') && needs.check_changes.outputs.tested == 'true' ||
-        startsWith(github.event.comment.body, '/test') && !startsWith(github.event.comment.body, '/test-') && needs.check_changes.outputs.tested == 'true'
+        github.event.comment.body == '/ci-l4lb' ||
+        (github.event.comment.body == '/test' && needs.check_changes.outputs.tested == 'true')
       )) ||
-      (github.event_name == 'schedule' && github.repository == 'cilium/cilium') ||
+      github.event_name == 'schedule' ||
       github.event_name == 'pull_request'
     # We need nested virtualisation which is supported only by MacOS runner
     runs-on: macos-10.15
@@ -155,7 +149,7 @@ jobs:
           state: pending
           target_url: ${{ env.check_url }}
 
-      - uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
 
@@ -185,10 +179,11 @@ jobs:
       - name: Fetch cilium-sysdump
         if: ${{ !success() }}
         run: |
+          ssh default "sudo /bin/sh -c 'cilium sysdump --output-filename cilium-sysdump-out; mv cilium-sysdump-out.zip /tmp'"
           scp default:/tmp/cilium-sysdump-out.zip .
 
       - name: Upload cilium-sysdump
-        uses: actions/upload-artifact@27121b0bdffd731efa15d66772be8dc71245d074
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
         if: ${{ !success() }}
         with:
           name: cilium-sysdump-out.zip
@@ -229,7 +224,7 @@ jobs:
 
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@a74b761b4089b5d730d813fbedcd2ec5d394f3af
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)

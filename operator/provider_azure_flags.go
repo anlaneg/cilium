@@ -7,18 +7,14 @@
 package main
 
 import (
-	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/spf13/viper"
 
+	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/pkg/option"
 )
 
 func init() {
 	flags := rootCmd.Flags()
-
-	flags.String(operatorOption.AzureCloudName, "AzurePublicCloud", "Name of the Azure cloud being used")
-	option.BindEnvWithLegacyEnvFallback(operatorOption.AzureCloudName, "AZURE_CLOUD_NAME")
-	flags.MarkDeprecated(operatorOption.AzureCloudName, "This option will be removed in v1.11")
 
 	flags.String(operatorOption.AzureSubscriptionID, "", "Subscription ID to access Azure API")
 	option.BindEnvWithLegacyEnvFallback(operatorOption.AzureSubscriptionID, "AZURE_SUBSCRIPTION_ID")

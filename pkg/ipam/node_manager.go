@@ -10,14 +10,14 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
+
 	"github.com/cilium/cilium/pkg/controller"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/trigger"
-
-	"github.com/sirupsen/logrus"
-	"golang.org/x/sync/semaphore"
 )
 
 // CiliumNodeGetterUpdater defines the interface used to interact with the k8s
@@ -257,8 +257,10 @@ func (n *NodeManager) Update(resource *v2.CiliumNode) (nodeSynced bool) {
 	}()
 	if !ok {
 		node = &Node{
-			name:    resource.Name,
-			manager: n,
+			name:                resource.Name,
+			manager:             n,
+			ipsMarkedForRelease: make(map[string]time.Time),
+			ipReleaseStatus:     make(map[string]string),
 		}
 
 		node.ops = n.instancesAPI.CreateNode(resource, node)
@@ -306,7 +308,6 @@ func (n *NodeManager) Update(resource *v2.CiliumNode) (nodeSynced bool) {
 		node.poolMaintainer = poolMaintainer
 		node.k8sSync = k8sSync
 		n.nodes[node.name] = node
-
 		log.WithField(fieldName, resource.Name).Info("Discovered new CiliumNode custom resource")
 	}
 

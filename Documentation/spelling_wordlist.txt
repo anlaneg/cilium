@@ -4,7 +4,6 @@ APIEndpoint
 AdapterLimitViaAPI
 Alemayhu
 Alibaba
-Ansible
 BPF
 Bertin
 Blanco
@@ -12,6 +11,7 @@ Borkmann
 Brenden
 Broadcom
 Brouer
+CES
 CIDR
 CIDRs
 CRD
@@ -102,6 +102,7 @@ O'Reilly
 Pepelnjak
 Pfaff
 PodCIDR
+PodCIDRList
 Polytechnique
 QCon
 Qemu
@@ -147,6 +148,7 @@ allocator
 allocators
 amd
 analytics
+ansible
 api
 apiKeys
 apiVersion
@@ -335,6 +337,7 @@ egressMasqueradeInterfaces
 egressing
 elfutils
 ena
+enableCiliumEndpointSlice
 enableCnpStatusUpdates
 enableCriticalPriorityClass
 enableHealthCheck
@@ -360,6 +363,7 @@ eventBufferCapacity
 eventQueueSize
 extendable
 extensibility
+extern
 externalIPs
 externalWorkloads
 extraArgs
@@ -549,6 +553,7 @@ libnetwork
 libvirt
 lifecycle
 linearize
+linter
 linux
 linuxconf
 listenAddress
@@ -567,6 +572,7 @@ loadbalancing
 localRedirectPolicy
 localhost
 lockless
+logFile
 logSystemLoad
 logfile
 login
@@ -589,6 +595,7 @@ masqLinkLocal
 masterDevice
 matchLabels
 matchPattern
+maxUnavailable
 mc
 mediabot
 memcache
@@ -599,6 +606,7 @@ metricsServer
 microk
 microservice
 microservices
+minAvailable
 minikube
 misconfigures
 mlx
@@ -763,6 +771,7 @@ sNodes
 sService
 sServiceHost
 sServicePort
+sTerminatingEndpoint
 sa
 sandboxing
 scalability
@@ -811,6 +820,7 @@ starfighters
 startup
 startupProbe
 stateful
+statefulset
 statsd
 structs
 subclasses

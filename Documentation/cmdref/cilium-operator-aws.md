@@ -18,9 +18,9 @@ cilium-operator-aws [flags]
       --cilium-endpoint-gc-interval duration      GC interval for cilium endpoints (default 5m0s)
       --cluster-id int                            Unique identifier of the cluster
       --cluster-name string                       Name of the cluster (default "default")
-      --cluster-pool-ipv4-cidr string             IPv4 CIDR Range for Pods in cluster. Requires 'ipam=cluster-pool' and 'enable-ipv4=true'
+      --cluster-pool-ipv4-cidr strings            IPv4 CIDR Range for Pods in cluster. Requires 'ipam=cluster-pool' and 'enable-ipv4=true'
       --cluster-pool-ipv4-mask-size int           Mask size for each IPv4 podCIDR per node. Requires 'ipam=cluster-pool' and 'enable-ipv4=true' (default 24)
-      --cluster-pool-ipv6-cidr string             IPv6 CIDR Range for Pods in cluster. Requires 'ipam=cluster-pool' and 'enable-ipv6=true'
+      --cluster-pool-ipv6-cidr strings            IPv6 CIDR Range for Pods in cluster. Requires 'ipam=cluster-pool' and 'enable-ipv6=true'
       --cluster-pool-ipv6-mask-size int           Mask size for each IPv6 podCIDR per node. Requires 'ipam=cluster-pool' and 'enable-ipv6=true' (default 112)
       --cnp-node-status-gc-interval duration      GC interval for nodes which have been removed from the cluster in CiliumNetworkPolicy Status (default 2m0s)
       --cnp-status-update-interval duration       Interval between CNP status updates sent to the k8s-apiserver per-CNP (default 1s)
@@ -28,6 +28,7 @@ cilium-operator-aws [flags]
       --config-dir string                         Configuration directory that contains a file for each option
   -D, --debug                                     Enable debugging mode
       --ec2-api-endpoint string                   AWS API endpoint for the EC2 service
+      --enable-cilium-endpoint-slice              If set to true, the CiliumEndpointSlice feature is enabled. If any CiliumEndpoints resources are created, updated, or deleted in the cluster, all those changes are broadcast as CiliumEndpointSlice updates to all of the Cilium agents.
       --enable-ipv4                               Enable IPv4 support (default true)
       --enable-ipv6                               Enable IPv6 support (default true)
       --enable-k8s-api-discovery                  Enable discovery of Kubernetes API groups and resources with the discovery API
@@ -35,6 +36,7 @@ cilium-operator-aws [flags]
       --enable-k8s-event-handover                 Enable k8s event handover to kvstore for improved scalability
       --enable-metrics                            Enable Prometheus metrics
       --eni-tags map                              ENI tags in the form of k1=v1 (multiple k/v pairs can be passed by repeating the CLI flag) (default map[])
+      --excess-ip-release-delay int               Number of seconds operator would wait before it releases an IP previously marked as excess (default 180)
       --gops-port int                             Port for gops server to listen on (default 9891)
   -h, --help                                      help for cilium-operator-aws
       --identity-allocation-mode string           Method to use for identity allocation (default "kvstore")
@@ -59,7 +61,6 @@ cilium-operator-aws [flags]
       --limit-ipam-api-qps float                  Queries per second limit when accessing external IPAM APIs (default 20)
       --log-driver strings                        Logging endpoints to use for example syslog
       --log-opt map                               Log driver options for cilium-operator, configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local4"} (default map[])
-      --nodes-gc-interval duration                GC interval for nodes store in the kvstore (default 2m0s)
       --operator-api-serve-addr string            Address to serve API requests (default "localhost:9234")
       --operator-prometheus-serve-addr string     Address to serve Prometheus metrics (default ":6942")
       --parallel-alloc-workers int                Maximum number of parallel IPAM workers (default 50)
@@ -77,6 +78,6 @@ cilium-operator-aws [flags]
 
 ### SEE ALSO
 
-* [cilium-operator-aws completion](cilium-operator-aws_completion.html)	 - generate the autocompletion script for the specified shell
+* [cilium-operator-aws completion](cilium-operator-aws_completion.html)	 - Generate the autocompletion script for the specified shell
 * [cilium-operator-aws metrics](cilium-operator-aws_metrics.html)	 - Access metric status of the operator
 

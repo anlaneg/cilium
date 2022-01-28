@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright 2016-2022 Authors of Cilium
 
 package cmd
 
@@ -10,15 +10,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
 	datapathIpcache "github.com/cilium/cilium/pkg/datapath/ipcache"
 	"github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/datapath/linux/probes"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/egressmap"
@@ -37,9 +42,6 @@ import (
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
-
-	"github.com/sirupsen/logrus"
-	"github.com/vishvananda/netlink"
 )
 
 // LocalConfig returns the local configuration of the daemon's nodediscovery.
@@ -65,14 +67,14 @@ func (d *Daemon) createNodeConfigHeaderfile() error {
 }
 
 func deleteHostDevice() {
-	link, err := netlink.LinkByName(option.Config.HostDevice)
+	link, err := netlink.LinkByName(defaults.HostDevice)
 	if err != nil {
-		log.WithError(err).Warningf("Unable to lookup host device %s. No old cilium_host interface exists", option.Config.HostDevice)
+		log.WithError(err).Warningf("Unable to lookup host device %s. No old cilium_host interface exists", defaults.HostDevice)
 		return
 	}
 
 	if err := netlink.LinkDel(link); err != nil {
-		log.WithError(err).Errorf("Unable to delete host device %s to change allocation CIDR", option.Config.HostDevice)
+		log.WithError(err).Errorf("Unable to delete host device %s to change allocation CIDR", defaults.HostDevice)
 	}
 }
 
@@ -243,9 +245,13 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 
 		// Upsert will not propagate (reserved:foo->ID) mappings across the cluster,
 		// and we specifically don't want to do so.
+		//
+		// This upsert will fail with ErrOverwrite continuously as long as the
+		// EP / CN watcher have found an apiserver IP and upserted it into the
+		// ipcache. Until then, it is expected to succeed.
 		ipcache.IPIdentityCache.Upsert(ipIDPair.PrefixString(), nil, hostKey, nil, ipcache.Identity{
 			ID:     ipIDPair.ID,
-			Source: source.Local,
+			Source: sourceByIP(ipIDPair.IP.String(), source.Local),
 		})
 	}
 
@@ -259,11 +265,20 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 				log.Debugf("Removed outdated host ip %s from endpoint map", hostIP)
 			}
 
-			ipcache.IPIdentityCache.Delete(hostIP, source.Local)
+			ipcache.IPIdentityCache.Delete(hostIP, sourceByIP(hostIP, source.Local))
 		}
 	}
 
 	return nil
+}
+
+func sourceByIP(prefix string, defaultSrc source.Source) source.Source {
+	if lbls := ipcache.GetIDMetadataByIP(prefix); lbls.Has(
+		labels.LabelKubeAPIServer[labels.IDNameKubeAPIServer],
+	) {
+		return source.KubeAPIServer
+	}
+	return defaultSrc
 }
 
 // initMaps opens all BPF maps (and creates them if they do not exist). This
@@ -296,12 +311,17 @@ func (d *Daemon) initMaps() error {
 		return err
 	}
 
-	if _, err := tunnel.TunnelMap.OpenOrCreate(); err != nil {
-		return err
+	if option.Config.TunnelingEnabled() || option.Config.EnableIPv4EgressGateway {
+		// The IPv4 egress gateway feature also uses tunnel map
+		if _, err := tunnel.TunnelMap.OpenOrCreate(); err != nil {
+			return err
+		}
 	}
 
-	if _, err := egressmap.EgressMap.OpenOrCreate(); err != nil {
-		return err
+	if option.Config.EnableIPv4EgressGateway {
+		if err := egressmap.InitEgressMaps(); err != nil {
+			return err
+		}
 	}
 
 	pm := probes.NewProbeManager()
@@ -434,7 +454,7 @@ func (d *Daemon) initMaps() error {
 
 	if option.Config.NodePortAlg == option.NodePortAlgMaglev {
 		if err := lbmap.InitMaglevMaps(option.Config.EnableIPv4, option.Config.EnableIPv6, uint32(option.Config.MaglevTableSize)); err != nil {
-			return err
+			return fmt.Errorf("initializing maglev maps: %w", err)
 		}
 	}
 

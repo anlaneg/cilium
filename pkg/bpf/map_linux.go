@@ -19,6 +19,9 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
+
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bpf/binary"
 	"github.com/cilium/cilium/pkg/byteorder"
@@ -27,9 +30,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
-
-	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 // ErrMaxLookup is returned when the maximum number of map element lookups has
@@ -127,26 +127,20 @@ type Map struct {
 	pressureGauge *metrics.GaugeWithThreshold
 }
 
-type NewMapOpts struct {
-	CheckValueSize bool // Enable mapValue and valueSize size check
-}
-
-// NewMapWithOpts creates a new Map instance - object representing a BPF map
-func NewMapWithOpts(name string, mapType MapType, mapKey MapKey, keySize int,
+// NewMap creates a new Map instance - object representing a BPF map
+func NewMap(name string, mapType MapType, mapKey MapKey, keySize int,
 	mapValue MapValue, valueSize, maxEntries int, flags uint32, innerID uint32,
-	dumpParser DumpParser, opts *NewMapOpts) *Map {
+	dumpParser DumpParser) *Map {
 
 	if size := reflect.TypeOf(mapKey).Elem().Size(); size != uintptr(keySize) {
 		panic(fmt.Sprintf("Invalid %s map key size (%d != %d)", name, size, keySize))
 	}
 
-	if opts.CheckValueSize {
-		if size := reflect.TypeOf(mapValue).Elem().Size(); size != uintptr(valueSize) {
-			panic(fmt.Sprintf("Invalid %s map value size (%d != %d)", name, size, valueSize))
-		}
+	if size := reflect.TypeOf(mapValue).Elem().Size(); size != uintptr(valueSize) {
+		panic(fmt.Sprintf("Invalid %s map value size (%d != %d)", name, size, valueSize))
 	}
 
-	m := &Map{
+	return &Map{
 		MapInfo: MapInfo{
 			MapType:       mapType,
 			MapKey:        mapKey,
@@ -162,18 +156,6 @@ func NewMapWithOpts(name string, mapType MapType, mapKey MapKey, keySize int,
 		name:       path.Base(name),
 		DumpParser: dumpParser,
 	}
-
-	return m
-}
-
-// NewMap creates a new Map instance - object representing a BPF map
-func NewMap(name string, mapType MapType, mapKey MapKey, keySize int,
-	mapValue MapValue, valueSize, maxEntries int, flags uint32, innerID uint32,
-	dumpParser DumpParser) *Map {
-
-	return NewMapWithOpts(name, mapType, mapKey, keySize, mapValue, valueSize,
-		maxEntries, flags, innerID, dumpParser,
-		&NewMapOpts{CheckValueSize: true})
 }
 
 // NewPerCPUHashMap creates a new Map type of "per CPU hash" - object representing a BPF map
@@ -336,15 +318,6 @@ func (m *Map) UnpinIfExists() error {
 	}
 
 	return m.Unpin()
-}
-
-// DeepEquals compares the current map against another map to see that the
-// attributes of the two maps are the same.
-func (m *Map) DeepEquals(other *Map) bool {
-	return m.name == other.name &&
-		m.path == other.path &&
-		m.NonPersistent == other.NonPersistent &&
-		reflect.DeepEqual(m.MapInfo, other.MapInfo)
 }
 
 func (m *Map) controllerName() string {

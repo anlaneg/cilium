@@ -14,6 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-openapi/loads"
+	gops "github.com/google/gops/agent"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"github.com/vishvananda/netlink"
+	"google.golang.org/grpc"
+
 	"github.com/cilium/cilium/api/v1/server"
 	"github.com/cilium/cilium/api/v1/server/restapi"
 	"github.com/cilium/cilium/pkg/aws/eni"
@@ -67,14 +75,6 @@ import (
 	"github.com/cilium/cilium/pkg/version"
 	wireguard "github.com/cilium/cilium/pkg/wireguard/agent"
 	wireguardTypes "github.com/cilium/cilium/pkg/wireguard/types"
-
-	"github.com/go-openapi/loads"
-	gops "github.com/google/gops/agent"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"github.com/vishvananda/netlink"
-	"google.golang.org/grpc"
 )
 
 const (
@@ -229,7 +229,7 @@ func initializeFlags() {
 	flags.Bool(option.AnnotateK8sNode, defaults.AnnotateK8sNode, "Annotate Kubernetes node")
 	option.BindEnv(option.AnnotateK8sNode)
 
-	flags.Duration(option.ARPPingRefreshPeriod, 5*time.Minute, "Period for remote node ARP entry refresh (set 0 to disable)")
+	flags.Duration(option.ARPPingRefreshPeriod, defaults.ARPBaseReachableTime, "Period for remote node ARP entry refresh (set 0 to disable)")
 	option.BindEnv(option.ARPPingRefreshPeriod)
 
 	flags.Bool(option.EnableL2NeighDiscovery, true, "Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec")
@@ -292,9 +292,11 @@ func initializeFlags() {
 
 	flags.StringP(option.IpvlanMasterDevice, "", "undefined", "Device facing external network acting as ipvlan master")
 	option.BindEnv(option.IpvlanMasterDevice)
+	flags.MarkDeprecated(option.IpvlanMasterDevice, "This option will be removed in v1.12")
 
 	flags.Bool(option.DisableConntrack, false, "Disable connection tracking")
 	option.BindEnv(option.DisableConntrack)
+	flags.MarkDeprecated(option.DisableConntrack, "This option is no-op and it will be removed in v1.13")
 
 	flags.Bool(option.EnableEndpointRoutes, defaults.EnableEndpointRoutes, "Use per endpoint routes instead of routing via cilium_host")
 	option.BindEnv(option.EnableEndpointRoutes)
@@ -342,8 +344,10 @@ func initializeFlags() {
 	flags.StringSlice(option.IPv6PodSubnets, []string{}, "List of IPv6 pod subnets to preconfigure for encryption")
 	option.BindEnv(option.IPv6PodSubnets)
 
-	flags.String(option.EndpointInterfaceNamePrefix, defaults.EndpointInterfaceNamePrefix, "Prefix of interface name shared by all endpoints")
+	flags.String(option.EndpointInterfaceNamePrefix, "", "Prefix of interface name shared by all endpoints")
 	option.BindEnv(option.EndpointInterfaceNamePrefix)
+	flags.MarkHidden(option.EndpointInterfaceNamePrefix)
+	flags.MarkDeprecated(option.EndpointInterfaceNamePrefix, "This option no longer has any effect and will be removed in v1.13.")
 
 	flags.StringSlice(option.ExcludeLocalAddress, []string{}, "Exclude CIDR from being recognized as local address")
 	option.BindEnv(option.ExcludeLocalAddress)
@@ -637,6 +641,9 @@ func initializeFlags() {
 	flags.Bool(option.EnableSessionAffinity, false, "Enable support for service session affinity")
 	option.BindEnv(option.EnableSessionAffinity)
 
+	flags.Bool(option.EnableServiceTopology, false, "Enable support for service topology aware hints")
+	option.BindEnv(option.EnableServiceTopology)
+
 	flags.Bool(option.EnableIdentityMark, true, "Enable setting identity mark for local traffic")
 	option.BindEnv(option.EnableIdentityMark)
 
@@ -651,6 +658,9 @@ func initializeFlags() {
 
 	flags.String(option.IPv4NativeRoutingCIDR, "", "Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr.")
 	option.BindEnv(option.IPv4NativeRoutingCIDR)
+
+	flags.String(option.IPv6NativeRoutingCIDR, "", "Allows to explicitly specify the IPv6 CIDR for native routing. This value corresponds to the configured cluster-cidr.")
+	option.BindEnv(option.IPv6NativeRoutingCIDR)
 
 	flags.String(option.LibDir, defaults.LibraryPath, "Directory path to store runtime build environment")
 	option.BindEnv(option.LibDir)
@@ -688,8 +698,8 @@ func initializeFlags() {
 	flags.Bool(option.EnableIPMasqAgent, false, "Enable BPF ip-masq-agent")
 	option.BindEnv(option.EnableIPMasqAgent)
 
-	flags.Bool(option.EnableEgressGateway, false, "Enable egress gateway")
-	option.BindEnv(option.EnableEgressGateway)
+	flags.Bool(option.EnableIPv4EgressGateway, false, "Enable egress gateway for IPv4")
+	option.BindEnv(option.EnableIPv4EgressGateway)
 
 	flags.String(option.IPMasqAgentConfigPath, "/etc/config/ip-masq-agent", "ip-masq-agent configuration file path")
 	option.BindEnv(option.IPMasqAgentConfigPath)
@@ -722,6 +732,9 @@ func initializeFlags() {
 
 	flags.Int(option.MTUName, 0, "Overwrite auto-detected MTU of underlying network")
 	option.BindEnv(option.MTUName)
+
+	flags.Int(option.RouteMetric, 0, "Overwrite the metric used by cilium when adding routes to its 'cilium_host' device")
+	option.BindEnv(option.RouteMetric)
 
 	flags.Bool(option.PrependIptablesChainsName, true, "Prepend custom iptables chains instead of appending")
 	option.BindEnvWithLegacyEnvFallback(option.PrependIptablesChainsName, "CILIUM_PREPEND_IPTABLES_CHAIN")
@@ -997,8 +1010,10 @@ func initializeFlags() {
 		"Offset routing table IDs under ENI IPAM mode to avoid collisions with reserved table IDs. If false, the offset is performed (new scheme), otherwise, the old scheme stays in-place.")
 	option.BindEnv(option.EgressMultiHomeIPRuleCompat)
 
-	flags.Bool(option.EnableBPFBypassFIBLookup, defaults.EnableBPFBypassFIBLookup, "Enable FIB lookup bypass optimization for nodeport reverse NAT handling")
+	flags.Bool(option.EnableBPFBypassFIBLookup, false, "Enable FIB lookup bypass optimization for nodeport reverse NAT handling")
 	option.BindEnv(option.EnableBPFBypassFIBLookup)
+	flags.MarkHidden(option.EnableBPFBypassFIBLookup)
+	flags.MarkDeprecated(option.EnableBPFBypassFIBLookup, fmt.Sprintf("This option will be removed in v1.12."))
 
 	flags.Bool(option.InstallNoConntrackIptRules, defaults.InstallNoConntrackIptRules, "Install Iptables rules to skip netfilter connection tracking on all pod traffic. This option is only effective when Cilium is running in direct routing and full KPR mode. Moreover, this option cannot be enabled when Cilium is running in a managed Kubernetes environment or in a chained CNI setup.")
 	option.BindEnv(option.InstallNoConntrackIptRules)
@@ -1028,6 +1043,12 @@ func initializeFlags() {
 	flags.Bool(option.BypassIPAvailabilityUponRestore, false, "Bypasses the IP availability error within IPAM upon endpoint restore")
 	flags.MarkHidden(option.BypassIPAvailabilityUponRestore)
 	option.BindEnv(option.BypassIPAvailabilityUponRestore)
+
+	flags.Bool(option.EnableCiliumEndpointSlice, false, "If set to true, CiliumEndpointSlice feature is enabled and cilium agent watch for CiliumEndpointSlice instead of CiliumEndpoint to update the IPCache.")
+	option.BindEnv(option.EnableCiliumEndpointSlice)
+
+	flags.Bool(option.EnableK8sTerminatingEndpoint, true, "Enable auto-detect of terminating endpoint condition")
+	option.BindEnv(option.EnableK8sTerminatingEndpoint)
 
 	viper.BindPFlags(flags)
 }
@@ -1241,7 +1262,7 @@ func initEnv(cmd *cobra.Command) {
 	}
 
 	// The standard operation is to mount the BPF filesystem to the
-	// standard location (/sys/fs/bpf). The user may chose to specify
+	// standard location (/sys/fs/bpf). The user may choose to specify
 	// the path to an already mounted filesystem instead. This is
 	// useful if the daemon is being round inside a namespace and the
 	// BPF filesystem is mapped into the slave namespace.
@@ -1254,8 +1275,7 @@ func initEnv(cmd *cobra.Command) {
 	option.Config.Opts.SetBool(option.TraceNotify, true)
 	option.Config.Opts.SetBool(option.PolicyVerdictNotify, true)
 	option.Config.Opts.SetBool(option.PolicyTracing, option.Config.EnableTracing)
-	option.Config.Opts.SetBool(option.Conntrack, !option.Config.DisableConntrack)
-	option.Config.Opts.SetBool(option.ConntrackAccounting, !option.Config.DisableConntrack)
+	option.Config.Opts.SetBool(option.ConntrackAccounting, true)
 	option.Config.Opts.SetBool(option.ConntrackLocal, false)
 	option.Config.Opts.SetBool(option.PolicyAuditMode, option.Config.PolicyAuditMode)
 
@@ -1403,6 +1423,10 @@ func initEnv(cmd *cobra.Command) {
 		option.Config.EnableBandwidthManager = false
 	}
 
+	if option.Config.EnableIPv6Masquerade && option.Config.EnableBPFMasquerade {
+		log.Fatal("BPF masquerade is not supported for IPv6.")
+	}
+
 	// If there is one device specified, use it to derive better default
 	// allocation prefixes
 	node.InitDefaultPrefix(option.Config.DirectRoutingDevice)
@@ -1495,14 +1519,6 @@ func initEnv(cmd *cobra.Command) {
 		}
 	}
 
-	// This is necessary because the code inside pkg/k8s.NewService() for
-	// parsing services would not trigger unless NodePort is enabled. Without
-	// NodePort enabled, the external and LB IPs would not be parsed out.
-	if option.Config.BGPAnnounceLBIP {
-		option.Config.EnableNodePort = true
-		log.Infof("Auto-set BPF NodePort (%q) because LB IP announcements via BGP depend on it.", option.EnableNodePort)
-	}
-
 	if option.Config.BGPAnnouncePodCIDR &&
 		(option.Config.IPAM != ipamOption.IPAMClusterPool &&
 			option.Config.IPAM != ipamOption.IPAMKubernetes) {
@@ -1584,7 +1600,7 @@ func (d *Daemon) initKVStore() {
 
 func runDaemon() {
 	datapathConfig := linuxdatapath.DatapathConfiguration{
-		HostDevice: option.Config.HostDevice,
+		HostDevice: defaults.HostDevice,
 	}
 
 	log.Info("Initializing daemon")
@@ -1677,8 +1693,10 @@ func runDaemon() {
 		d.endpointManager.InitHostEndpointLabels(d.ctx)
 	} else {
 		log.Info("Creating host endpoint")
-		if err := d.endpointManager.AddHostEndpoint(d.ctx, d, d.l7Proxy, d.identityAllocator,
-			"Create host endpoint", nodeTypes.GetName()); err != nil {
+		if err := d.endpointManager.AddHostEndpoint(
+			d.ctx, d, d, d.l7Proxy, d.identityAllocator,
+			"Create host endpoint", nodeTypes.GetName(),
+		); err != nil {
 			log.WithError(err).Fatal("Unable to create host endpoint")
 		}
 	}
@@ -1766,14 +1784,17 @@ func runDaemon() {
 		log.WithError(err).Warn("Failed to send agent start monitor message")
 	}
 
-	// clean up all arp PERM entries that might have previously set by
-	// a Cilium instance
 	if !d.datapath.Node().NodeNeighDiscoveryEnabled() {
-		d.datapath.Node().NodeCleanNeighbors()
-	}
-	// Start periodical arping to refresh neighbor table
-	if d.datapath.Node().NodeNeighDiscoveryEnabled() && option.Config.ARPPingRefreshPeriod != 0 {
-		d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
+		// Remove all non-GC'ed neighbor entries that might have previously set
+		// by a Cilium instance.
+		d.datapath.Node().NodeCleanNeighbors(false)
+	} else {
+		// If we came from an agent upgrade, migrate entries.
+		d.datapath.Node().NodeCleanNeighbors(true)
+		// Start periodical refresh of the neighbor table from the agent if needed.
+		if option.Config.ARPPingRefreshPeriod != 0 && !option.Config.ARPPingKernelManaged {
+			d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
+		}
 	}
 
 	log.WithField("bootstrapTime", time.Since(bootstrapTimestamp)).

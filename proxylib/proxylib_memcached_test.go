@@ -15,8 +15,6 @@ import (
 	textmemcache "github.com/cilium/cilium/proxylib/memcached/text"
 	"github.com/cilium/cilium/proxylib/proxylib"
 	"github.com/cilium/cilium/proxylib/test"
-
-	_ "gopkg.in/check.v1"
 )
 
 var setHelloText = []byte("set key 0 0 5\r\nhello\r\n")
@@ -141,7 +139,7 @@ func TestMemcache(t *testing.T) {
 		>
 		`, tc.policy)})
 
-			buf := CheckOnNewConnection(t, mod, "memcache", 1, true, 1, 2, "1.1.1.1:34567", "2.2.2.2:80", "bm1",
+			buf := CheckOnNewConnection(t, mod, "memcache", 1, true, 1, 2, "1.1.1.1:34567", "10.0.0.2:80", "bm1",
 				30, proxylib.OK, 1)
 
 			tc.onDataChecks(t)

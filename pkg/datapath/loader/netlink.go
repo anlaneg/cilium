@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/command/exec"
 	"github.com/cilium/cilium/pkg/defaults"
@@ -15,9 +18,6 @@ import (
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/sysctl"
-
-	"github.com/sirupsen/logrus"
-	"github.com/vishvananda/netlink"
 )
 
 type baseDeviceMode string
@@ -241,6 +241,7 @@ func setupIpvlan(name string, nativeLink netlink.Link) (*netlink.IPVlan, error) 
 		LinkAttrs: netlink.LinkAttrs{
 			Name:        name,
 			ParentIndex: nativeLink.Attrs().Index,
+			TxQLen:      1000,
 		},
 		Mode: netlink.IPVLAN_MODE_L3,
 	}
