@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 // Package manager abstracts the BGP speaker controller from MetalLB. This
 // package provides BGP announcements based on K8s object event handling.
@@ -68,7 +68,7 @@ func (c *metalLBController) SetBalancer(name string, srvRo *v1.Service, eps k8s.
 	var (
 		l = log.WithFields(logrus.Fields{
 			"component": "metalLBController.SetBalancer",
-			"service":   srvRo.Name,
+			"service":   name,
 		})
 	)
 	l.Debug("assigning load balancer ip for service")

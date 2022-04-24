@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2016-2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_CONNTRACK_H_
 #define __LIB_CONNTRACK_H_
@@ -15,7 +15,6 @@
 #include "ipv6.h"
 #include "dbg.h"
 #include "l4.h"
-#include "nat46.h"
 #include "signal.h"
 
 enum {
@@ -23,20 +22,6 @@ enum {
 	ACTION_CREATE,
 	ACTION_CLOSE,
 };
-
-/* conn_is_dns returns true if the connection is DNS, false otherwise.
- *
- * @dport: Connection destination port.
- *
- * To reduce program complexity, we ignore nexthdr and dir here:
- * nexthdr: The parser will not fill dport if nexthdr is not TCP/UDP.
- * dir:     Ideally we would only consider responses, but requests are likely
- *          to be small anyway.
- */
-static __always_inline bool conn_is_dns(__u16 dport)
-{
-	return dport == bpf_htons(53);
-}
 
 static __always_inline bool ct_entry_seen_both_syns(const struct ct_entry *entry)
 {
@@ -205,15 +190,10 @@ static __always_inline __u8 __ct_lookup(const void *map, struct __ctx_buff *ctx,
 			ct_state->ifindex = entry->ifindex;
 			ct_state->dsr = entry->dsr;
 			ct_state->proxy_redirect = entry->proxy_redirect;
+			ct_state->from_l7lb = entry->from_l7lb;
 			if (dir == CT_SERVICE)
 				ct_state->backend_id = entry->backend_id;
 		}
-
-#ifdef ENABLE_NAT46
-		/* This packet needs nat46 translation */
-		if (entry->nat46 && !ctx_load_meta(ctx, CB_NAT46_STATE))
-			ctx_store_meta(ctx, CB_NAT46_STATE, NAT46);
-#endif
 #ifdef CONNTRACK_ACCOUNTING
 		/* FIXME: This is slow, per-cpu counters? */
 		if (dir == CT_INGRESS) {
@@ -282,7 +262,7 @@ ipv6_extract_tuple(struct __ctx_buff *ctx, struct ipv6_ct_tuple *tuple,
 	ipv6_addr_copy(&tuple->daddr, (union v6addr *)&ip6->daddr);
 	ipv6_addr_copy(&tuple->saddr, (union v6addr *)&ip6->saddr);
 
-	ret = ipv6_hdrlen(ctx, l3_off, &tuple->nexthdr);
+	ret = ipv6_hdrlen(ctx, &tuple->nexthdr);
 	if (ret < 0)
 		return ret;
 
@@ -448,14 +428,8 @@ static __always_inline int ct_lookup6(const void *map,
 		ret = __ct_lookup(map, ctx, tuple, action, dir, ct_state,
 				  is_tcp, tcp_flags, monitor);
 	}
-
-#ifdef ENABLE_NAT46
-	ctx_store_meta(ctx, CB_NAT46_STATE, NAT46_CLEAR);
-#endif
 out:
 	cilium_dbg(ctx, DBG_CT_VERDICT, ret < 0 ? -ret : ret, ct_state->rev_nat_index);
-	if (conn_is_dns(tuple->dport))
-		*monitor = MTU;
 	return ret;
 }
 
@@ -591,12 +565,6 @@ ct_extract_ports4(struct __ctx_buff *ctx, int off, enum ct_dir dir,
 		break;
 
 	case IPPROTO_TCP:
-		err = ipv4_ct_extract_l4_ports(ctx, off, dir, tuple, NULL);
-		if (err < 0)
-			return err;
-
-		break;
-
 	case IPPROTO_UDP:
 		err = ipv4_ct_extract_l4_ports(ctx, off, dir, tuple, NULL);
 		if (err < 0)
@@ -760,8 +728,6 @@ static __always_inline int ct_lookup4(const void *map,
 	}
 out:
 	cilium_dbg(ctx, DBG_CT_VERDICT, ret < 0 ? -ret : ret, ct_state->rev_nat_index);
-	if (conn_is_dns(tuple->dport))
-		*monitor = MTU;
 	return ret;
 }
 
@@ -809,7 +775,7 @@ static __always_inline int ct_create6(const void *map_main, const void *map_rela
 				      struct ipv6_ct_tuple *tuple,
 				      struct __ctx_buff *ctx, const int dir,
 				      const struct ct_state *ct_state,
-				      bool proxy_redirect)
+				      bool proxy_redirect, bool from_l7lb)
 {
 	/* Create entry in original direction */
 	struct ct_entry entry = { };
@@ -820,6 +786,7 @@ static __always_inline int ct_create6(const void *map_main, const void *map_rela
 	 * back to the proxy.
 	 */
 	entry.proxy_redirect = proxy_redirect;
+	entry.from_l7lb = from_l7lb;
 
 	if (dir == CT_SERVICE)
 		entry.backend_id = ct_state->backend_id;
@@ -916,7 +883,7 @@ static __always_inline int ct_create4(const void *map_main,
 				      struct ipv4_ct_tuple *tuple,
 				      struct __ctx_buff *ctx, const int dir,
 				      const struct ct_state *ct_state,
-				      bool proxy_redirect)
+				      bool proxy_redirect, bool from_l7lb)
 {
 	/* Create entry in original direction */
 	struct ct_entry entry = { };
@@ -927,6 +894,7 @@ static __always_inline int ct_create4(const void *map_main,
 	 * back to the proxy.
 	 */
 	entry.proxy_redirect = proxy_redirect;
+	entry.from_l7lb = from_l7lb;
 
 	entry.lb_loopback = ct_state->loopback;
 	entry.node_port = ct_state->node_port;
@@ -947,11 +915,6 @@ static __always_inline int ct_create4(const void *map_main,
 		entry.tx_packets = 1;
 		entry.tx_bytes = ctx_full_len(ctx);
 	}
-
-#ifdef ENABLE_NAT46
-	if (ctx_load_meta(ctx, CB_NAT46_STATE) == NAT64)
-		entry.nat46 = dir == CT_EGRESS;
-#endif
 
 	cilium_dbg3(ctx, DBG_CT_CREATED4, entry.rev_nat_index,
 		    ct_state->src_sec_id, ct_state->addr);

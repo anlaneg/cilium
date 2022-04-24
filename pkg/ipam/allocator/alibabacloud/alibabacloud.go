@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package alibabacloud
 
@@ -37,7 +37,7 @@ func (a *AllocatorAlibabaCloud) Init(ctx context.Context) error {
 	var aMetrics openapi.MetricsAPI
 
 	if operatorOption.Config.EnableMetrics {
-		aMetrics = apiMetrics.NewPrometheusMetrics(operatorMetrics.Namespace, "alibaba-cloud", operatorMetrics.Registry)
+		aMetrics = apiMetrics.NewPrometheusMetrics(operatorMetrics.Namespace, "alibabacloud", operatorMetrics.Registry)
 	} else {
 		aMetrics = &apiMetrics.NoOpMetrics{}
 	}
@@ -89,7 +89,7 @@ func (a *AllocatorAlibabaCloud) Start(ctx context.Context, getterUpdater ipam.Ci
 	}
 	instances := eni.NewInstancesManager(a.client)
 	nodeManager, err := ipam.NewNodeManager(instances, getterUpdater, iMetrics,
-		operatorOption.Config.ParallelAllocWorkers, operatorOption.Config.AlibabaCloudReleaseExcessIPs)
+		operatorOption.Config.ParallelAllocWorkers, operatorOption.Config.AlibabaCloudReleaseExcessIPs, false)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize AlibabaCloud node manager: %w", err)
 	}

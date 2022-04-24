@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2021 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 // sample unit test program for some functions in drop.h
 // It contains function definitions for testing "send_drop_notify" and "__send_drop_notify".
@@ -32,7 +32,7 @@
 // Define macros like the followings to make sure the original tailcall is redirected
 // to the mock tailcall function, the last 0 does not matter because we do not
 // actually use the arguments.
-#define ep_tail_call(a, b) tail_call(a, b, 0)
+#define ep_tail_call(a, b) tail_call(a, NULL, 0)
 
 // The file containing the functions to be tested must be included after
 // defining the above macros.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2015 The Kubernetes Authors.
-// Copyright 2020-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package v1
 
@@ -252,6 +252,11 @@ type PodSpec struct {
 	// More info: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty" protobuf:"bytes,8,opt,name=serviceAccountName"`
+	// NodeName is a request to schedule this pod onto a specific node. If it is non-empty,
+	// the scheduler simply schedules this pod onto that node, assuming that it fits resource
+	// requirements.
+	// +optional
+	NodeName string `json:"nodeName,omitempty" protobuf:"bytes,10,opt,name=nodeName"`
 	// Host networking requested for this pod. Use the host's network namespace.
 	// If this option is set, the ports that will be used must be specified.
 	// Default to false.
@@ -450,6 +455,17 @@ type LoadBalancerIngress struct {
 	// (typically GCE or OpenStack load-balancers)
 	// +optional
 	IP string `json:"ip,omitempty" protobuf:"bytes,1,opt,name=ip"`
+
+	// Hostname is set for load-balancer ingress points that are DNS based
+	// (typically AWS load-balancers)
+	// +optional
+	Hostname string `json:"hostname,omitempty" protobuf:"bytes,2,opt,name=hostname"`
+
+	// Ports is a list of records of service ports
+	// If used, every port defined in the service should have an entry in it
+	// +listType=atomic
+	// +optional
+	Ports []PortStatus `json:"ports,omitempty" protobuf:"bytes,4,rep,name=ports"`
 }
 
 // IPFamily represents the IP Family (IPv4 or IPv6). This type is used
@@ -821,6 +837,12 @@ type NodeSpec struct {
 
 // NodeStatus is information about the current status of a node.
 type NodeStatus struct {
+	// Conditions is an array of current observed node conditions.
+	// More info: https://kubernetes.io/docs/concepts/nodes/node/#condition
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	Conditions []NodeCondition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,4,rep,name=conditions"`
 	// List of addresses reachable to the node.
 	// Queried from cloud provider, if available.
 	// More info: https://kubernetes.io/docs/concepts/nodes/node/#addresses
@@ -831,6 +853,49 @@ type NodeStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Addresses []NodeAddress `json:"addresses,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,5,rep,name=addresses"`
+}
+
+// +enum
+type NodePhase string
+
+// These are the valid phases of node.
+const (
+	// NodePending means the node has been created/added by the system, but not configured.
+	NodePending NodePhase = "Pending"
+	// NodeRunning means the node has been configured and has Kubernetes components running.
+	NodeRunning NodePhase = "Running"
+	// NodeTerminated means the node has been removed from the cluster.
+	NodeTerminated NodePhase = "Terminated"
+)
+
+// +enum
+type NodeConditionType string
+
+// These are valid conditions of node. Currently, we don't have enough information to decide
+// node condition. In the future, we will add more. The proposed set of conditions are:
+// NodeReachable, NodeLive, NodeReady, NodeSchedulable, NodeRunnable.
+const (
+	// NodeReady means kubelet is healthy and ready to accept pods.
+	NodeReady NodeConditionType = "Ready"
+	// NodeMemoryPressure means the kubelet is under pressure due to insufficient available memory.
+	NodeMemoryPressure NodeConditionType = "MemoryPressure"
+	// NodeDiskPressure means the kubelet is under pressure due to insufficient available disk.
+	NodeDiskPressure NodeConditionType = "DiskPressure"
+	// NodePIDPressure means the kubelet is under pressure due to insufficient available PID.
+	NodePIDPressure NodeConditionType = "PIDPressure"
+	// NodeNetworkUnavailable means that network for the node is not correctly configured.
+	NodeNetworkUnavailable NodeConditionType = "NetworkUnavailable"
+)
+
+// NodeCondition contains condition information for a node.
+type NodeCondition struct {
+	// Type of node condition.
+	Type NodeConditionType `json:"type" protobuf:"bytes,1,opt,name=type,casttype=NodeConditionType"`
+	// Status of the condition, one of True, False, Unknown.
+	Status ConditionStatus `json:"status" protobuf:"bytes,2,opt,name=status,casttype=ConditionStatus"`
+	// (brief) reason for the condition's last transition.
+	// +optional
+	Reason string `json:"reason,omitempty" protobuf:"bytes,5,opt,name=reason"`
 }
 
 // +enum
@@ -963,4 +1028,41 @@ type EphemeralContainers struct {
 	slim_metav1.TypeMeta `json:",inline"`
 	// +optional
 	slim_metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+}
+
+// TypedLocalObjectReference contains enough information to let you locate the
+// typed referenced object inside the same namespace.
+type TypedLocalObjectReference struct {
+	// APIGroup is the group for the resource being referenced.
+	// If APIGroup is not specified, the specified Kind must be in the core API group.
+	// For any other third-party types, APIGroup is required.
+	// +optional
+	APIGroup *string `json:"apiGroup" protobuf:"bytes,1,opt,name=apiGroup"`
+	// Kind is the type of resource being referenced
+	Kind string `json:"kind" protobuf:"bytes,2,opt,name=kind"`
+	// Name is the name of resource being referenced
+	Name string `json:"name" protobuf:"bytes,3,opt,name=name"`
+}
+
+// PortStatus represents the error condition of a service port
+
+type PortStatus struct {
+	// Port is the port number of the service port of which status is recorded here
+	Port int32 `json:"port" protobuf:"varint,1,opt,name=port"`
+	// Protocol is the protocol of the service port of which status is recorded here
+	// The supported values are: "TCP", "UDP", "SCTP"
+	Protocol Protocol `json:"protocol" protobuf:"bytes,2,opt,name=protocol,casttype=Protocol"`
+	// Error is to record the problem with the service port
+	// The format of the error shall comply with the following rules:
+	// - built-in error values shall be specified in this file and those shall use
+	//   CamelCase names
+	// - cloud provider specific error values must have names that comply with the
+	//   format foo.example.com/CamelCase.
+	// ---
+	// The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+	// +optional
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
+	// +kubebuilder:validation:MaxLength=316
+	Error *string `json:"error,omitempty" protobuf:"bytes,3,opt,name=error"`
 }

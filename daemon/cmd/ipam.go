@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -16,8 +16,8 @@ import (
 	ipamapi "github.com/cilium/cilium/api/v1/server/restapi/ipam"
 	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/cidr"
-	"github.com/cilium/cilium/pkg/datapath"
 	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/ipam"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
@@ -163,7 +163,7 @@ func (d *Daemon) DumpIPAM() *models.IPAMStatus {
 	return status
 }
 
-func (d *Daemon) allocateRouterIPv4(family datapath.NodeAddressingFamily) (net.IP, error) {
+func (d *Daemon) allocateRouterIPv4(family types.NodeAddressingFamily) (net.IP, error) {
 	if option.Config.LocalRouterIPv4 != "" {
 		routerIP := net.ParseIP(option.Config.LocalRouterIPv4)
 		if routerIP == nil {
@@ -178,7 +178,7 @@ func (d *Daemon) allocateRouterIPv4(family datapath.NodeAddressingFamily) (net.I
 	}
 }
 
-func (d *Daemon) allocateRouterIPv6(family datapath.NodeAddressingFamily) (net.IP, error) {
+func (d *Daemon) allocateRouterIPv6(family types.NodeAddressingFamily) (net.IP, error) {
 	if option.Config.LocalRouterIPv6 != "" {
 		routerIP := net.ParseIP(option.Config.LocalRouterIPv6)
 		if routerIP == nil {
@@ -193,7 +193,7 @@ func (d *Daemon) allocateRouterIPv6(family datapath.NodeAddressingFamily) (net.I
 	}
 }
 
-func (d *Daemon) allocateDatapathIPs(family datapath.NodeAddressingFamily) (routerIP net.IP, err error) {
+func (d *Daemon) allocateDatapathIPs(family types.NodeAddressingFamily) (routerIP net.IP, err error) {
 	// Blacklist allocation of the external IP
 	d.ipam.BlacklistIP(family.PrimaryExternal(), "node-ip")
 
@@ -226,10 +226,13 @@ func (d *Daemon) allocateDatapathIPs(family datapath.NodeAddressingFamily) (rout
 		}
 		routerIP = result.IP
 	}
-	if (option.Config.IPAM == ipamOption.IPAMENI || option.Config.IPAM == ipamOption.IPAMAlibabaCloud) && result != nil {
+	if (option.Config.IPAM == ipamOption.IPAMENI ||
+		option.Config.IPAM == ipamOption.IPAMAlibabaCloud ||
+		option.Config.IPAM == ipamOption.IPAMAzure) && result != nil {
 		var routingInfo *linuxrouting.RoutingInfo
 		routingInfo, err = linuxrouting.NewRoutingInfo(result.GatewayIP, result.CIDRs,
-			result.PrimaryMAC, result.InterfaceNumber, option.Config.EnableIPv4Masquerade)
+			result.PrimaryMAC, result.InterfaceNumber, option.Config.IPAM,
+			option.Config.EnableIPv4Masquerade)
 		if err != nil {
 			err = fmt.Errorf("failed to create router info %w", err)
 			return
@@ -250,7 +253,7 @@ func (d *Daemon) allocateHealthIPs() error {
 			}
 
 			log.Debugf("IPv4 health endpoint address: %s", result.IP)
-			d.nodeDiscovery.LocalNode.IPv4HealthIP = result.IP
+			node.SetEndpointHealthIPv4(result.IP)
 
 			// In ENI and AlibabaCloud ENI mode, we require the gateway, CIDRs, and the ENI MAC addr
 			// in order to set up rules and routes on the local node to direct
@@ -265,13 +268,14 @@ func (d *Daemon) allocateHealthIPs() error {
 		if option.Config.EnableIPv6 {
 			result, err := d.ipam.AllocateNextFamilyWithoutSyncUpstream(ipam.IPv6, "health")
 			if err != nil {
-				if d.nodeDiscovery.LocalNode.IPv4HealthIP != nil {
-					d.ipam.ReleaseIP(d.nodeDiscovery.LocalNode.IPv4HealthIP)
+				if healthIPv4 := node.GetEndpointHealthIPv4(); healthIPv4 != nil {
+					d.ipam.ReleaseIP(healthIPv4)
+					node.SetEndpointHealthIPv4(nil)
 				}
 				return fmt.Errorf("unable to allocate health IPs: %s,see https://cilium.link/ipam-range-full", err)
 			}
 
-			d.nodeDiscovery.LocalNode.IPv6HealthIP = result.IP
+			node.SetEndpointHealthIPv6(result.IP)
 			log.Debugf("IPv6 health endpoint address: %s", result.IP)
 		}
 	}
@@ -408,6 +412,7 @@ func (d *Daemon) parseHealthEndpointInfo(result *ipam.AllocationResult) error {
 		result.CIDRs,
 		result.PrimaryMAC,
 		result.InterfaceNumber,
+		option.Config.IPAM,
 		option.Config.EnableIPv4Masquerade,
 	)
 	return err

@@ -145,14 +145,14 @@ the Cilium agent is running in the desired mode:
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status | grep KubeProxyReplacement
+    $ kubectl -n kube-system exec ds/cilium -- cilium status | grep KubeProxyReplacement
     KubeProxyReplacement:   Strict	[eth0 (Direct Routing), eth1]
 
 Use ``--verbose`` for full details:
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status --verbose
+    $ kubectl -n kube-system exec ds/cilium -- cilium status --verbose
     [...]
     KubeProxyReplacement Details:
       Status:                Strict
@@ -162,6 +162,7 @@ Use ``--verbose`` for full details:
       Backend Selection:     Random
       Session Affinity:      Enabled
       Graceful Termination:  Enabled
+      NAT46/64 Support:      Enabled
       XDP Acceleration:      Disabled
       Services:
       - ClusterIP:      Enabled
@@ -228,7 +229,7 @@ port ``31940`` (one for each of devices ``eth0`` and ``eth1``):
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium service list
+    $ kubectl -n kube-system exec ds/cilium -- cilium service list
     ID   Frontend               Service Type   Backend
     [...]
     4    10.104.239.135:80      ClusterIP      1 => 10.217.0.107:80
@@ -623,7 +624,7 @@ is shown:
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep XDP
+    $ kubectl -n kube-system exec ds/cilium -- cilium status --verbose | grep XDP
       XDP Acceleration:    Native
 
 Note that packets which have been pushed back out of the device for NodePort handling
@@ -659,11 +660,16 @@ As an instance example, ``m5n.xlarge`` is used in the config ``nodegroup-config.
       ssh:
         allow: true
       ## taint nodes so that application pods are
-      ## not scheduled until Cilium is deployed.
+      ## not scheduled/executed until Cilium is deployed.
+      ## Alternatively, see the note below.
       taints:
         - key: "node.cilium.io/agent-not-ready"
           value: "true"
-          effect: "NoSchedule"
+          effect: "NoExecute"
+
+.. note::
+
+  Please make sure to read and understand the documentation page on :ref:`taint effects and unmanaged pods<taint_effects>`.
 
 The nodegroup is created with:
 
@@ -977,7 +983,7 @@ for example:
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep HostPort
+    $ kubectl -n kube-system exec ds/cilium -- cilium status --verbose | grep HostPort
       - HostPort:       Enabled
 
 The following modified example yaml from the setup validation with an additional
@@ -1160,7 +1166,7 @@ The current Cilium kube-proxy replacement mode can also be introspected through 
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status | grep KubeProxyReplacement
+    $ kubectl -n kube-system exec ds/cilium -- cilium status | grep KubeProxyReplacement
     KubeProxyReplacement:   Strict	[eth0 (DR)]
 
 Graceful Termination
@@ -1176,7 +1182,7 @@ The cilium agent feature flag can be probed by running ``cilium status`` command
 
 .. code-block:: shell-session
 
-    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status --verbose
+    $ kubectl -n kube-system exec ds/cilium -- cilium status --verbose
     [...]
     KubeProxyReplacement Details:
      [...]
@@ -1218,9 +1224,9 @@ a fixed cookie value as a trade-off. This makes all applications on the host to
 select the same service endpoint for a given service with session affinity configured.
 To disable the feature, set ``config.sessionAffinity=false``.
 
-When the fixed cookie value is not used, a service affinity of a service with
+When the fixed cookie value is not used, the session affinity of a service with
 multiple ports is per service IP and port. Meaning that all requests for a
-given service sent from the same source and to the service same port will be routed
+given service sent from the same source and to the same service port will be routed
 to the same service endpoints; but two requests for the same service, sent from
 the same source but to different service ports may be routed to distinct service
 endpoints.

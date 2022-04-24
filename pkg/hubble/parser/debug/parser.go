@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Hubble
+// Copyright Authors of Hubble
 
 package debug
 
@@ -23,6 +23,7 @@ import (
 type Parser struct {
 	log            logrus.FieldLogger
 	endpointGetter getters.EndpointGetter
+	linkMonitor    getters.LinkGetter
 }
 
 // New creates a new parser
@@ -58,7 +59,7 @@ func (p *Parser) Decode(data []byte, cpu int) (*flowpb.DebugEvent, error) {
 		Arg2:    wrapperspb.UInt32(dbg.Arg2),
 		Arg3:    wrapperspb.UInt32(dbg.Arg3),
 		Cpu:     wrapperspb.Int32(int32(cpu)),
-		Message: dbg.Message(),
+		Message: dbg.Message(p.linkMonitor),
 	}
 
 	return decoded, nil

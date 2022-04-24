@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package agent
 
@@ -82,13 +81,14 @@ func containsIP(allowedIPs []net.IPNet, ipnet *net.IPNet) bool {
 }
 
 func (a *AgentSuite) TestAgent_PeerConfig(c *C) {
-	ipCache := ipcache.NewIPCache()
+	ipCache := ipcache.NewIPCache(nil)
 	wgAgent := &Agent{
 		wgClient:         &fakeWgClient{},
 		ipCache:          ipCache,
 		listenPort:       listenPort,
 		peerByNodeName:   map[string]*peerConfig{},
 		nodeNameByNodeIP: map[string]string{},
+		nodeNameByPubKey: map[wgtypes.Key]string{},
 	}
 	ipCache.AddListener(wgAgent)
 
@@ -185,8 +185,14 @@ func (a *AgentSuite) TestAgent_PeerConfig(c *C) {
 	c.Assert(containsIP(k8s2.allowedIPs, pod3IPv4), Equals, true)
 	c.Assert(containsIP(k8s2.allowedIPs, pod3IPv6), Equals, true)
 
+	// Tests that duplicate public keys are rejected (k8s2 imitates k8s1)
+	err = wgAgent.UpdatePeer(k8s2NodeName, k8s1PubKey, k8s2NodeIPv4, k8s2NodeIPv6)
+	c.Assert(err, ErrorMatches, "detected duplicate public key.*")
+
 	// Node Deletion
 	wgAgent.DeletePeer(k8s1NodeName)
 	wgAgent.DeletePeer(k8s2NodeName)
 	c.Assert(wgAgent.peerByNodeName, HasLen, 0)
+	c.Assert(wgAgent.nodeNameByNodeIP, HasLen, 0)
+	c.Assert(wgAgent.nodeNameByPubKey, HasLen, 0)
 }

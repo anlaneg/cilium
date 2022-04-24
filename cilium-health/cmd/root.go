@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2018 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -59,7 +58,7 @@ func init() {
 	flags.StringP("host", "H", "", "URI to cilium-health server API")
 	flags.StringSlice("log-driver", []string{}, "Logging endpoints to use for example syslog")
 	flags.Var(option.NewNamedMapOptions("log-opts", &logOpts, nil),
-		"log-opt", "Log driver options for cilium-health")
+		"log-opt", "Log driver options for cilium-health e.g. syslog.level=info,syslog.facility=local5,syslog.tag=cilium-agent")
 	viper.BindPFlags(flags)
 
 	flags.StringVar(&cmdRefDir, "cmdref", "", "Path to cmdref output directory")
@@ -104,10 +103,7 @@ func run(cmd *cobra.Command, args []string) {
 }
 
 func linkHandler(s string) string {
-	// The generated files have a 'See also' section but the URL's are
-	// hardcoded to use Markdown but we only want / have them in HTML
-	// later.
-	return strings.Replace(s, ".md", ".html", 1)
+	return s
 }
 
 func filePrepend(s string) string {

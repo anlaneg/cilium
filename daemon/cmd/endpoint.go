@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -325,7 +325,7 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 		"sync-build":            epTemplate.SyncBuildEndpoint,
 	}).Info("Create endpoint request")
 
-	ep, err := endpoint.NewEndpointFromChangeModel(d.ctx, owner, d, d.l7Proxy, d.identityAllocator, epTemplate)
+	ep, err := endpoint.NewEndpointFromChangeModel(d.ctx, owner, d, d.ipcache, d.l7Proxy, d.identityAllocator, epTemplate)
 	if err != nil {
 		return invalidDataError(ep, fmt.Errorf("unable to parse endpoint parameters: %s", err))
 	}
@@ -596,7 +596,7 @@ func (h *patchEndpointID) Handle(params PatchEndpointIDParams) middleware.Respon
 
 	// Validate the template. Assignment afterwards is atomic.
 	// Note: newEp's labels are ignored.
-	newEp, err2 := endpoint.NewEndpointFromChangeModel(h.d.ctx, h.d, h.d, h.d.l7Proxy, h.d.identityAllocator, epTemplate)
+	newEp, err2 := endpoint.NewEndpointFromChangeModel(h.d.ctx, h.d, h.d, h.d.ipcache, h.d.l7Proxy, h.d.identityAllocator, epTemplate)
 	if err2 != nil {
 		r.Error(err2)
 		return api.Error(PutEndpointIDInvalidCode, err2)
@@ -731,7 +731,7 @@ func (d *Daemon) EndpointDeleted(ep *endpoint.Endpoint, conf endpoint.DeleteConf
 	}
 }
 
-// EndpointDeleted is a callback to satisfy EndpointManager.Subscriber,
+// EndpointCreated is a callback to satisfy EndpointManager.Subscriber,
 // allowing the EndpointManager to be the primary implementer of the core
 // endpoint management functionality while deferring other responsibilities
 // to the daemon.

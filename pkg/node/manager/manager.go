@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package manager
 
@@ -51,6 +51,8 @@ type nodeEntry struct {
 type IPCache interface {
 	Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *ipcache.K8sMetadata, newIdentity ipcache.Identity) (bool, error)
 	Delete(IP string, source source.Source) bool
+	TriggerLabelInjection(source source.Source)
+	UpsertMetadata(string, labels.Labels)
 }
 
 // Configuration is the set of configuration options the node manager depends
@@ -149,7 +151,7 @@ type selectorCacheUpdater interface {
 }
 
 type policyTriggerer interface {
-	TriggerPolicyUpdates(bool, string)
+	UpdatePolicyMaps(context.Context, *sync.WaitGroup) *sync.WaitGroup
 }
 
 // Subscribe subscribes the given node handler to node events.
@@ -185,12 +187,11 @@ func (m *Manager) Iter(f func(nh datapath.NodeHandler)) {
 }
 
 // NewManager returns a new node manager
-func NewManager(name string, dp datapath.NodeHandler, ipcache IPCache, c Configuration, sc selectorCacheUpdater, pt policyTriggerer) (*Manager, error) {
+func NewManager(name string, dp datapath.NodeHandler, c Configuration, sc selectorCacheUpdater, pt policyTriggerer) (*Manager, error) {
 	m := &Manager{
 		name:                 name,
 		nodes:                map[nodeTypes.Identity]*nodeEntry{},
 		conf:                 c,
-		ipcache:              ipcache,
 		controllerManager:    controller.NewManager(),
 		selectorCacheUpdater: sc,
 		policyTriggerer:      pt,
@@ -239,6 +240,12 @@ func (m *Manager) WithSelectorCacheUpdater(sc selectorCacheUpdater) *Manager {
 // WithPolicyTriggerer sets the policy update trigger in the Manager.
 func (m *Manager) WithPolicyTriggerer(pt policyTriggerer) *Manager {
 	m.policyTriggerer = pt
+	return m
+}
+
+// WithIPCache sets the ipcache field in the Manager.
+func (m *Manager) WithIPCache(ipc IPCache) *Manager {
+	m.ipcache = ipc
 	return m
 }
 
@@ -307,6 +314,8 @@ func (m *Manager) backgroundSyncInterval() time.Duration {
 	return m.ClusterSizeDependantInterval(baseBackgroundSyncInterval)
 }
 
+// backgroundSync ensures that local node has a valid datapath in-place for
+// each node in the cluster. See NodeValidateImplementation().
 func (m *Manager) backgroundSync() {
 	syncTimer, syncTimerDone := inctimer.New()
 	defer syncTimerDone()
@@ -384,7 +393,7 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 	remoteHostIdentity := identity.ReservedIdentityHost
 	if m.conf.RemoteNodeIdentitiesEnabled() {
 		nid := identity.NumericIdentity(n.NodeIdentity)
-		if nid != identity.IdentityUnknown {
+		if nid != identity.IdentityUnknown && nid != identity.ReservedIdentityHost {
 			remoteHostIdentity = nid
 		} else if !n.IsLocal() {
 			remoteHostIdentity = identity.ReservedIdentityRemoteNode
@@ -411,8 +420,7 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 			tunnelIP = nodeIP
 		}
 
-		if option.Config.IptablesMasqueradingEnabled() &&
-			address.Type == addressing.NodeInternalIP {
+		if option.Config.NodeIpsetNeeded() && address.Type == addressing.NodeInternalIP {
 			iptables.AddToNodeIpset(address.IP)
 		}
 
@@ -436,7 +444,7 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 			Source: n.Source,
 		})
 
-		upsertIntoIDMD(ipAddrStr, remoteHostIdentity)
+		m.upsertIntoIDMD(ipAddrStr, remoteHostIdentity)
 
 		// Upsert() will return true if the ipcache entry is owned by
 		// the source of the node update that triggered this node
@@ -518,24 +526,18 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 		entry.mutex.Unlock()
 	}
 
-	ipcache.IPIdentityCache.TriggerLabelInjection(
-		n.Source,
-		m.selectorCacheUpdater,
-		m.policyTriggerer,
-	)
+	m.ipcache.TriggerLabelInjection(n.Source)
 }
 
 // upsertIntoIDMD upserts the given CIDR into the ipcache.identityMetadata
 // (IDMD) map. The given node identity determines which labels are associated
 // with the CIDR.
-func upsertIntoIDMD(prefix string, id identity.NumericIdentity) {
-	var lbls labels.Labels
+func (m *Manager) upsertIntoIDMD(prefix string, id identity.NumericIdentity) {
 	if id == identity.ReservedIdentityHost {
-		lbls = labels.LabelHost
+		m.ipcache.UpsertMetadata(prefix, labels.LabelHost)
 	} else {
-		lbls = labels.LabelRemoteNode
+		m.ipcache.UpsertMetadata(prefix, labels.LabelRemoteNode)
 	}
-	ipcache.UpsertMetadata(prefix, lbls)
 }
 
 // deleteIPCache deletes the IP addresses from the IPCache with the 'oldSource'
@@ -595,8 +597,7 @@ func (m *Manager) NodeDeleted(n nodeTypes.Node) {
 	}
 
 	for _, address := range entry.node.IPAddresses {
-		if option.Config.IptablesMasqueradingEnabled() &&
-			address.Type == addressing.NodeInternalIP {
+		if option.Config.NodeIpsetNeeded() && address.Type == addressing.NodeInternalIP {
 			iptables.RemoveFromNodeIpset(address.IP)
 		}
 

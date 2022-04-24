@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package v2
 
@@ -23,7 +23,7 @@ const (
 	//
 	// Maintainers: Run ./Documentation/check-crd-compat-table.sh for each release
 	// Developers: Bump patch for each change in the CRD schema.
-	CustomResourceDefinitionSchemaVersion = "1.24.2"
+	CustomResourceDefinitionSchemaVersion = "1.26.0"
 
 	// CustomResourceDefinitionSchemaVersionKey is key to label which holds the CRD schema version
 	CustomResourceDefinitionSchemaVersionKey = "io.cilium.k8s.crd.schema.version"

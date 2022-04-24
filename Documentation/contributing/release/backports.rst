@@ -77,7 +77,7 @@ One-time Setup
 ~~~~~~~~~~~~~~
 
 #. Make sure you have a GitHub developer access token with the ``public_repos``
-   ``workflow`` scopes available. You can do this directly from
+   ``workflow``, ``read:user`` scopes available. You can do this directly from
    https://github.com/settings/tokens or by opening GitHub and then navigating
    to: User Profile -> Settings -> Developer Settings -> Personal access token
    -> Generate new token.
@@ -237,6 +237,9 @@ Creating the Backports Branch
    the same. If there is any uncertainty about the backport, reach out to the
    original author directly to coordinate how to prepare the backport for the
    target branch.
+
+#. For backporting commits that update cilium-builder and cilium-runtime images,
+   the backporter should build new images as described in :ref:`update_cilim_builder_runtime_images`.
 
 #. (Optional) If there are any commits or pull requests that are tricky or
    time-consuming to backport, consider reaching out for help on Slack. If the

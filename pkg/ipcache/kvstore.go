@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package ipcache
 
@@ -197,15 +197,18 @@ type IPIdentityWatcher struct {
 	synced     chan struct{}
 	stopOnce   sync.Once
 	syncedOnce sync.Once
+
+	ipcache *IPCache
 }
 
 // NewIPIdentityWatcher creates a new IPIdentityWatcher using the specified
 // kvstore backend
-func NewIPIdentityWatcher(backend kvstore.BackendOperations) *IPIdentityWatcher {
+func NewIPIdentityWatcher(ipc *IPCache, backend kvstore.BackendOperations) *IPIdentityWatcher {
 	watcher := &IPIdentityWatcher{
 		backend: backend,
 		stop:    make(chan struct{}),
 		synced:  make(chan struct{}),
+		ipcache: ipc,
 	}
 
 	return watcher
@@ -256,11 +259,11 @@ restart:
 			//   the deletion event.
 			switch event.Typ {
 			case kvstore.EventTypeListDone:
-				IPIdentityCache.Lock()
-				for _, listener := range IPIdentityCache.listeners {
+				iw.ipcache.Lock()
+				for _, listener := range iw.ipcache.listeners {
 					listener.OnIPIdentityCacheGC()
 				}
-				IPIdentityCache.Unlock()
+				iw.ipcache.Unlock()
 				iw.closeSynced()
 
 			case kvstore.EventTypeCreate, kvstore.EventTypeModify:
@@ -292,14 +295,25 @@ restart:
 					}
 				}
 
+				peerIdentity := ipIDPair.ID
+				if option.Config.EnableRemoteNodeIdentity && peerIdentity == identity.ReservedIdentityHost {
+					// The only way we can discover IPs associated with the local host
+					// is directly via the NodeDiscovery package. If someone is informing
+					// this agent about IPs corresponding to the "host" via the kvstore,
+					// then they're sharing their own perspective on their own node IPs'
+					// identity. However, this node has remote-node enabled, so we should
+					// treat the peer as a "remote-node", not a "host".
+					peerIdentity = identity.ReservedIdentityRemoteNode
+				}
+
 				// There is no need to delete the "old" IP addresses from this
 				// ip ID pair. The only places where the ip ID pair are created
 				// is the clustermesh, where it sends a delete to the KVStore,
 				// and the endpoint-runIPIdentitySync where it bounded to a
 				// lease and a controller which is stopped/removed when the
 				// endpoint is gone.
-				IPIdentityCache.Upsert(ip, ipIDPair.HostIP, ipIDPair.Key, k8sMeta, Identity{
-					ID:     ipIDPair.ID,
+				iw.ipcache.Upsert(ip, ipIDPair.HostIP, ipIDPair.Key, k8sMeta, Identity{
+					ID:     peerIdentity,
 					Source: source.KVStore,
 				})
 
@@ -333,7 +347,7 @@ restart:
 					// The key no longer exists in the
 					// local cache, it is safe to remove
 					// from the datapath ipcache.
-					IPIdentityCache.Delete(ip, source.KVStore)
+					iw.ipcache.Delete(ip, source.KVStore)
 				}
 			}
 		case <-ctx.Done():
@@ -373,11 +387,11 @@ var (
 
 // InitIPIdentityWatcher initializes the watcher for ip-identity mapping events
 // in the key-value store.
-func InitIPIdentityWatcher() {
+func (ipc *IPCache) InitIPIdentityWatcher() {
 	setupIPIdentityWatcher.Do(func() {
 		go func() {
 			log.Info("Starting IP identity watcher")
-			watcher = NewIPIdentityWatcher(kvstore.Client())
+			watcher = NewIPIdentityWatcher(ipc, kvstore.Client())
 			close(initialized)
 			watcher.Watch(context.TODO())
 		}()

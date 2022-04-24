@@ -38,6 +38,7 @@ by the "janitor role" which is rotated between all committers.
  * [John Fastabend] (Isovalent)
  * [Kornilios Kourtis] (Isovalent)
  * [Laurent Bernaille] (Datadog)
+ * [Liz Rice] (Isovalent)
  * [Louis DeLosSantos] (Isovalent)
  * [Maciej Kwiek] (Isovalent)
  * [Martynas Pumputis] (Isovalent)
@@ -51,7 +52,7 @@ by the "janitor role" which is rotated between all committers.
  * [Quentin Monnet] (Isovalent)
  * [Ray Bejjani]
  * [Robin Hahling] (Isovalent)
- * [Tam Mach] (Zendesk)
+ * [Tam Mach] (Isovalent)
  * [Thomas Graf] (Isovalent)
  * [Timo Beckers] (Isovalent)
  * [Tobias Klauser] (Isovalent)
@@ -82,6 +83,7 @@ project.
 [John Fastabend]: https://github.com/jrfastab
 [Kornilios Kourtis]: https://github.com/kkourt
 [Laurent Bernaille]: https://github.com/lbernail
+[Liz Rice]: https://github.com/lizrice
 [Louis DeLosSantos]: https://github.com/ldelossa
 [Maciej Kwiek]: https://github.com/nebril
 [Martynas Pumputis]: https://github.com/brb

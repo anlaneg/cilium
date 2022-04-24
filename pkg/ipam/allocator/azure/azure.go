@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package azure
 
@@ -78,7 +78,7 @@ func (*AllocatorAzure) Start(ctx context.Context, getterUpdater ipam.CiliumNodeG
 		return nil, fmt.Errorf("unable to create Azure client: %w", err)
 	}
 	instances := azureIPAM.NewInstancesManager(azureClient)
-	nodeManager, err := ipam.NewNodeManager(instances, getterUpdater, iMetrics, operatorOption.Config.ParallelAllocWorkers, false)
+	nodeManager, err := ipam.NewNodeManager(instances, getterUpdater, iMetrics, operatorOption.Config.ParallelAllocWorkers, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize Azure node manager: %w", err)
 	}

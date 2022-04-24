@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -27,6 +27,7 @@ var (
 	idU                uint64
 	frontend           string
 	backends           []string
+	backendStates      []string
 )
 
 // serviceUpdateCmd represents the service_update command
@@ -50,9 +51,10 @@ func init() {
 	serviceUpdateCmd.Flags().BoolVarP(&k8sClusterInternal, "k8s-cluster-internal", "", false, "Set service as cluster-internal for externalTrafficPolicy=Local")
 	serviceUpdateCmd.Flags().StringVarP(&frontend, "frontend", "", "", "Frontend address")
 	serviceUpdateCmd.Flags().StringSliceVarP(&backends, "backends", "", []string{}, "Backend address or addresses (<IP:Port>)")
+	serviceUpdateCmd.Flags().StringSliceVarP(&backendStates, "states", "", []string{}, "Backend state(s) as {active(default),terminating,quarantined,maintenance}")
 }
 
-func parseFrontendAddress(address string) (*models.FrontendAddress, net.IP) {
+func parseFrontendAddress(address string) *models.FrontendAddress {
 	frontend, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
 		Fatalf("Unable to parse frontend address: %s\n", err)
@@ -69,7 +71,7 @@ func parseFrontendAddress(address string) (*models.FrontendAddress, net.IP) {
 		Port:     uint16(frontend.Port),
 		Protocol: models.FrontendAddressProtocolTCP,
 		Scope:    scope,
-	}, frontend.IP
+	}
 }
 
 func boolToInt(set bool) int {
@@ -81,11 +83,24 @@ func boolToInt(set bool) int {
 
 func updateService(cmd *cobra.Command, args []string) {
 	id := int64(idU)
-	fa, faIP := parseFrontendAddress(frontend)
+	fa := parseFrontendAddress(frontend)
+	skipFrontendCheck := false
 
 	var spec *models.ServiceSpec
 	svc, err := client.GetServiceID(id)
 	switch {
+	case id == 0 && frontend == "" && len(backends) != 0:
+		// When service ID is 0 and frontend is not specified, the intended use
+		// of the API is to update backend state(s) for service(s) selecting those
+		// backend(s).
+		if len(backendStates) == 0 {
+			Fatalf("Cannot update empty backend states")
+		}
+		spec = &models.ServiceSpec{ID: 0}
+		skipFrontendCheck = true
+		spec.UpdateServices = true
+		fmt.Printf("Updating backend states \n")
+
 	case err == nil && (svc.Status == nil || svc.Status.Realized == nil):
 		Fatalf("Cannot update service %d: empty state", id)
 
@@ -138,7 +153,20 @@ func updateService(cmd *cobra.Command, args []string) {
 	}
 
 	spec.BackendAddresses = nil
-	for _, backend := range backends {
+	backendState, _ := loadbalancer.BackendStateActive.String()
+
+	switch {
+	case len(backendStates) == 0:
+	case len(backendStates) == 1:
+		backendState = backendStates[0]
+		if !loadbalancer.IsValidBackendState(backendState) {
+			Fatalf("Invalid backend state (%v)", backendState)
+		}
+	case len(backendStates) == len(backends):
+	default:
+		Fatalf("Invalid number of backend states (%v) for backends (%v)", backendStates, backends)
+	}
+	for i, backend := range backends {
 		beAddr, err := net.ResolveTCPAddr("tcp", backend)
 		if err != nil {
 			Fatalf("Cannot parse backend address \"%s\": %s", backend, err)
@@ -147,20 +175,26 @@ func updateService(cmd *cobra.Command, args []string) {
 		// Backend ID will be set by the daemon
 		be := loadbalancer.NewBackend(0, loadbalancer.TCP, beAddr.IP, uint16(beAddr.Port))
 
-		if be.IsIPv6() && faIP.To4() != nil {
-			Fatalf("Address mismatch between frontend and backend %s", backend)
-		}
-
-		if fa.Port == 0 && beAddr.Port != 0 {
+		if !skipFrontendCheck && fa.Port == 0 && beAddr.Port != 0 {
 			Fatalf("L4 backend found (%v) with L3 frontend", beAddr)
 		}
 
 		ba := be.GetBackendModel()
+
+		if i < len(backendStates) {
+			if !loadbalancer.IsValidBackendState(backendStates[i]) {
+				Fatalf("Invalid backend state (%v) for backend (%v)", backendStates[i], backends[i])
+			}
+			ba.State = backendStates[i]
+		} else {
+			ba.State = backendState
+		}
+
 		spec.BackendAddresses = append(spec.BackendAddresses, ba)
 	}
 
 	if created, err := client.PutServiceID(id, spec); err != nil {
-		Fatalf("Cannot add/update service: %s", err)
+		Fatalf("Cannot add/update service: %s %+v", err, spec)
 	} else if created {
 		fmt.Printf("Added service with %d backends\n", len(spec.BackendAddresses))
 	} else {

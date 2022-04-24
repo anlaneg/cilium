@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package config
 
@@ -17,7 +16,8 @@ import (
 	"github.com/vishvananda/netlink"
 	. "gopkg.in/check.v1"
 
-	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/ebpf/rlimit"
+
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
@@ -47,7 +47,7 @@ func (s *ConfigSuite) SetUpSuite(c *C) {
 }
 
 func (s *ConfigSuite) SetUpTest(c *C) {
-	err := bpf.ConfigureResourceLimits()
+	err := rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
 	node.InitDefaultPrefix("")
 	node.SetInternalIPv4Router(ipv4DummyAddr)

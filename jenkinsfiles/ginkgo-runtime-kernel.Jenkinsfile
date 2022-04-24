@@ -34,7 +34,7 @@ pipeline {
             )}"""
         BASE_IMAGE="""${sh(
                 returnStdout: true,
-                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n "scratch"; else echo -n "quay.io/cilium/cilium-runtime:05aefca72c6e53861ebd2e0892946e73abbd9d38@sha256:3c5b6d80c0596d952948f5330afed096cdc32f23e7b90161a89632a392734761"; fi'
+                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n "scratch"; else echo -n "quay.io/cilium/cilium-runtime:fbffa51a34a16a156cbee235c206894f687114fa@sha256:294918335a8a86a0719c1e24f402aa7ee37bd948750893e1a28e7dd3b2a79ed2"; fi'
             )}"""
     }
 
@@ -96,7 +96,7 @@ pipeline {
         }
         stage ("Copy code and boot vms"){
             options {
-                timeout(time: 30, unit: 'MINUTES')
+                timeout(time: 50, unit: 'MINUTES')
             }
 
             environment {
@@ -110,11 +110,9 @@ pipeline {
                 sh 'cp -a ${WORKSPACE}/${PROJ_PATH} ${GOPATH}/${PROJ_PATH}'
                 withCredentials([usernamePassword(credentialsId: 'CILIUM_BOT_DUMMY', usernameVariable: 'DOCKER_LOGIN', passwordVariable: 'DOCKER_PASSWORD')]) {
                     retry(3) {
-                        timeout(time: 30, unit: 'MINUTES'){
-                            dir("${TESTDIR}") {
-                                sh 'vagrant destroy runtime --force'
-                                sh 'KERNEL=$(python3 get-gh-comment-info.py "${ghprbCommentBody}" --retrieve=kernel_version | sed "s/^$/${DEFAULT_KERNEL}/") vagrant up runtime --provision'
-                            }
+                        dir("${TESTDIR}") {
+                            sh 'vagrant destroy runtime --force'
+                            sh 'KERNEL=$(python3 get-gh-comment-info.py "${ghprbCommentBody}" --retrieve=kernel_version | sed "s/^$/${DEFAULT_KERNEL}/") vagrant up runtime --provision'
                         }
                     }
                 }

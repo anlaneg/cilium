@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package config
 
@@ -51,6 +51,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	"github.com/cilium/cilium/pkg/maps/sockmap"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
+	"github.com/cilium/cilium/pkg/maps/vtep"
 	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
@@ -117,10 +118,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		}
 	}
 
-	if nat46Range := option.Config.NAT46Prefix; nat46Range != nil {
-		fw.WriteString(FmtDefineAddress("NAT46_PREFIX", nat46Range.IP))
-	}
-
 	if option.Config.EnableIPv6 {
 		extraMacrosMap["HOST_IP"] = hostIP.String()
 		fw.WriteString(defineIPv6("HOST_IP", hostIP))
@@ -134,7 +131,13 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["LOCAL_NODE_ID"] = fmt.Sprintf("%d", identity.GetLocalNodeID())
 	cDefinesMap["REMOTE_NODE_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameRemoteNode))
 	cDefinesMap["KUBE_APISERVER_NODE_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameKubeAPIServer))
-	cDefinesMap["CILIUM_LB_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.MaxEntries)
+	cDefinesMap["CILIUM_LB_SERVICE_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.ServiceMapMaxEntries)
+	cDefinesMap["CILIUM_LB_BACKENDS_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.ServiceBackEndMapMaxEntries)
+	cDefinesMap["CILIUM_LB_REV_NAT_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.RevNatMapMaxEntries)
+	cDefinesMap["CILIUM_LB_AFFINITY_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.AffinityMapMaxEntries)
+	cDefinesMap["CILIUM_LB_SOURCE_RANGE_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.SourceRangeMapMaxEntries)
+	cDefinesMap["CILIUM_LB_MAGLEV_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.MaglevMapMaxEntries)
+
 	cDefinesMap["TUNNEL_MAP"] = tunnel.MapName
 	cDefinesMap["TUNNEL_ENDPOINT_MAP_SIZE"] = fmt.Sprintf("%d", tunnel.MaxEntries)
 	cDefinesMap["ENDPOINTS_MAP"] = lxcmap.MapName
@@ -170,6 +173,9 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["EVENTS_MAP"] = eventsmap.MapName
 	cDefinesMap["SIGNAL_MAP"] = signalmap.MapName
 	cDefinesMap["POLICY_CALL_MAP"] = policymap.PolicyCallMapName
+	if option.Config.EnableEnvoyConfig {
+		cDefinesMap["POLICY_EGRESSCALL_MAP"] = policymap.PolicyEgressCallMapName
+	}
 	cDefinesMap["EP_POLICY_MAP"] = eppolicymap.MapName
 	cDefinesMap["LB6_REVERSE_NAT_MAP"] = "cilium_lb6_reverse_nat"
 	cDefinesMap["LB6_SERVICES_MAP_V2"] = "cilium_lb6_services_v2"
@@ -236,6 +242,10 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["ENABLE_ENDPOINT_ROUTES"] = "1"
 	}
 
+	if option.Config.EnableEnvoyConfig {
+		cDefinesMap["ENABLE_L7_LB"] = "1"
+	}
+
 	if option.Config.EnableHostReachableServices {
 		if option.Config.EnableHostServicesTCP {
 			cDefinesMap["ENABLE_HOST_SERVICES_TCP"] = "1"
@@ -300,6 +310,9 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			if option.Config.EnableHealthDatapath {
 				cDefinesMap["LB6_HEALTH_MAP"] = lbmap.HealthProbe6MapName
 			}
+		}
+		if option.Config.NodePortNat46X64 {
+			cDefinesMap["ENABLE_NAT_46X64"] = "1"
 		}
 		const (
 			dsrEncapInv = iota
@@ -369,7 +382,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			cDefinesMap["ENABLE_NODEPORT_ACCELERATION"] = "1"
 		}
 		if !option.Config.EnableHostLegacyRouting {
-			cDefinesMap["ENABLE_REDIRECT_FAST"] = "1"
+			cDefinesMap["ENABLE_HOST_ROUTING"] = "1"
 		}
 		if option.Config.EnableSVCSourceRangeCheck {
 			cDefinesMap["ENABLE_SRC_RANGE_CHECK"] = "1"
@@ -417,7 +430,8 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	}
 	cDefinesMap["HASH_INIT4_SEED"] = fmt.Sprintf("%d", maglev.SeedJhash0)
 	cDefinesMap["HASH_INIT6_SEED"] = fmt.Sprintf("%d", maglev.SeedJhash1)
-	if option.Config.EnableNodePort {
+
+	if option.Config.DirectRoutingDeviceRequired() {
 		directRoutingIface := option.Config.DirectRoutingDevice
 		directRoutingIfIndex, err := link.GetIfIndex(directRoutingIface)
 		if err != nil {
@@ -483,9 +497,11 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 				cDefinesMap["ENCRYPT_IFACE"] = fmt.Sprintf("%d", link.Attrs().Index)
 			}
 		}
-		// If we are using IPAMENI always use IP_POOLS datapath, the pod subnets
-		// will be auto-discovered later at runtime.
-		if (option.Config.IPAM == ipamOption.IPAMENI) ||
+		// If we are using EKS or AKS IPAM modes, we should use IP_POOLS
+		// datapath as the pod subnets will be auto-discovered later at
+		// runtime.
+		if option.Config.IPAM == ipamOption.IPAMENI ||
+			option.Config.IPAM == ipamOption.IPAMAzure ||
 			option.Config.IsPodSubnetsDefined() {
 			cDefinesMap["IP_POOLS"] = "1"
 		}
@@ -536,6 +552,14 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["ENABLE_CUSTOM_CALLS"] = "1"
 	}
 
+	if option.Config.EnableVTEP {
+		cDefinesMap["ENABLE_VTEP"] = "1"
+		cDefinesMap["VTEP_MAP"] = vtep.Name
+		cDefinesMap["VTEP_MAP_SIZE"] = fmt.Sprintf("%d", vtep.MaxEntries)
+		cDefinesMap["VTEP_MASK"] = fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(net.IP(option.Config.VtepCidrMask)))
+
+	}
+
 	vlanFilter, err := vlanFilterMacros()
 	if err != nil {
 		return err
@@ -547,7 +571,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	}
 
 	// Since golang maps are unordered, we sort the keys in the map
-	// to get a consistent writtern format to the writer. This maintains
+	// to get a consistent written format to the writer. This maintains
 	// the consistency when we try to calculate hash for a datapath after
 	// writing the config.
 	keys := []string{}
@@ -666,7 +690,7 @@ func devMacros() (string, string, error) {
 		}
 		idx := link.Attrs().Index
 		m := link.Attrs().HardwareAddr
-		if m == nil {
+		if m == nil || len(m) != 6 {
 			l3DevIfIndices = append(l3DevIfIndices, idx)
 		}
 		macByIfIndex[idx] = mac.CArrayString(m)

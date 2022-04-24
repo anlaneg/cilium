@@ -65,7 +65,7 @@ env:
   vmName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}-vm
   zone: us-west2-a
   vmStartupScript: .github/gcp-vm-startup.sh
-  cilium_cli_version: v0.10.1
+  cilium_cli_version: v0.11.1
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
@@ -86,7 +86,7 @@ jobs:
       # paths-filter to work.
       - name: Checkout code
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Retrieve pull request's base and head
@@ -137,22 +137,34 @@ jobs:
           fi
 
           CILIUM_INSTALL_DEFAULTS="--cluster-name=${{ env.clusterName }} \
-            --agent-image=quay.io/${{ github.repository_owner }}/cilium-ci \
-            --operator-image=quay.io/${{ github.repository_owner }}/operator-generic-ci \
-            --version=${SHA} \
+            --chart-directory=install/kubernetes/cilium \
+            --helm-set=image.repository=quay.io/${{ github.repository_owner }}/cilium-ci \
+            --helm-set=image.tag=${SHA} \
+            --helm-set=operator.image.repository=quay.io/${{ github.repository_owner }}/operator \
+            --helm-set=operator.image.suffix=-ci \
+            --helm-set=operator.image.tag=${SHA} \
+            --helm-set=clustermesh.apiserver.image.repository=quay.io/${{ github.repository_owner }}/clustermesh-apiserver-ci \
+            --helm-set=clustermesh.apiserver.image.tag=${SHA} \
+            --helm-set=hubble.relay.image.repository=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
+            --helm-set=hubble.relay.image.tag=${SHA} \
             --wait=false \
             --rollback=false \
             --config monitor-aggregation=none \
             --config tunnel=vxlan \
             --kube-proxy-replacement=strict \
-            --base-version=v1.11"
-          HUBBLE_ENABLE_DEFAULTS="--relay-image=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
+            --base-version=v1.11 \
+            --version="
+          HUBBLE_ENABLE_DEFAULTS=" --chart-directory=install/kubernetes/cilium \
+            --relay-image=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
             --relay-version=${SHA}"
           CLUSTERMESH_ENABLE_DEFAULTS="--apiserver-image=quay.io/${{ github.repository_owner }}/clustermesh-apiserver-ci \
             --apiserver-version=${SHA}"
+          CONNECTIVITY_TEST_DEFAULTS="--base-version=v1.11 \
+            --flow-validation=disabled"
           echo ::set-output name=cilium_install_defaults::${CILIUM_INSTALL_DEFAULTS}
           echo ::set-output name=hubble_enable_defaults::${HUBBLE_ENABLE_DEFAULTS}
           echo ::set-output name=clustermesh_enable_defaults::${CLUSTERMESH_ENABLE_DEFAULTS}
+          echo ::set-output name=connectivity_test_defaults::${CONNECTIVITY_TEST_DEFAULTS}
           echo ::set-output name=sha::${SHA}
           echo ::set-output name=owner::${OWNER}
 
@@ -167,8 +179,9 @@ jobs:
           target_url: ${{ env.check_url }}
 
       - name: Checkout code
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
+          ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
 
       - name: Install Cilium CLI
@@ -180,7 +193,7 @@ jobs:
           cilium version
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@e0f83f24f541c30f1e9fe3c966963a10b8e647f5
+        uses: google-github-actions/setup-gcloud@877d4953d2c70a0ba7ef3290ae968eb24af233bb
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           service_account_key: ${{ secrets.GCP_PR_SA_KEY }}
@@ -214,7 +227,7 @@ jobs:
           gcloud container clusters create ${{ env.clusterName }} \
             --labels "usage=${{ github.repository_owner }}-${{ github.event.repository.name }},owner=${{ steps.vars.outputs.owner }}" \
             --zone ${{ env.zone }} \
-            --node-taints node.cilium.io/agent-not-ready=true:NoSchedule \
+            --node-taints node.cilium.io/agent-not-ready=true:NoExecute \
             --image-type COS_CONTAINERD \
             --num-nodes 2 \
             --machine-type e2-custom-2-4096 \
@@ -231,7 +244,7 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci clustermesh-apiserver-ci ; do
-            until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/$image/tag/${{ steps.vars.outputs.sha }}/images" &> /dev/null; do sleep 45s; done
+            until docker manifest inspect quay.io/${{ github.repository_owner }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Install Cilium in cluster
@@ -262,9 +275,10 @@ jobs:
             --command "cilium status"
 
       - name: Verify cluster DNS on VM
+        # Limit nslookup to the first (global) DNS server setting
         run: |
           gcloud compute ssh ${{ env.vmName }} --zone ${{ env.zone }} \
-            --command "nslookup -norecurse clustermesh-apiserver.kube-system.svc.cluster.local"
+            --command "nslookup -d2 -retry=10 -timeout=5 -norecurse clustermesh-apiserver.kube-system.svc.cluster.local \$(systemd-resolve --status | grep -m 1 \"Current DNS Server:\" | cut -d':' -f2)"
 
       - name: Ping clustermesh-apiserver from VM
         run: |
@@ -273,7 +287,7 @@ jobs:
 
       - name: Run connectivity test
         run: |
-          cilium connectivity test --flow-validation=disabled
+          cilium connectivity test ${{ steps.vars.outputs.connectivity_test_defaults }}
 
       - name: Post-test information gathering
         if: ${{ !success() }}
@@ -298,7 +312,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535
         with:
           name: cilium-sysdump-out.zip
           path: cilium-sysdump-out.zip

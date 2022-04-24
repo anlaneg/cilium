@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2020 Authors of Cilium
+// Copyright Authors of Cilium
 // Copyright 2017 Lyft, Inc.
 
 package ipam
@@ -155,6 +155,13 @@ func (n *Node) Stats() Statistics {
 // Ops returns the IPAM implementation operations for the node
 func (n *Node) Ops() NodeOperations {
 	return n.ops
+}
+
+func (n *Node) IsPrefixDelegationEnabled() bool {
+	if n == nil || n.manager == nil {
+		return false
+	}
+	return n.manager.prefixDelegation
 }
 
 func (n *Node) logger() *logrus.Entry {
@@ -371,9 +378,16 @@ func (n *Node) recalculate() {
 
 	n.available = a
 	n.stats.UsedIPs = len(n.resource.Status.IPAM.Used)
+
+	// Get used IP count with prefixes included
+	usedIPForExcessCalc := n.stats.UsedIPs
+	if n.ops.IsPrefixDelegated() {
+		usedIPForExcessCalc = n.ops.GetUsedIPWithPrefixes()
+	}
+
 	n.stats.AvailableIPs = len(n.available)
 	n.stats.NeededIPs = calculateNeededIPs(n.stats.AvailableIPs, n.stats.UsedIPs, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAllocate())
-	n.stats.ExcessIPs = calculateExcessIPs(n.stats.AvailableIPs, n.stats.UsedIPs, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAboveWatermark())
+	n.stats.ExcessIPs = calculateExcessIPs(n.stats.AvailableIPs, usedIPForExcessCalc, n.getPreAllocate(), n.getMinAllocate(), n.getMaxAboveWatermark())
 
 	scopedLog.WithFields(logrus.Fields{
 		"available":                 n.stats.AvailableIPs,

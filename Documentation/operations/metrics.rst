@@ -219,6 +219,30 @@ Name                                       Labels                               
 ``controllers_failing``                                                                       Number of failing controllers
 ========================================== ================================================== ========================================================
 
+Node Connectivity
+~~~~~~~~~~~~~~~~~
+
+========================================== ====================================================================================================================================================================== ===================================================================================================================
+Name                                       Labels                                                                                                                                                                 Description
+========================================== ====================================================================================================================================================================== ===================================================================================================================
+``node_connectivity_status``               ``source_cluster``, ``source_node_name``, ``target_cluster``, ``target_node_name``, ``target_node_type``, ``type``                                                     The last observed status of both ICMP and HTTP connectivity between the current Cilium agent and other Cilium nodes
+``node_connectivity_latency_seconds``      ``address_type``, ``protocol``, ``source_cluster``, ``source_node_name``, ``target_cluster``, ``target_node_ip``, ``target_node_name``, ``target_node_type``, ``type`` The last observed latency between the current Cilium agent and other Cilium nodes in seconds
+========================================== ====================================================================================================================================================================== ===================================================================================================================
+
+Clustermesh
+~~~~~~~~~~~
+
+=============================================== ============================================================ =================================================================
+Name                                            Labels                                                       Description
+=============================================== ============================================================ =================================================================
+``clustermesh_global_services``                 ``source_cluster``, ``source_node_name``                     The total number of global services in the cluster mesh
+``clustermesh_remote_clusters``                 ``source_cluster``, ``source_node_name``                     The total number of remote clusters meshed with the local cluster
+``clustermesh_remote_cluster_failures``         ``source_cluster``, ``source_node_name``, ``target_cluster`` The total number of failures related to the remote cluster
+``clustermesh_remote_cluster_nodes``            ``source_cluster``, ``source_node_name``, ``target_cluster`` The total number of nodes in the remote cluster
+``clustermesh_remote_cluster_last_failure_ts``  ``source_cluster``, ``source_node_name``, ``target_cluster`` The timestamp of the last failure of the remote cluster
+``clustermesh_remote_cluster_readiness_status`` ``source_cluster``, ``source_node_name``, ``target_cluster`` The readiness status of the remote cluster
+=============================================== ============================================================ =================================================================
+
 Datapath
 ~~~~~~~~
 
@@ -538,6 +562,32 @@ Name                             Labels                                   Descri
 
 Options
 """""""
+
+This metric supports :ref:`Context Options<hubble_context_options>`.
+
+``flows-to-world``
+~~~~~~~~~~~~~~~~~~
+
+This metric counts all non-reply flows containing the ``reserved:world`` label in their
+destination identity. By default, dropped flows are counted if and only if the drop reason
+is ``Policy denied``. Set ``any-drop`` option to count all dropped flows.
+
+================================ ======================================== ============================================
+Name                             Labels                                   Description
+================================ ======================================== ============================================
+``flows_to_world_total``         ``protocol``, ``verdict``                Total number of flows to ``reserved:world``.
+================================ ======================================== ============================================
+
+Options
+"""""""
+
+============== ============= ======================================================
+Option Key     Option Value  Description
+============== ============= ======================================================
+``any-drop``   N/A           Count any dropped flows regardless of the drop reason.
+``port``       N/A           Include the destination port as label ``port``.
+============== ============= ======================================================
+
 
 This metric supports :ref:`Context Options<hubble_context_options>`.
 

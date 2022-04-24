@@ -85,43 +85,35 @@ Install Cilium
 
        .. include:: requirements-aks.rst
 
-       **Create a service principal:**
+       **Create a Service Principal:**
 
        In order to allow cilium-operator to interact with the Azure API, a
-       service principal is required. You can reuse an existing service
-       principal if you want but it is recommended to create a dedicated
-       service principal for each Cilium installation:
+       Service Principal with ``Contributor`` privileges over the AKS cluster is
+       required (see :ref:`Azure IPAM required privileges <ipam_azure_required_privileges>`
+       for more details). It is recommended to create a dedicated Service
+       Principal for each Cilium installation with minimal privileges over the
+       AKS node resource group:
 
        .. code-block:: shell-session
 
-          az ad sp create-for-rbac --name cilium-operator-$RANDOM > azure-sp.json
-
-       The contents of ``azure-sp.json`` should look like this:
-
-       .. code-block:: json
-
-          {
-            "appId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "displayName": "cilium-operator",
-            "name": "http://cilium-operator",
-            "password": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "tenant": "cccccccc-cccc-cccc-cccc-cccccccccccc"
-          }
-
-       Extract the relevant credentials to access the Azure API:
-
-       .. code-block:: shell-session
-
-          AZURE_SUBSCRIPTION_ID="$(az account show | jq -r .id)"
-          AZURE_CLIENT_ID="$(jq -r .appId < azure-sp.json)"
-          AZURE_CLIENT_SECRET="$(jq -r .password < azure-sp.json)"
-          AZURE_TENANT_ID="$(jq -r .tenant < azure-sp.json)"
-          AZURE_NODE_RESOURCE_GROUP="$(az aks show --resource-group $RESOURCE_GROUP_NAME --name $CLUSTER_NAME | jq -r .nodeResourceGroup)"
+          AZURE_SUBSCRIPTION_ID=$(az account show --query "id" --output tsv)
+          AZURE_NODE_RESOURCE_GROUP=$(az aks show --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --query "nodeResourceGroup" --output tsv)
+          AZURE_SERVICE_PRINCIPAL=$(az ad sp create-for-rbac --scopes /subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${AZURE_NODE_RESOURCE_GROUP} --role Contributor --output json --only-show-errors)
+          AZURE_TENANT_ID=$(echo ${AZURE_SERVICE_PRINCIPAL} | jq -r '.tenant')
+          AZURE_CLIENT_ID=$(echo ${AZURE_SERVICE_PRINCIPAL} | jq -r '.appId')
+          AZURE_CLIENT_SECRET=$(echo ${AZURE_SERVICE_PRINCIPAL} | jq -r '.password')
 
        .. note::
 
-          ``AZURE_NODE_RESOURCE_GROUP`` must be set to the resource group of
-          the node pool, *not* the resource group of the AKS cluster.
+          The ``AZURE_NODE_RESOURCE_GROUP`` node resource group is *not* the
+          resource group of the AKS cluster. A single resource group may hold
+          multiple AKS clusters, but each AKS cluster regroups all resources in
+          an automatically managed secondary resource group. See `Why are two
+          resource groups created with AKS? <https://docs.microsoft.com/en-us/azure/aks/faq#why-are-two-resource-groups-created-with-aks>`__
+          for more details.
+
+          This ensures the Service Principal only has privileges over the AKS
+          cluster itself and not any other resources within the resource group.
 
        **Install Cilium:**
 
@@ -182,16 +174,24 @@ Install Cilium
           Kubernetes worker node than the ENI limit, but means that pod
           connectivity to resources outside the cluster (e.g., VMs in the VPC
           or AWS managed services) is masqueraded (i.e., SNAT) by Cilium to use
-          the VPC IP address of the Kubernetes worker node.  Excluding the
-          lines for ``eni.enabled=true``, ``ipam.mode=eni`` and
-          ``tunnel=disabled`` from the helm command will configure Cilium to
-          use overlay routing mode (which is the helm default).
+          the VPC IP address of the Kubernetes worker node. To set up Cilium 
+          overlay mode, follow the steps below:
+
+            1. Excluding the lines for ``eni.enabled=true``, ``ipam.mode=eni`` and 
+               ``tunnel=disabled`` from the helm command will configure Cilium to use 
+               overlay routing mode (which is the helm default).
+            2. Flush iptables rules added by VPC CNI
+
+               .. code-block:: shell-session
+               
+                  iptables -t nat -F AWS-SNAT-CHAIN-0 \\
+                     && iptables -t nat -F AWS-SNAT-CHAIN-1 \\
+                     && iptables -t nat -F AWS-CONNMARK-CHAIN-0 \\
+                     && iptables -t nat -F AWS-CONNMARK-CHAIN-1
 
          Some Linux distributions use a different interface naming convention.
          If you use masquerading with the option ``egressMasqueradeInterfaces=eth0``,
          remember to replace ``eth0`` with the proper interface name.
-
-       Cilium is now deployed and you are ready to scale-up the cluster:
 
     .. group-tab:: OpenShift
 
@@ -226,6 +226,24 @@ Install Cilium
 
           helm install cilium |CHART_RELEASE| \\
              --namespace $CILIUM_NAMESPACE
+
+    .. group-tab:: Rancher Desktop
+
+       **Configure Rancher Desktop:**
+
+       To install Cilium on `Rancher Desktop <https://rancherdesktop.io>`_,
+       perform the following steps:
+
+       .. include:: rancher-desktop-configure.rst
+
+       **Install Cilium:**
+
+       .. parsed-literal::
+
+          helm install cilium |CHART_RELEASE| \\
+             --namespace $CILIUM_NAMESPACE \\
+             --operator.replicas=1 \\
+             --set cni.binPath=/usr/libexec/cni
 
 .. include:: k8s-install-restart-pods.rst
 

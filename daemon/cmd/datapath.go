@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2022 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -39,6 +39,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
+	"github.com/cilium/cilium/pkg/maps/vtep"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
@@ -140,7 +141,7 @@ type EndpointMapManager struct {
 // packets that arrive on this node from being forwarded to the endpoint that
 // used to exist with the specified ID.
 func (e *EndpointMapManager) RemoveDatapathMapping(endpointID uint16) error {
-	return policymap.RemoveGlobalMapping(uint32(endpointID))
+	return policymap.RemoveGlobalMapping(uint32(endpointID), option.Config.EnableEnvoyConfig)
 }
 
 // RemoveMapPath removes the specified path from the filesystem.
@@ -249,9 +250,9 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 		// This upsert will fail with ErrOverwrite continuously as long as the
 		// EP / CN watcher have found an apiserver IP and upserted it into the
 		// ipcache. Until then, it is expected to succeed.
-		ipcache.IPIdentityCache.Upsert(ipIDPair.PrefixString(), nil, hostKey, nil, ipcache.Identity{
+		d.ipcache.Upsert(ipIDPair.PrefixString(), nil, hostKey, nil, ipcache.Identity{
 			ID:     ipIDPair.ID,
-			Source: sourceByIP(ipIDPair.IP.String(), source.Local),
+			Source: d.sourceByIP(ipIDPair.IP.String(), source.Local),
 		})
 	}
 
@@ -265,15 +266,22 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 				log.Debugf("Removed outdated host ip %s from endpoint map", hostIP)
 			}
 
-			ipcache.IPIdentityCache.Delete(hostIP, sourceByIP(hostIP, source.Local))
+			d.ipcache.Delete(hostIP, d.sourceByIP(hostIP, source.Local))
+		}
+	}
+
+	if option.Config.EnableVTEP {
+		err := setupVTEPMapping()
+		if err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func sourceByIP(prefix string, defaultSrc source.Source) source.Source {
-	if lbls := ipcache.GetIDMetadataByIP(prefix); lbls.Has(
+func (d *Daemon) sourceByIP(prefix string, defaultSrc source.Source) source.Source {
+	if lbls := d.ipcache.GetIDMetadataByIP(prefix); lbls.Has(
 		labels.LabelKubeAPIServer[labels.IDNameKubeAPIServer],
 	) {
 		return source.KubeAPIServer
@@ -324,6 +332,12 @@ func (d *Daemon) initMaps() error {
 		}
 	}
 
+	if option.Config.EnableVTEP {
+		if _, err := vtep.VtepMAP.OpenOrCreate(); err != nil {
+			return err
+		}
+	}
+
 	pm := probes.NewProbeManager()
 	supportedMapTypes := pm.GetMapTypes()
 	createSockRevNatMaps := option.Config.EnableHostReachableServices &&
@@ -343,7 +357,7 @@ func (d *Daemon) initMaps() error {
 		return err
 	}
 
-	if err := policymap.InitCallMap(); err != nil {
+	if err := policymap.InitCallMaps(option.Config.EnableEnvoyConfig); err != nil {
 		return err
 	}
 
@@ -398,8 +412,8 @@ func (d *Daemon) initMaps() error {
 	// Set up the list of IPCache listeners in the daemon, to be
 	// used by syncEndpointsAndHostIPs()
 	// xDS cache will be added later by calling AddListener(), but only if necessary.
-	ipcache.IPIdentityCache.SetListeners([]ipcache.IPIdentityMappingListener{
-		datapathIpcache.NewListener(d, d),
+	d.ipcache.SetListeners([]ipcache.IPIdentityMappingListener{
+		datapathIpcache.NewListener(d, d, d.ipcache),
 	})
 
 	if option.Config.EnableIPv4 && option.Config.EnableIPMasqAgent {
@@ -476,6 +490,22 @@ func setupIPSec() (int, uint8, error) {
 	}
 	node.SetIPsecKeyIdentity(spi)
 	return authKeySize, spi, nil
+}
+
+func setupVTEPMapping() error {
+	for i, ep := range option.Config.VtepEndpoints {
+		log.WithFields(logrus.Fields{
+			logfields.IPAddr: ep,
+		}).Debug("Updating vtep map entry for VTEP")
+
+		err := vtep.UpdateVTEPMapping(option.Config.VtepCIDRs[i], ep, option.Config.VtepMACs[i])
+		if err != nil {
+			return fmt.Errorf("Unable to set up VTEP ipcache mappings: %w", err)
+		}
+
+	}
+	return nil
+
 }
 
 // Datapath returns a reference to the datapath implementation.

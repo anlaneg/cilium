@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package ipam
 
@@ -38,9 +38,8 @@ func configureENIDevices(oldNode, newNode *ciliumv2.CiliumNode, mtuConfig MtuCon
 	if oldNode != nil {
 		existingENIByName = oldNode.Status.ENI.ENIs
 	}
-	firstInterfaceIndex := *newNode.Spec.ENI.FirstInterfaceIndex
 	for name, eni := range newNode.Status.ENI.ENIs {
-		if eni.Number < firstInterfaceIndex {
+		if eni.IsExcludedBySpec(newNode.Spec.ENI) {
 			continue
 		}
 

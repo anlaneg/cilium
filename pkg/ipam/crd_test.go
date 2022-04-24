@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package ipam
 
@@ -66,6 +65,7 @@ type testConfigurationCRD struct{}
 func (t *testConfigurationCRD) IPv4Enabled() bool                        { return true }
 func (t *testConfigurationCRD) IPv6Enabled() bool                        { return false }
 func (t *testConfigurationCRD) HealthCheckingEnabled() bool              { return true }
+func (t *testConfigurationCRD) UnreachableRoutesEnabled() bool           { return false }
 func (t *testConfigurationCRD) IPAMMode() string                         { return ipamOption.IPAMCRD }
 func (t *testConfigurationCRD) BlacklistConflictingRoutesEnabled() bool  { return false }
 func (t *testConfigurationCRD) SetIPv4NativeRoutingCIDR(cidr *cidr.CIDR) {}

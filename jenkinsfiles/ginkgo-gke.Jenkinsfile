@@ -69,6 +69,8 @@ pipeline {
         stage('Set programmatic env vars') {
             steps {
                 script {
+                    env.IMAGE_REGISTRY = sh script: 'echo -n ${JobImageRegistry:-quay.io/cilium}', returnStdout: true
+
                     if (env.ghprbActualCommit?.trim()) {
                         env.DOCKER_TAG = env.ghprbActualCommit
                     } else {
@@ -78,7 +80,7 @@ pipeline {
                         env.DOCKER_TAG = env.DOCKER_TAG + "-race"
                         env.RACE = 1
                         env.LOCKDEBUG = 1
-                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:05aefca72c6e53861ebd2e0892946e73abbd9d38@sha256:3c5b6d80c0596d952948f5330afed096cdc32f23e7b90161a89632a392734761"
+                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:fbffa51a34a16a156cbee235c206894f687114fa@sha256:294918335a8a86a0719c1e24f402aa7ee37bd948750893e1a28e7dd3b2a79ed2"
                     }
                 }
             }
@@ -92,9 +94,9 @@ pipeline {
                     steps {
                         retry(25) {
                             sleep(time: 60)
-                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/cilium-ci/tag/${DOCKER_TAG}/images"'
-                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/operator-generic-ci/tag/${DOCKER_TAG}/images"'
-                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/hubble-relay-ci/tag/${DOCKER_TAG}/images"'
+                            sh 'docker manifest inspect ${IMAGE_REGISTRY}/cilium-ci:${DOCKER_TAG}} &> /dev/null'
+                            sh 'docker manifest inspect ${IMAGE_REGISTRY}/operator-generic-ci:${DOCKER_TAG}} &> /dev/null'
+                            sh 'docker manifest inspect ${IMAGE_REGISTRY}/hubble-relay-ci:${DOCKER_TAG}} &> /dev/null'
                         }
                     }
                 }
@@ -138,11 +140,11 @@ pipeline {
                 CONTAINER_RUNTIME=setIfLabel("area/containerd", "containerd", "docker")
                 KUBECONFIG="${TESTDIR}/gke/gke-kubeconfig"
                 CNI_INTEGRATION="gke"
-                CILIUM_IMAGE = "quay.io/cilium/cilium-ci"
+                CILIUM_IMAGE = "${IMAGE_REGISTRY}/cilium-ci"
                 CILIUM_TAG = "${DOCKER_TAG}"
-                CILIUM_OPERATOR_IMAGE= "quay.io/cilium/operator"
+                CILIUM_OPERATOR_IMAGE= "${IMAGE_REGISTRY}/operator"
                 CILIUM_OPERATOR_TAG = "${DOCKER_TAG}"
-                HUBBLE_RELAY_IMAGE= "quay.io/cilium/hubble-relay-ci"
+                HUBBLE_RELAY_IMAGE= "${IMAGE_REGISTRY}/hubble-relay-ci"
                 HUBBLE_RELAY_TAG = "${DOCKER_TAG}"
                 K8S_VERSION= """${sh(
                         returnStdout: true,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package launch
 
@@ -27,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/health/probe"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/launcher"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -34,7 +35,6 @@ import (
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/node"
-	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/pidfile"
 	"github.com/cilium/cilium/pkg/policy"
@@ -228,7 +228,7 @@ type EndpointAdder interface {
 func LaunchAsEndpoint(baseCtx context.Context,
 	owner regeneration.Owner,
 	policyGetter policyRepoGetter,
-	n *nodeTypes.Node,
+	ipcache *ipcache.IPCache,
 	mtuConfig mtu.Configuration,
 	epMgr EndpointAdder,
 	proxy endpoint.EndpointProxy,
@@ -246,13 +246,11 @@ func LaunchAsEndpoint(baseCtx context.Context,
 		ip4Address, ip6Address *net.IPNet
 	)
 
-	if n.IPv6HealthIP != nil {
-		healthIP = n.IPv6HealthIP
+	if healthIP = node.GetEndpointHealthIPv6(); healthIP != nil {
 		info.Addressing.IPV6 = healthIP.String()
 		ip6Address = &net.IPNet{IP: healthIP, Mask: defaults.ContainerIPv6Mask}
 	}
-	if n.IPv4HealthIP != nil {
-		healthIP = n.IPv4HealthIP
+	if healthIP = node.GetEndpointHealthIPv4(); healthIP != nil {
 		info.Addressing.IPV4 = healthIP.String()
 		ip4Address = &net.IPNet{IP: healthIP, Mask: defaults.ContainerIPv4Mask}
 	}
@@ -313,7 +311,7 @@ func LaunchAsEndpoint(baseCtx context.Context,
 	}
 
 	// Create the endpoint
-	ep, err := endpoint.NewEndpointFromChangeModel(baseCtx, owner, policyGetter, proxy, allocator, info)
+	ep, err := endpoint.NewEndpointFromChangeModel(baseCtx, owner, policyGetter, ipcache, proxy, allocator, info)
 	if err != nil {
 		return nil, fmt.Errorf("Error while creating endpoint model: %s", err)
 	}

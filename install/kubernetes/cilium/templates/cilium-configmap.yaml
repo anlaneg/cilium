@@ -189,6 +189,12 @@ data:
   skip-crd-creation: "true"
 {{- end }}
 
+{{- if .Values.ingressController.enabled }}
+  enable-ingress-controller: "true"
+  enable-envoy-config: "true"
+  enforce-ingress-https: {{ .Values.ingressController.enforceHttps | quote }}
+{{- end }}
+
   # Enable IPv4 addressing. If enabled, all endpoints are allocated an IPv4
   # address.
   enable-ipv4: {{ .Values.ipv4.enabled | quote }}
@@ -264,7 +270,10 @@ data:
   bpf-map-dynamic-size-ratio: {{ $defaultBpfMapDynamicSizeRatio | quote }}
 {{- end }}
 
-{{- if hasKey .Values.bpf "hostRouting" }}
+{{- if hasKey .Values.bpf "hostLegacyRouting" }}
+  enable-host-legacy-routing: {{ .Values.bpf.hostLegacyRouting | quote }}
+{{- else if hasKey .Values.bpf "hostRouting" }}
+  # DEPRECATED: this block should be removed in 1.13
   enable-host-legacy-routing: {{ .Values.bpf.hostRouting | quote }}
 {{- end }}
 
@@ -373,10 +382,14 @@ data:
 {{- if .Values.eni.awsReleaseExcessIPs }}
   aws-release-excess-ips: "true"
 {{- end }}
+{{- if .Values.eni.awsEnablePrefixDelegation }}
+  aws-enable-prefix-delegation: "true"
+{{- end }}
   ec2-api-endpoint: {{ .Values.eni.ec2APIEndpoint | quote }}
   eni-tags: {{ .Values.eni.eniTags | toRawJson | quote }}
   subnet-ids-filter: {{ .Values.eni.subnetIDsFilter | quote }}
   subnet-tags-filter: {{ .Values.eni.subnetTagsFilter | quote }}
+  instance-tags-filter: {{ .Values.eni.instanceTagsFilter | quote }}
 {{- end }}
 
 {{- if .Values.azure.enabled }}
@@ -487,7 +500,18 @@ data:
 {{- end }}
 
   auto-direct-node-routes: {{ .Values.autoDirectNodeRoutes | quote }}
+
+{{- if .Values.bandwidthManager }}
+{{- if typeIs "bool" .Values.bandwidthManager }}
+  # DEPRECATED: this block should be removed in 1.13
   enable-bandwidth-manager: {{ .Values.bandwidthManager | quote }}
+{{- else }}
+{{- if .Values.bandwidthManager.enabled }}
+  enable-bandwidth-manager: {{ .Values.bandwidthManager.enabled | quote }}
+  enable-bbr: {{ .Values.bandwidthManager.bbr | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
 
 {{- if hasKey .Values "localRedirectPolicy" }}
   enable-local-redirect-policy: {{ .Values.localRedirectPolicy | quote }}
@@ -519,7 +543,7 @@ data:
   devices: {{ join " " .Values.devices | quote }}
 {{- end }}
 
-  kube-proxy-replacement:  {{ $kubeProxyReplacement | quote }}
+  kube-proxy-replacement: {{ $kubeProxyReplacement | quote }}
 {{- if ne $kubeProxyReplacement "disabled" }}
   kube-proxy-replacement-healthz-bind-address: {{ default "" .Values.kubeProxyReplacementHealthzBindAddr | quote}}
 {{- end }}
@@ -671,7 +695,7 @@ data:
   # Enable Hubble gRPC service.
   enable-hubble: {{ .Values.hubble.enabled  | quote }}
   # UNIX domain socket for Hubble server to listen to.
-  hubble-socket-path:  {{ .Values.hubble.socketPath | quote }}
+  hubble-socket-path: {{ .Values.hubble.socketPath | quote }}
 {{- if hasKey .Values.hubble "eventQueueSize" }}
   # Buffer size of the channel for Hubble to receive monitor events. If this field is not set,
   # the buffer size is set to the default monitor queue size.
@@ -715,7 +739,7 @@ data:
 {{- end }}
   ipam: {{ $ipam | quote }}
 
-{{- if eq $ipam "cluster-pool" }}
+{{- if or (eq $ipam "cluster-pool") (eq $ipam "cluster-pool-v2") }}
 {{- if .Values.ipv4.enabled }}
   {{- if .Values.ipam.operator.clusterPoolIPv4PodCIDRList }}
   cluster-pool-ipv4-cidr: {{ .Values.ipam.operator.clusterPoolIPv4PodCIDRList | join " " | quote }}
@@ -742,6 +766,22 @@ data:
 
 {{- if .Values.egressGateway.enabled }}
   enable-ipv4-egress-gateway: "true"
+{{- end }}
+
+{{- if hasKey .Values "vtep" }}
+  enable-vtep: {{ .Values.vtep.enabled | quote }}
+{{- if hasKey .Values.vtep "endpoint" }}
+  vtep-endpoint: {{ .Values.vtep.endpoint | quote }}
+{{- end }}
+{{- if hasKey .Values.vtep "cidr" }}
+  vtep-cidr: {{ .Values.vtep.cidr | quote }}
+{{- end }}
+{{- if hasKey .Values.vtep "mask" }}
+  vtep-mask: {{ .Values.vtep.mask | quote }}
+{{- end }}
+{{- if hasKey .Values.vtep "mac" }}
+  vtep-mac: {{ .Values.vtep.mac | quote }}
+{{- end }}
 {{- end }}
 
 {{- if .Values.enableK8sEventHandover }}
@@ -780,6 +820,16 @@ data:
   bgp-announce-pod-cidr: {{ .Values.bgp.announce.podCIDR | quote }}
 {{- end}}
 
+{{- if .Values.bgpControlPlane.enabled }}
+  enable-bgp-control-plane: "true"
+{{- else }}
+  enable-bgp-control-plane: "false"
+{{- end }}
+
+{{- if not .Values.securityContext.privileged }}
+  procfs: "/host/proc"
+{{- end }}
+
 {{- if hasKey .Values.bpf "root" }}
   bpf-root: {{ .Values.bpf.root | quote }}
 {{- end }}
@@ -799,6 +849,28 @@ data:
 
 {{- if hasKey .Values "enableK8sTerminatingEndpoint" }}
   enable-k8s-terminating-endpoint: {{ .Values.enableK8sTerminatingEndpoint | quote }}
+{{- end }}
+
+{{- if hasKey .Values "dnsPolicyUnloadOnShutdown" }}
+  # Unload DNS policy rules on graceful shutdown
+  dns-policy-unload-on-shutdown: {{.Values.dnsPolicyUnloadOnShutdown | quote }}
+{{- end }}
+
+{{- if .Values.annotateK8sNode }}
+  annotate-k8s-node: "true"
+{{- end }}
+
+{{- if .Values.operator.removeNodeTaints }}
+  remove-cilium-node-taints: "true"
+{{- end }}
+{{- if .Values.operator.setNodeNetworkStatus }}
+  set-cilium-is-up-condition: "true"
+{{- end }}
+
+{{- if .Values.operator.unmanagedPodWatcher.restart }}
+  unmanaged-pod-watcher-interval: {{ .Values.operator.unmanagedPodWatcher.intervalSeconds | quote }}
+{{- else }}
+  unmanaged-pod-watcher-interval: "0"
 {{- end }}
 
 {{- if .Values.extraConfig }}

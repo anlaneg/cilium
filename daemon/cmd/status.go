@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -21,6 +21,7 @@ import (
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/k8s"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	"github.com/cilium/cilium/pkg/kvstore"
@@ -156,6 +157,11 @@ func (d *Daemon) getBandwidthManagerStatus() *models.BandwidthManager {
 		return s
 	}
 
+	s.CongestionControl = models.BandwidthManagerCongestionControlCubic
+	if option.Config.EnableBBR {
+		s.CongestionControl = models.BandwidthManagerCongestionControlBbr
+	}
+
 	devices := make([]string, len(option.Config.Devices))
 	for i, iface := range option.Config.Devices {
 		devices[i] = iface
@@ -247,6 +253,7 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 		HostReachableServices: &models.KubeProxyReplacementFeaturesHostReachableServices{},
 		SessionAffinity:       &models.KubeProxyReplacementFeaturesSessionAffinity{},
 		GracefulTermination:   &models.KubeProxyReplacementFeaturesGracefulTermination{},
+		Nat46X64:              &models.KubeProxyReplacementFeaturesNat46X64{},
 	}
 	if option.Config.EnableNodePort {
 		features.NodePort.Enabled = true
@@ -289,6 +296,9 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 	}
 	if option.Config.EnableK8sTerminatingEndpoint {
 		features.GracefulTermination.Enabled = true
+	}
+	if option.Config.NodePortNat46X64 {
+		features.Nat46X64.Enabled = true
 	}
 
 	return &models.KubeProxyReplacement{
@@ -334,27 +344,27 @@ func (d *Daemon) getBPFMapStatus() *models.BPFMapStatus {
 			},
 			{
 				Name: "IPv4 service", // cilium_lb4_services_v2
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.ServiceMapMaxEntries),
 			},
 			{
 				Name: "IPv6 service", // cilium_lb6_services_v2
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.ServiceMapMaxEntries),
 			},
 			{
 				Name: "IPv4 service backend", // cilium_lb4_backends_v2
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.ServiceBackEndMapMaxEntries),
 			},
 			{
 				Name: "IPv6 service backend", // cilium_lb6_backends_v2
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.ServiceBackEndMapMaxEntries),
 			},
 			{
 				Name: "IPv4 service reverse NAT", // cilium_lb4_reverse_nat
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.RevNatMapMaxEntries),
 			},
 			{
 				Name: "IPv6 service reverse NAT", // cilium_lb6_reverse_nat
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.RevNatMapMaxEntries),
 			},
 			{
 				Name: "Metrics",
@@ -378,7 +388,7 @@ func (d *Daemon) getBPFMapStatus() *models.BPFMapStatus {
 			},
 			{
 				Name: "Session affinity",
-				Size: int64(lbmap.MaxEntries),
+				Size: int64(lbmap.AffinityMapMaxEntries),
 			},
 			{
 				Name: "Signal",
@@ -410,7 +420,7 @@ func NewGetHealthzHandler(d *Daemon) GetHealthzHandler {
 
 func (d *Daemon) getNodeStatus() *models.ClusterStatus {
 	clusterStatus := models.ClusterStatus{
-		Self: d.nodeDiscovery.LocalNode.Fullname(),
+		Self: nodeTypes.GetAbsoluteNodeName(),
 	}
 	for _, node := range d.nodeDiscovery.Manager.GetNodes() {
 		clusterStatus.Nodes = append(clusterStatus.Nodes, node.GetModel())
@@ -571,7 +581,7 @@ func (h *getNodes) Handle(params GetClusterNodesParams) middleware.Responder {
 			lastSync: time.Now(),
 			ClusterNodeStatus: &models.ClusterNodeStatus{
 				ClientID: clientID,
-				Self:     h.d.nodeDiscovery.LocalNode.Fullname(),
+				Self:     nodeTypes.GetAbsoluteNodeName(),
 			},
 		}
 		h.d.nodeDiscovery.Manager.Subscribe(c)
@@ -587,7 +597,7 @@ func (h *getNodes) Handle(params GetClusterNodesParams) middleware.Responder {
 	// added / removed.
 	c.ClusterNodeStatus = &models.ClusterNodeStatus{
 		ClientID: clientID,
-		Self:     h.d.nodeDiscovery.LocalNode.Fullname(),
+		Self:     nodeTypes.GetAbsoluteNodeName(),
 	}
 	c.lastSync = time.Now()
 	c.Unlock()
@@ -682,6 +692,15 @@ func (d *Daemon) getStatus(brief bool) models.StatusResponse {
 	}
 
 	return sr
+}
+
+func (d *Daemon) getIdentityRange() *models.IdentityRange {
+	s := &models.IdentityRange{
+		MinIdentity: int64(identity.MinimalAllocationIdentity),
+		MaxIdentity: int64(identity.MaximumAllocationIdentity),
+	}
+
+	return s
 }
 
 func (d *Daemon) startStatusCollector() {
@@ -821,7 +840,7 @@ func (d *Daemon) startStatusCollector() {
 			Name: "cluster",
 			Probe: func(ctx context.Context) (interface{}, error) {
 				clusterStatus := &models.ClusterStatus{
-					Self: d.nodeDiscovery.LocalNode.Fullname(),
+					Self: nodeTypes.GetAbsoluteNodeName(),
 				}
 				return clusterStatus, nil
 			},
@@ -997,6 +1016,7 @@ func (d *Daemon) startStatusCollector() {
 	d.statusResponse.ClockSource = d.getClockSourceStatus()
 	d.statusResponse.BpfMaps = d.getBPFMapStatus()
 	d.statusResponse.CniChaining = d.getCNIChainingStatus()
+	d.statusResponse.IdentityRange = d.getIdentityRange()
 
 	d.statusCollector = status.NewCollector(probes, status.Config{})
 

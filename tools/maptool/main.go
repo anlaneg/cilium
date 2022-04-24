@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package main
 
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/maps/eppolicymap"
@@ -44,7 +46,7 @@ func main() {
 		usage()
 	}
 
-	if err := bpf.ConfigureResourceLimits(); err != nil {
+	if err := rlimit.RemoveMemlock(); err != nil {
 		fmt.Fprintf(os.Stdout, "Failed to configure resource limits: %s\n", err)
 	}
 	bpf.CheckOrMountFS("")

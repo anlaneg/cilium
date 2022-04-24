@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package k8s
 
@@ -8,7 +8,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/cilium/cilium/pkg/comparator"
-	"github.com/cilium/cilium/pkg/datapath"
+	dpTypes "github.com/cilium/cilium/pkg/datapath/types"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	cilium_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -37,6 +37,26 @@ func ObjToV1NetworkPolicy(obj interface{}) *slim_networkingv1.NetworkPolicy {
 	}
 	log.WithField(logfields.Object, logfields.Repr(obj)).
 		Warn("Ignoring invalid k8s v1 NetworkPolicy")
+	return nil
+}
+
+func ObjToV1Ingress(obj interface{}) *slim_networkingv1.Ingress {
+	ing, ok := obj.(*slim_networkingv1.Ingress)
+	if ok {
+		return ing
+	}
+	deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
+	if ok {
+		// Delete was not observed by the watcher but is
+		// removed from kube-apiserver. This is the last
+		// known state and the object no longer exists.
+		svc, ok := deletedObj.Obj.(*slim_networkingv1.Ingress)
+		if ok {
+			return svc
+		}
+	}
+	log.WithField(logfields.Object, logfields.Repr(obj)).
+		Warn("Ignoring invalid v1 Ingress")
 	return nil
 }
 
@@ -220,7 +240,7 @@ func ObjToV1PartialObjectMetadata(obj interface{}) *slim_metav1.PartialObjectMet
 	return nil
 }
 
-func EqualV1Services(k8sSVC1, k8sSVC2 *slim_corev1.Service, nodeAddressing datapath.NodeAddressing) bool {
+func EqualV1Services(k8sSVC1, k8sSVC2 *slim_corev1.Service, nodeAddressing dpTypes.NodeAddressing) bool {
 	// Service annotations are used to mark services as global, shared, etc.
 	if !comparator.MapStringEquals(k8sSVC1.GetAnnotations(), k8sSVC2.GetAnnotations()) {
 		return false
@@ -342,9 +362,19 @@ func ConvertToK8sV1LoadBalancerIngress(slimLBIngs []slim_corev1.LoadBalancerIngr
 
 	lbIngs := make([]v1.LoadBalancerIngress, 0, len(slimLBIngs))
 	for _, lbIng := range slimLBIngs {
+		ports := make([]v1.PortStatus, 0, len(lbIng.Ports))
+		for _, port := range lbIng.Ports {
+			ports = append(ports, v1.PortStatus{
+				Port:     port.Port,
+				Protocol: v1.Protocol(port.Protocol),
+				Error:    port.Error,
+			})
+		}
 		lbIngs = append(lbIngs,
 			v1.LoadBalancerIngress{
-				IP: lbIng.IP,
+				IP:       lbIng.IP,
+				Hostname: lbIng.Hostname,
+				Ports:    ports,
 			},
 		)
 	}
@@ -735,8 +765,54 @@ func ConvertToCiliumEgressNATPolicy(obj interface{}) interface{} {
 	}
 }
 
+// ConvertToCiliumClusterwideEnvoyConfig converts a *cilium_v2alpha1.CiliumClusterwideEnvoyConfig into a
+// *cilium_v2alpha1.CiliumClusterwideEnvoyConfig or a cache.DeletedFinalStateUnknown into
+// a cache.DeletedFinalStateUnknown with a *cilium_v2alpha1.CiliumClusterwideEnvoyConfig in its Obj.
+// If the given obj can't be cast into either *cilium_v2alpha1.CiliumClusterwideEnvoyConfig
+// nor cache.DeletedFinalStateUnknown, the original obj is returned.
+func ConvertToCiliumClusterwideEnvoyConfig(obj interface{}) interface{} {
+	switch concreteObj := obj.(type) {
+	case *cilium_v2alpha1.CiliumClusterwideEnvoyConfig:
+		return concreteObj
+	case cache.DeletedFinalStateUnknown:
+		ciliumClusterwideEnvoyConfig, ok := concreteObj.Obj.(*cilium_v2alpha1.CiliumClusterwideEnvoyConfig)
+		if !ok {
+			return obj
+		}
+		return cache.DeletedFinalStateUnknown{
+			Key: concreteObj.Key,
+			Obj: ciliumClusterwideEnvoyConfig,
+		}
+	default:
+		return obj
+	}
+}
+
+// ConvertToCiliumEnvoyConfig converts a *cilium_v2alpha1.CiliumEnvoyConfig into a
+// *cilium_v2alpha1.CiliumEnvoyConfig or a cache.DeletedFinalStateUnknown into
+// a cache.DeletedFinalStateUnknown with a *cilium_v2alpha1.CiliumEnvoyConfig in its Obj.
+// If the given obj can't be cast into either *cilium_v2alpha1.CiliumEnvoyConfig
+// nor cache.DeletedFinalStateUnknown, the original obj is returned.
+func ConvertToCiliumEnvoyConfig(obj interface{}) interface{} {
+	switch concreteObj := obj.(type) {
+	case *cilium_v2alpha1.CiliumEnvoyConfig:
+		return concreteObj
+	case cache.DeletedFinalStateUnknown:
+		ciliumEnvoyConfig, ok := concreteObj.Obj.(*cilium_v2alpha1.CiliumEnvoyConfig)
+		if !ok {
+			return obj
+		}
+		return cache.DeletedFinalStateUnknown{
+			Key: concreteObj.Key,
+			Obj: ciliumEnvoyConfig,
+		}
+	default:
+		return obj
+	}
+}
+
 // ObjToCiliumNode attempts to cast object to a CiliumNode object and
-// returns a deep copy if the castin succeeds. Otherwise, nil is returned.
+// returns the CiliumNode objext if the cast succeeds. Otherwise, nil is returned.
 func ObjToCiliumNode(obj interface{}) *cilium_v2.CiliumNode {
 	cn, ok := obj.(*cilium_v2.CiliumNode)
 	if ok {
@@ -829,7 +905,7 @@ func ConvertToCiliumEndpoint(obj interface{}) interface{} {
 }
 
 // ObjToCiliumEndpoint attempts to cast object to a CiliumEndpoint object
-// and returns a deep copy if the castin succeeds. Otherwise, nil is returned.
+// and returns the CiliumEndpoint object if the cast succeeds. Otherwise, nil is returned.
 func ObjToCiliumEndpoint(obj interface{}) *types.CiliumEndpoint {
 	ce, ok := obj.(*types.CiliumEndpoint)
 	if ok {
@@ -851,7 +927,7 @@ func ObjToCiliumEndpoint(obj interface{}) *types.CiliumEndpoint {
 }
 
 // ObjToCLRP attempts to cast object to a CLRP object and
-// returns a deep copy if the castin succeeds. Otherwise, nil is returned.
+// returns the CLRP object if the cast succeeds. Otherwise, nil is returned.
 func ObjToCLRP(obj interface{}) *cilium_v2.CiliumLocalRedirectPolicy {
 	cLRP, ok := obj.(*cilium_v2.CiliumLocalRedirectPolicy)
 	if ok {
@@ -873,7 +949,7 @@ func ObjToCLRP(obj interface{}) *cilium_v2.CiliumLocalRedirectPolicy {
 }
 
 // ObjToCENP attempts to cast object to a CENP object and
-// returns a deep copy if the castin succeeds. Otherwise, nil is returned.
+// returns the CENP object if the cast succeeds. Otherwise, nil is returned.
 func ObjToCENP(obj interface{}) *cilium_v2alpha1.CiliumEgressNATPolicy {
 	cENP, ok := obj.(*cilium_v2alpha1.CiliumEgressNATPolicy)
 	if ok {
@@ -916,7 +992,7 @@ func ObjToCiliumEndpointSlice(obj interface{}) *cilium_v2alpha1.CiliumEndpointSl
 	return nil
 }
 
-// convertCEPToCoreCEP converts a CiliumEndpoint to a CoreCiliumEndpoint
+// ConvertCEPToCoreCEP converts a CiliumEndpoint to a CoreCiliumEndpoint
 // containing only a minimal set of entities used to
 func ConvertCEPToCoreCEP(cep *cilium_v2.CiliumEndpoint) *cilium_v2alpha1.CoreCiliumEndpoint {
 
@@ -956,4 +1032,48 @@ func ConvertCoreCiliumEndpointToTypesCiliumEndpoint(ccep *cilium_v2alpha1.CoreCi
 		Networking: ccep.Networking,
 		NamedPorts: ccep.NamedPorts,
 	}
+}
+
+// ObjToCCEC attempts to cast object to a CCEC object and
+// returns the object if the cast succeeds. Otherwise, nil is returned.
+func ObjToCCEC(obj interface{}) *cilium_v2alpha1.CiliumClusterwideEnvoyConfig {
+	ccec, ok := obj.(*cilium_v2alpha1.CiliumClusterwideEnvoyConfig)
+	if ok {
+		return ccec
+	}
+	deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
+	if ok {
+		// Delete was not observed by the watcher but is
+		// removed from kube-apiserver. This is the last
+		// known state and the object no longer exists.
+		ccec, ok := deletedObj.Obj.(*cilium_v2alpha1.CiliumClusterwideEnvoyConfig)
+		if ok {
+			return ccec
+		}
+	}
+	log.WithField(logfields.Object, logfields.Repr(obj)).
+		Warn("Ignoring invalid v2alpha1 Cilium Clusterwide Envoy Config")
+	return nil
+}
+
+// ObjToCEC attempts to cast object to a CEC object and
+// returns the object if the cast succeeds. Otherwise, nil is returned.
+func ObjToCEC(obj interface{}) *cilium_v2alpha1.CiliumEnvoyConfig {
+	cec, ok := obj.(*cilium_v2alpha1.CiliumEnvoyConfig)
+	if ok {
+		return cec
+	}
+	deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
+	if ok {
+		// Delete was not observed by the watcher but is
+		// removed from kube-apiserver. This is the last
+		// known state and the object no longer exists.
+		cec, ok := deletedObj.Obj.(*cilium_v2alpha1.CiliumEnvoyConfig)
+		if ok {
+			return cec
+		}
+	}
+	log.WithField(logfields.Object, logfields.Repr(obj)).
+		Warn("Ignoring invalid v2alpha1 Cilium Envoy Config")
+	return nil
 }

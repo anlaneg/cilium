@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package helpers
 
@@ -41,7 +41,7 @@ const (
 	CiliumPath = "/src/github.com/cilium/cilium/test"
 
 	// K8sManifestBase tells ginkgo suite where to look for manifests
-	K8sManifestBase = "k8sT/manifests"
+	K8sManifestBase = "k8s/manifests"
 
 	// VM / Test suite constants.
 	K8s     = "k8s"
@@ -127,7 +127,6 @@ const (
 	OptionDebug               = "Debug"
 	OptionDropNotify          = "DropNotification"
 	OptionTraceNotify         = "TraceNotification"
-	OptionNAT46               = "NAT46"
 	OptionIngressPolicy       = "IngressPolicy"
 	OptionEgressPolicy        = "EgressPolicy"
 	OptionIngress             = "ingress"

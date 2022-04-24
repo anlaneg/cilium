@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -18,11 +18,12 @@ import (
 const (
 	idTitle             = "ID"
 	serviceAddressTitle = "SERVICE ADDRESS"
-	backendAddressTitle = "BACKEND ADDRESS"
+	backendIdTitle      = "BACKEND ID"
+	backendAddressTitle = "BACKEND ADDRESS (REVNAT_ID) (SLOT)"
 )
 
 var (
-	listRevNAT bool
+	listRevNAT, listFrontends, listBackends bool
 )
 
 func dumpRevNat(serviceList map[string][]string) {
@@ -31,6 +32,24 @@ func dumpRevNat(serviceList map[string][]string) {
 	}
 	if err := lbmap.RevNat6Map.DumpIfExists(serviceList); err != nil {
 		Fatalf("Unable to dump IPv6 reverse NAT table: %s", err)
+	}
+}
+
+func dumpFrontends(serviceList map[string][]string) {
+	if err := lbmap.Service4MapV2.DumpIfExists(serviceList); err != nil {
+		Fatalf("Unable to dump IPv4 frontend table: %s", err)
+	}
+	if err := lbmap.Service6MapV2.DumpIfExists(serviceList); err != nil {
+		Fatalf("Unable to dump IPv6 frontend table: %s", err)
+	}
+}
+
+func dumpBackends(serviceList map[string][]string) {
+	if err := lbmap.Backend4MapV2.DumpIfExists(serviceList); err != nil {
+		Fatalf("Unable to dump IPv4 backend table: %s", err)
+	}
+	if err := lbmap.Backend6MapV2.DumpIfExists(serviceList); err != nil {
+		Fatalf("Unable to dump IPv6 backend table: %s", err)
 	}
 }
 
@@ -57,25 +76,26 @@ func dumpSVC(serviceList map[string][]string) {
 		svcVal := value.(lbmap.ServiceValue).ToHost()
 		svc := svcKey.String()
 		svcKey = svcKey.ToHost()
+		backendSlot := svcKey.GetBackendSlot()
 		revNATID := svcVal.GetRevNat()
 		backendID := svcVal.GetBackendID()
 		flags := loadbalancer.ServiceFlags(svcVal.GetFlags())
 
-		if svcKey.GetBackendSlot() == 0 {
+		if backendSlot == 0 {
 			ip := "0.0.0.0"
 			if svcKey.IsIPv6() {
 				ip = "[::]"
 			}
-			entry = fmt.Sprintf("%s:%d (%d) [%s]", ip, 0, revNATID, flags)
+			entry = fmt.Sprintf("%s:%d (%d) (%d) [%s]", ip, 0, revNATID, backendSlot, flags)
 		} else if backend, found := backendMap[backendID]; !found {
 			entry = fmt.Sprintf("backend %d not found", backendID)
 		} else {
-			fmtStr := "%s:%d (%d)"
+			fmtStr := "%s:%d (%d) (%d)"
 			if svcKey.IsIPv6() {
-				fmtStr = "[%s]:%d (%d)"
+				fmtStr = "[%s]:%d (%d) (%d)"
 			}
 			entry = fmt.Sprintf(fmtStr, backend.GetAddress(),
-				backend.GetPort(), revNATID)
+				backend.GetPort(), revNATID, backendSlot)
 		}
 
 		serviceList[svc] = append(serviceList[svc], entry)
@@ -105,11 +125,19 @@ var bpfLBListCmd = &cobra.Command{
 		lbmap.Init(lbmap.InitParams{IPv4: true, IPv6: true})
 
 		var firstTitle string
+		secondTitle := backendAddressTitle
 		serviceList := make(map[string][]string)
 		switch {
 		case listRevNAT:
 			firstTitle = idTitle
 			dumpRevNat(serviceList)
+		case listFrontends:
+			firstTitle = serviceAddressTitle
+			secondTitle = backendIdTitle
+			dumpFrontends(serviceList)
+		case listBackends:
+			firstTitle = idTitle
+			dumpBackends(serviceList)
 		default:
 			firstTitle = serviceAddressTitle
 			dumpSVC(serviceList)
@@ -122,7 +150,7 @@ var bpfLBListCmd = &cobra.Command{
 			return
 		}
 
-		TablePrinter(firstTitle, backendAddressTitle, serviceList)
+		TablePrinter(firstTitle, secondTitle, serviceList)
 	},
 }
 
@@ -130,5 +158,7 @@ func init() {
 	/*添加bpf lb list命令*/
 	bpfLBCmd.AddCommand(bpfLBListCmd)
 	bpfLBListCmd.Flags().BoolVarP(&listRevNAT, "revnat", "", false, "List reverse NAT entries")
+	bpfLBListCmd.Flags().BoolVarP(&listFrontends, "frontends", "", false, "List all service frontend entries")
+	bpfLBListCmd.Flags().BoolVarP(&listBackends, "backends", "", false, "List all service backend entries")
 	command.AddJSONOutput(bpfLBListCmd)
 }

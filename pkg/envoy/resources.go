@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018 Authors of Cilium
+// Copyright Authors of Cilium
 
 package envoy
 
@@ -20,6 +20,21 @@ const (
 	// ListenerTypeURL is the type URL of Listener resources.
 	ListenerTypeURL = "type.googleapis.com/envoy.config.listener.v3.Listener"
 
+	// RouteTypeURL is the type URL of HTTP Route resources.
+	RouteTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+
+	// ClusterTypeURL is the type URL of Cluster resources.
+	ClusterTypeURL = "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+
+	// HttpConnectionManagerTypeURL is the type URL of HttpConnectionManager resources.
+	HttpConnectionManagerTypeURL = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+
+	// EndpointTypeURL is the type URL of Endpoint resources.
+	EndpointTypeURL = "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment"
+
+	// SecretTypeURL is the type URL of Endpoint resources.
+	SecretTypeURL = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret"
+
 	// NetworkPolicyTypeURL is the type URL of NetworkPolicy resources.
 	NetworkPolicyTypeURL = "type.googleapis.com/cilium.NetworkPolicy"
 
@@ -29,20 +44,21 @@ const (
 
 // NPHDSCache is a cache of resources in the Network Policy Hosts Discovery
 // Service.
+//
+// NetworkPolicyHostsCache is the global cache of resources of type
+// NetworkPolicyHosts. Resources in this cache must have the
+// NetworkPolicyHostsTypeURL type URL.
 type NPHDSCache struct {
 	*xds.Cache
+
+	ipcache *ipcache.IPCache
 }
 
-func newNPHDSCache() NPHDSCache {
-	return NPHDSCache{Cache: xds.NewCache()}
+func newNPHDSCache(ipcache *ipcache.IPCache) NPHDSCache {
+	return NPHDSCache{Cache: xds.NewCache(), ipcache: ipcache}
 }
 
 var (
-	// NetworkPolicyHostsCache is the global cache of resources of type
-	// NetworkPolicyHosts. Resources in this cache must have the
-	// NetworkPolicyHostsTypeURL type URL.
-	NetworkPolicyHostsCache = newNPHDSCache()
-
 	observerOnce = sync.Once{}
 )
 
@@ -53,7 +69,7 @@ var (
 func (cache *NPHDSCache) HandleResourceVersionAck(ackVersion uint64, nackVersion uint64, nodeIP string, resourceNames []string, typeURL string, detail string) {
 	// Start caching for IP/ID mappings on the first indication someone wants them
 	observerOnce.Do(func() {
-		ipcache.IPIdentityCache.AddListener(cache)
+		cache.ipcache.AddListener(cache)
 	})
 }
 

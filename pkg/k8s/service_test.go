@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package k8s
 
@@ -281,6 +280,8 @@ func TestService_Equals(t *testing.T) {
 						Port:     1,
 					},
 				},
+				Shared:          true,
+				IncludeExternal: true,
 				NodePorts: map[loadbalancer.FEPortName]NodePortToFrontend{
 					loadbalancer.FEPortName("foo"): {
 						"0.0.0.0:31000": {
@@ -313,6 +314,8 @@ func TestService_Equals(t *testing.T) {
 							Port:     1,
 						},
 					},
+					Shared:          true,
+					IncludeExternal: true,
 					NodePorts: map[loadbalancer.FEPortName]NodePortToFrontend{
 						loadbalancer.FEPortName("foo"): {
 							"0.0.0.0:31000": {
@@ -367,6 +370,74 @@ func TestService_Equals(t *testing.T) {
 					Labels: map[string]string{
 						"foo": "bar",
 					},
+					Selector: map[string]string{
+						"baz": "foz",
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "different shared",
+			fields: &Service{
+				FrontendIPs: []net.IP{net.ParseIP("1.1.1.1")},
+				IsHeadless:  true,
+				Ports: map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
+					loadbalancer.FEPortName("foo"): {
+						Protocol: loadbalancer.NONE,
+						Port:     1,
+					},
+				},
+				Shared:   true,
+				Labels:   map[string]string{},
+				Selector: map[string]string{},
+			},
+			args: args{
+				o: &Service{
+					FrontendIPs: []net.IP{net.ParseIP("1.1.1.1")},
+					IsHeadless:  true,
+					Ports: map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
+						loadbalancer.FEPortName("foo"): {
+							Protocol: loadbalancer.NONE,
+							Port:     1,
+						},
+					},
+					Shared: false,
+					Labels: map[string]string{},
+					Selector: map[string]string{
+						"baz": "foz",
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "different include external",
+			fields: &Service{
+				FrontendIPs: []net.IP{net.ParseIP("1.1.1.1")},
+				IsHeadless:  true,
+				Ports: map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
+					loadbalancer.FEPortName("foo"): {
+						Protocol: loadbalancer.NONE,
+						Port:     1,
+					},
+				},
+				IncludeExternal: true,
+				Labels:          map[string]string{},
+				Selector:        map[string]string{},
+			},
+			args: args{
+				o: &Service{
+					FrontendIPs: []net.IP{net.ParseIP("1.1.1.1")},
+					IsHeadless:  true,
+					Ports: map[loadbalancer.FEPortName]*loadbalancer.L4Addr{
+						loadbalancer.FEPortName("foo"): {
+							Protocol: loadbalancer.NONE,
+							Port:     1,
+						},
+					},
+					IncludeExternal: false,
+					Labels:          map[string]string{},
 					Selector: map[string]string{
 						"baz": "foz",
 					},

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package client
 
@@ -386,7 +386,8 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 		if !sr.BandwidthManager.Enabled {
 			status = "Disabled"
 		} else {
-			status = fmt.Sprintf("EDT with BPF\t[%s]",
+			status = fmt.Sprintf("EDT with BPF [%s] [%s]",
+				strings.ToUpper(sr.BandwidthManager.CongestionControl),
 				strings.Join(sr.BandwidthManager.Devices, ", "))
 		}
 		fmt.Fprintf(w, "BandwidthManager:\t%s\n", status)
@@ -510,6 +511,13 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 		fmt.Fprintf(w, "Proxy Status:\tNo managed proxy redirect\n")
 	}
 
+	if sr.IdentityRange != nil {
+		fmt.Fprintf(w, "Global Identity Range:\tmin %d, max %d\n",
+			sr.IdentityRange.MinIdentity, sr.IdentityRange.MaxIdentity)
+	} else {
+		fmt.Fprintf(w, "Global Identity Range:\tUnknown\n")
+	}
+
 	if sr.Hubble != nil {
 		var fields []string
 
@@ -583,6 +591,11 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 			gracefulTerm = "Enabled"
 		}
 
+		nat46X64 := "Disabled"
+		if sr.KubeProxyReplacement.Features.Nat46X64.Enabled {
+			nat46X64 = "Enabled"
+		}
+
 		fmt.Fprintf(w, "KubeProxyReplacement Details:\n")
 		tab := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 		fmt.Fprintf(tab, "  Status:\t%s\n", sr.KubeProxyReplacement.Mode)
@@ -600,6 +613,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 		}
 		fmt.Fprintf(tab, "  Session Affinity:\t%s\n", affinity)
 		fmt.Fprintf(tab, "  Graceful Termination:\t%s\n", gracefulTerm)
+		fmt.Fprintf(tab, "  NAT46/64 Support:\t%s\n", nat46X64)
 		if xdp != "" {
 			fmt.Fprintf(tab, "  XDP Acceleration:\t%s\n", xdp)
 		}

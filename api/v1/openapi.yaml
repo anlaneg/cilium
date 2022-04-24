@@ -643,6 +643,11 @@ paths:
           x-go-name: Failure
           schema:
             "$ref": "#/definitions/Error"
+        '501':
+          description: Error while updating backend states
+          x-go-name: UpdateBackendFailure
+          schema:
+            "$ref": "#/definitions/Error"
     delete:
       summary: Delete a service
       tags:
@@ -1744,6 +1749,9 @@ definitions:
       proxy:
         description: Status of proxy
         "$ref": "#/definitions/ProxyStatus"
+      identity-range:
+        description: Status of identity range of the cluster
+        "$ref": "#/definitions/IdentityRange"
       bandwidth-manager:
         description: Status of bandwidth manager
         "$ref": "#/definitions/BandwidthManager"
@@ -2007,6 +2015,15 @@ definitions:
               enabled:
                 type: boolean
           gracefulTermination:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
+            type: object
+            properties:
+              enabled:
+                type: boolean
+          nat46X64:
             description: |-
 
 
@@ -2466,6 +2483,14 @@ definitions:
       nodeName:
         description: Optional name of the node on which this backend runs
         type: string
+      state:
+        description: State of the backend for load-balancing service traffic
+        type: string
+        enum:
+          - active
+          - terminating
+          - quarantined
+          - maintenance
   LRPBackend:
     description: Pod backend of an LRP
     type: object
@@ -2558,6 +2583,13 @@ definitions:
             enum:
             - Cluster
             - Local
+          natPolicy:
+            description: Service protocol NAT policy
+            type: string
+            enum:
+            - None
+            - Nat46
+            - Nat64
           healthCheckNodePort:
             description: Service health check node port
             type: integer
@@ -2568,6 +2600,12 @@ definitions:
           namespace:
             description: Service namespace  (e.g. Kubernetes namespace)
             type: string
+      updateServices:
+        description: |
+          Update all services selecting the backends with their given states
+          (id and frontend are ignored)
+        type: boolean
+
   ServiceStatus:
     description: Configuration of a service
     type: object
@@ -2690,6 +2728,18 @@ definitions:
         type: array
         items:
           "$ref": "#/definitions/ProxyRedirect"
+  IdentityRange:
+    description: |-
+      Status of identity range of the cluster
+
+      +k8s:deepcopy-gen=true
+    properties:
+      min-identity:
+        description: Minimum identity of the cluster
+        type: integer
+      max-identity:
+        description: Maximum identity of the cluster
+        type: integer
   ProxyRedirect:
     description: Configured proxy redirection state
     type: object
@@ -2769,6 +2819,11 @@ definitions:
         type: array
         items:
           type: string
+      congestionControl:
+        type: string
+        enum:
+        - cubic
+        - bbr
   Masquerading:
     description: |-
       Status of masquerading
@@ -3028,7 +3083,7 @@ definitions:
         description: The TTL in the DNS response
         type: integer
       lookup-time:
-        description: The absolute time when this data was recieved
+        description: The absolute time when this data was received
         type: string
         format: date-time
       expiration-time:

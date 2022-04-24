@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Hubble
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Hubble
+// Copyright Authors of Cilium
 
 package testutils
 
@@ -325,6 +325,18 @@ var NoopEndpointGetter = FakeEndpointGetter{
 		return nil, false
 	},
 }
+
+type FakeLinkGetter struct{}
+
+func (e *FakeLinkGetter) Name(ifindex uint32) string {
+	return "lo"
+}
+
+func (e *FakeLinkGetter) GetIfNameCached(ifindex int) (string, bool) {
+	return e.Name(uint32(ifindex)), true
+}
+
+var NoopLinkGetter = FakeLinkGetter{}
 
 // FakeIPGetter is used for unit tests that needs IPGetter.
 type FakeIPGetter struct {

@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2019-2021 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 /* Simple NAT engine in BPF. */
 #ifndef __LIB_NAT__
@@ -18,6 +18,7 @@
 #include "conntrack.h"
 #include "conntrack_map.h"
 #include "icmp6.h"
+#include "nat_46x64.h"
 
 enum  nat_dir {
 	NAT_DIR_EGRESS  = TUPLE_F_OUT,
@@ -296,7 +297,7 @@ static __always_inline int snat_v4_track_local(struct __ctx_buff *ctx,
 		return ret;
 	} else if (ret == CT_NEW) {
 		ret = ct_create4(get_ct_map4(&tmp), NULL, &tmp, ctx,
-				 where, &ct_state, false);
+				 where, &ct_state, false, false);
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -810,7 +811,7 @@ static __always_inline int snat_v6_track_local(struct __ctx_buff *ctx,
 		return ret;
 	} else if (ret == CT_NEW) {
 		ret = ct_create6(get_ct_map6(&tmp), NULL, &tmp, ctx, where,
-				 &ct_state, false);
+				 &ct_state, false, false);
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -982,7 +983,7 @@ static __always_inline __maybe_unused int snat_v6_create_dsr(struct __ctx_buff *
 		return DROP_INVALID;
 
 	tuple.nexthdr = ip6->nexthdr;
-	hdrlen = ipv6_hdrlen(ctx, ETH_HLEN, &tuple.nexthdr);
+	hdrlen = ipv6_hdrlen(ctx, &tuple.nexthdr);
 	if (hdrlen < 0)
 		return hdrlen;
 
@@ -1042,7 +1043,7 @@ snat_v6_process(struct __ctx_buff *ctx, enum nat_dir dir,
 		return DROP_INVALID;
 
 	nexthdr = ip6->nexthdr;
-	hdrlen = ipv6_hdrlen(ctx, ETH_HLEN, &nexthdr);
+	hdrlen = ipv6_hdrlen(ctx, &nexthdr);
 	if (hdrlen < 0)
 		return hdrlen;
 
@@ -1111,6 +1112,26 @@ void snat_v6_delete_tuples(struct ipv6_ct_tuple *tuple __maybe_unused)
 {
 }
 #endif
+
+static __always_inline bool
+snat_v6_has_v4_match(const struct ipv4_ct_tuple *tuple4 __maybe_unused)
+{
+#if defined(ENABLE_IPV6) && defined(ENABLE_NODEPORT)
+	struct ipv6_ct_tuple tuple6;
+
+	memset(&tuple6, 0, sizeof(tuple6));
+	tuple6.nexthdr = tuple4->nexthdr;
+	build_v4_in_v6(&tuple6.saddr, tuple4->saddr);
+	build_v4_in_v6(&tuple6.daddr, tuple4->daddr);
+	tuple6.sport = tuple4->sport;
+	tuple6.dport = tuple4->dport;
+	tuple6.flags = NAT_DIR_INGRESS;
+
+	return snat_v6_lookup(&tuple6);
+#else
+	return false;
+#endif
+}
 
 static __always_inline __maybe_unused void
 ct_delete4(const void *map, struct ipv4_ct_tuple *tuple, struct __ctx_buff *ctx)

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 // Ensure build fails on versions of Go that are not supported by Cilium.
 // This build tag should be kept in sync with the version specified in go.mod.
-//go:build go1.17
-// +build go1.17
+//go:build go1.18
 
 package main
 
@@ -88,6 +87,13 @@ var (
 			log.WithFields(addrField).Info("Started gops server")
 
 			runServer(cmd)
+		},
+		PreRun: func(cmd *cobra.Command, args []string) {
+			option.Config.Populate()
+			if option.Config.Debug {
+				log.Logger.SetLevel(logrus.DebugLevel)
+			}
+			option.LogRegisteredOptions(log)
 		},
 	}
 
@@ -198,6 +204,12 @@ func runApiserver() error {
 	flags.StringVar(&cfg.clusterName, option.ClusterName, "default", "Cluster name")
 	option.BindEnv(option.ClusterName)
 
+	flags.String(option.K8sKubeConfigPath, "", "Absolute path of the kubernetes kubeconfig file")
+	option.BindEnv(option.K8sKubeConfigPath)
+
+	flags.Int(option.ClusterMeshHealthPort, defaults.ClusterMeshHealthPort, "TCP port for ClusterMesh apiserver health API")
+	option.BindEnv(option.ClusterMeshHealthPort)
+
 	flags.StringVar(&mockFile, "mock-file", "", "Read from mock file")
 
 	flags.Duration(option.KVstoreConnectivityTimeout, defaults.KVstoreConnectivityTimeout, "Time after which an incomplete kvstore operation  is considered failed")
@@ -211,7 +223,7 @@ func runApiserver() error {
 	option.BindEnv(option.KVstorePeriodicSync)
 
 	flags.Var(option.NewNamedMapOptions(option.KVStoreOpt, &option.Config.KVStoreOpt, nil),
-		option.KVStoreOpt, "Key-value store options")
+		option.KVStoreOpt, "Key-value store options e.g. etcd.address=127.0.0.1:4001")
 	option.BindEnv(option.KVStoreOpt)
 
 	flags.StringVar(&cfg.serviceProxyName, option.K8sServiceProxyName, "", "Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)")
@@ -220,8 +232,10 @@ func runApiserver() error {
 	flags.Duration(option.AllocatorListTimeoutName, defaults.AllocatorListTimeout, "Timeout for listing allocator state before exiting")
 	option.BindEnv(option.AllocatorListTimeoutName)
 
+	flags.Bool(option.EnableWellKnownIdentities, defaults.EnableWellKnownIdentities, "Enable well-known identities for known Kubernetes components")
+	option.BindEnv(option.EnableWellKnownIdentities)
+
 	viper.BindPFlags(flags)
-	option.Config.Populate()
 
 	if err := rootCmd.Execute(); err != nil {
 		return err
@@ -254,7 +268,7 @@ func startApi() {
 		}
 	})
 
-	srv := &http.Server{}
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", option.Config.ClusterMeshHealthPort)}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
@@ -558,7 +572,7 @@ func runServer(cmd *cobra.Command) {
 	}).Info("Starting clustermesh-apiserver...")
 
 	if mockFile == "" {
-		k8s.Configure("", "", 0.0, 0)
+		k8s.Configure("", option.Config.K8sKubeConfigPath, 0.0, 0)
 		if err := k8s.Init(k8sconfig.NewDefaultConfiguration()); err != nil {
 			log.WithError(err).Fatal("Unable to connect to Kubernetes apiserver")
 		}
@@ -621,5 +635,4 @@ func runServer(cmd *cobra.Command) {
 
 	<-shutdownSignal
 	log.Info("Received termination signal. Shutting down")
-	return
 }

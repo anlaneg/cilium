@@ -1,19 +1,7 @@
-// Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package speaker
 
@@ -212,15 +200,10 @@ func TestSpeakerOnDeleteService(t *testing.T) {
 		t.Fatalf("got: %v, want: nil", rr.eps)
 	}
 
-	// confirm spkr appended service to map
+	// confirm spkr removed service to map
 	_, ok := spkr.services[serviceID]
 	if ok {
 		t.Fatalf("speaker did not delete slim_corev1.Service object to its services map.")
-	}
-
-	// confirm fence is empty
-	if len(spkr.Fencer) != 0 {
-		t.Fatalf("expected fence to be empty. got: %v", spkr.Fencer)
 	}
 }
 

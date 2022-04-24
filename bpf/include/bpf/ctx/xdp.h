@@ -1,10 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2020-2021 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __BPF_CTX_XDP_H_
 #define __BPF_CTX_XDP_H_
 
 #include <linux/if_ether.h>
+#include <linux/byteorder.h>
 
 #define __ctx_buff			xdp_md
 #define __ctx_is			__ctx_xdp
@@ -19,6 +20,7 @@
 #define CTX_ACT_OK			XDP_PASS
 #define CTX_ACT_DROP			XDP_DROP
 #define CTX_ACT_TX			XDP_TX	/* hairpin only */
+#define CTX_ACT_REDIRECT		XDP_REDIRECT
 
 #define CTX_DIRECT_WRITE_OK		1
 
@@ -91,7 +93,6 @@ xdp_store_bytes(const struct xdp_md *ctx, __u64 off, const void *from,
  */
 
 #define ctx_change_type			xdp_change_type__stub
-#define ctx_change_proto		xdp_change_proto__stub
 #define ctx_change_tail			xdp_change_tail__stub
 
 #define ctx_pull_data(ctx, ...)		do { /* Already linear. */ } while (0)
@@ -195,6 +196,44 @@ l4_csum_replace(const struct xdp_md *ctx, __u64 off, __u32 from, __u32 to,
 }
 
 static __always_inline __maybe_unused int
+ctx_change_proto(struct xdp_md *ctx __maybe_unused,
+		 const __be16 proto __maybe_unused,
+		 const __u64 flags __maybe_unused)
+{
+	const __s32 len_diff = proto == __constant_htons(ETH_P_IPV6) ?
+			       20 /* 4->6 */ : -20 /* 6->4 */;
+	const __u32 move_len = 14;
+	void *data, *data_end;
+	int ret;
+
+	/* We make the assumption that when ctx_change_proto() is called
+	 * the target proto != current proto.
+	 */
+	build_bug_on(flags != 0);
+	build_bug_on(proto != __constant_htons(ETH_P_IPV6) &&
+		     proto != __constant_htons(ETH_P_IP));
+
+	if (len_diff < 0) {
+		data_end = ctx_data_end(ctx);
+		data = ctx_data(ctx);
+		if (data + move_len + -len_diff <= data_end)
+			__bpf_memmove_fwd(data + -len_diff, data, move_len);
+		else
+			return -EFAULT;
+	}
+	ret = xdp_adjust_head(ctx, -len_diff);
+	if (!ret && len_diff > 0) {
+		data_end = ctx_data_end(ctx);
+		data = ctx_data(ctx);
+		if (data + move_len + len_diff <= data_end)
+			__bpf_memmove_fwd(data, data + len_diff, move_len);
+		else
+			return -EFAULT;
+	}
+	return ret;
+}
+
+static __always_inline __maybe_unused int
 ctx_adjust_troom(struct xdp_md *ctx, const __s32 len_diff)
 {
 	return xdp_adjust_tail(ctx, len_diff);
@@ -235,7 +274,7 @@ ctx_adjust_hroom(struct xdp_md *ctx, const __s32 len_diff, const __u32 mode,
 		case 48: /* struct {ipv6hdr + icmp6hdr} */
 			break;
 		case 40: /* struct ipv6hdr */
-		case 22: /* struct dsr_opt_v6 */
+		case 24: /* struct dsr_opt_v6 */
 			if (data + move_len_v6 + len_diff <= data_end)
 				__bpf_memmove_fwd(data, data + len_diff,
 						  move_len_v6);

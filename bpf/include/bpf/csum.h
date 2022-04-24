@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __BPF_CSUM_H_
 #define __BPF_CSUM_H_
@@ -23,6 +23,11 @@ static __always_inline __wsum csum_add(__wsum csum, __wsum addend)
 {
 	csum += addend;
 	return csum + (csum < addend);
+}
+
+static __always_inline __wsum csum_sub(__wsum csum, __wsum addend)
+{
+	return csum_add(csum, ~addend);
 }
 
 static __always_inline __wsum csum_diff(const void *from, __u32 size_from,

@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2016-2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_DBG__
 #define __LIB_DBG__
@@ -118,6 +118,10 @@ enum {
 				 */
 	DBG_SK_ASSIGN,		/* arg1: result
 				 * arg2: unuseds
+				 */
+	DBG_L7_LB,		/* arg1: saddr (last 4 bytes for IPv6)
+				 * arg2: daddr (last 4 bytes for IPv6)
+				 * arg3: proxy port (in host byte order)
 				 */
 };
 

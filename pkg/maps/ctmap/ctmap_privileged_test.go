@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package ctmap
 
@@ -11,6 +10,8 @@ import (
 	"unsafe"
 
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/maps/nat"
@@ -35,7 +36,7 @@ func Test(t *testing.T) {
 
 func (k *CTMapTestSuite) SetUpSuite(c *C) {
 	bpf.CheckOrMountFS("")
-	err := bpf.ConfigureResourceLimits()
+	err := rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
 }
 

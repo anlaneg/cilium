@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package endpoint
 
@@ -141,9 +141,9 @@ func (e *Endpoint) writeInformationalComments(w io.Writer) error {
 	return fw.Flush()
 }
 
-// writeHeaderfile writes the lxc_config.h header file of an endpoint
+// writeHeaderfile writes the lxc_config.h header file of an endpoint.
 //
-// e.mutex must be RLock()ed.
+// e.mutex must be write-locked.
 func (e *Endpoint) writeHeaderfile(prefix string) error {
 	headerPath := filepath.Join(prefix, common.CHeaderFileName)
 	e.getLogger().WithFields(logrus.Fields{
@@ -345,8 +345,8 @@ func (e *Endpoint) addVisibilityRedirects(ingress bool, desiredRedirects map[str
 		visPolicy    policy.DirectionalVisibilityPolicy
 		finalizeList revert.FinalizeList
 		revertStack  revert.RevertStack
-		adds         = make(policy.MapState)
-		deletes      = make(policy.MapState)
+		adds         = make(policy.Keys)
+		oldValues    = make(policy.MapState)
 	)
 
 	if e.visibilityPolicy == nil {
@@ -411,7 +411,7 @@ func (e *Endpoint) addVisibilityRedirects(ingress bool, desiredRedirects map[str
 
 		updatedStats = append(updatedStats, proxyStats)
 
-		e.desiredPolicy.PolicyMapState.AddVisibilityKeys(e, redirectPort, visMeta, adds, deletes)
+		e.desiredPolicy.PolicyMapState.AddVisibilityKeys(e, redirectPort, visMeta, adds, oldValues)
 	}
 
 	revertStack.Push(func() error {
@@ -426,7 +426,7 @@ func (e *Endpoint) addVisibilityRedirects(ingress bool, desiredRedirects map[str
 		for k := range adds {
 			delete(e.desiredPolicy.PolicyMapState, k)
 		}
-		for k, v := range deletes {
+		for k, v := range oldValues {
 			e.desiredPolicy.PolicyMapState[k] = v
 		}
 		return nil
@@ -985,7 +985,7 @@ func (e *Endpoint) deleteMaps() []error {
 	}
 
 	// Remove handle_policy() tail call entry for EP
-	if err := policymap.RemoveGlobalMapping(uint32(e.ID)); err != nil {
+	if err := policymap.RemoveGlobalMapping(uint32(e.ID), option.Config.EnableEnvoyConfig); err != nil {
 		errors = append(errors, fmt.Errorf("unable to remove endpoint from global policy map: %s", err))
 	}
 
@@ -1215,22 +1215,30 @@ func (e *Endpoint) applyPolicyMapChanges() (proxyChanges bool, err error) {
 		for _, visMeta := range e.visibilityPolicy.Ingress {
 			proxyID := policy.ProxyID(e.ID, visMeta.Ingress, visMeta.Proto.String(), visMeta.Port)
 			if redirectPort, exists := e.realizedRedirects[proxyID]; exists && redirectPort != 0 {
-				e.desiredPolicy.PolicyMapState.AddVisibilityKeys(e, redirectPort, visMeta, adds, deletes)
+				e.desiredPolicy.PolicyMapState.AddVisibilityKeys(e, redirectPort, visMeta, adds, nil)
 			}
 		}
 		for _, visMeta := range e.visibilityPolicy.Egress {
 			proxyID := policy.ProxyID(e.ID, visMeta.Ingress, visMeta.Proto.String(), visMeta.Port)
 			if redirectPort, exists := e.realizedRedirects[proxyID]; exists && redirectPort != 0 {
-				e.desiredPolicy.PolicyMapState.AddVisibilityKeys(e, redirectPort, visMeta, adds, deletes)
+				e.desiredPolicy.PolicyMapState.AddVisibilityKeys(e, redirectPort, visMeta, adds, nil)
 			}
 		}
 	}
 
 	// Add policy map entries before deleting to avoid transient drops
-	for keyToAdd, entry := range adds {
+	for keyToAdd := range adds {
 		// AddVisibilityKeys() records changed keys in both 'deletes' (old value) and 'adds' (new value).
 		// Remove the key from 'deletes' to keep the new entry.
 		delete(deletes, keyToAdd)
+
+		entry, exists := e.desiredPolicy.PolicyMapState[keyToAdd]
+		if !exists {
+			e.getLogger().WithFields(logrus.Fields{
+				logfields.AddedPolicyID: keyToAdd,
+			}).Warn("Tried adding policy map key not in policy")
+			continue
+		}
 
 		// Redirect entries currently come in with a dummy redirect port ("1"), replace it with
 		// the actual proxy port number, or with 0 if the redirect does not exist yet. This is
@@ -1283,14 +1291,16 @@ func (e *Endpoint) syncPolicyMap() error {
 	}
 
 	// Diffs between the maps are expected here, so do not bother collecting them
-	_, _, err = e.syncDesiredPolicyMapWith(e.realizedPolicy.PolicyMapState, false)
+	_, _, err = e.syncPolicyMapsWith(e.realizedPolicy.PolicyMapState, false)
 	return err
 }
 
-// syncDesiredPolicyMapWith updates the bpf policy map state based on the
+// syncPolicyMapsWith updates the bpf policy map state based on the
 // difference between the given 'realized' and desired policy state without
 // dumping the bpf policy map.
-func (e *Endpoint) syncDesiredPolicyMapWith(realized policy.MapState, withDiffs bool) (diffCount int, diffs []policy.MapChange, err error) {
+// Changes are synced to endpoint's realized policy mapstate, 'realized' is
+// not modified.
+func (e *Endpoint) syncPolicyMapsWith(realized policy.MapState, withDiffs bool) (diffCount int, diffs []policy.MapChange, err error) {
 	errors := 0
 
 	// Add policy map entries before deleting to avoid transient drops
@@ -1412,7 +1422,7 @@ func (e *Endpoint) syncPolicyMapWithDump() error {
 	e.PolicyDebug(logrus.Fields{"dumpedPolicyMap": currentMap}, "syncPolicyMapWithDump")
 	// Diffs between the maps indicate an error in the policy map update logic.
 	// Collect and log diffs if policy logging is enabled.
-	diffCount, diffs, err := e.syncDesiredPolicyMapWith(currentMap, e.getPolicyLogger() != nil)
+	diffCount, diffs, err := e.syncPolicyMapsWith(currentMap, e.getPolicyLogger() != nil)
 
 	if diffCount > 0 {
 		e.getLogger().WithField(logfields.Count, diffCount).Warning("Policy map sync fixed errors, consider running with debug verbose = policy to get detailed dumps")

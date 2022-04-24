@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package watchers
 
@@ -210,8 +210,8 @@ func (k *K8sWatcher) addK8sPodV1(pod *slim_corev1.Pod) error {
 		return k.deleteK8sPodV1(pod)
 	}
 
-	if pod.Spec.HostNetwork {
-		logger.Debug("Pod is using host networking")
+	if pod.Spec.HostNetwork && !option.Config.EnableLocalRedirectPolicy {
+		logger.Debug("Skip pod event using host networking")
 		return nil
 	}
 
@@ -259,8 +259,8 @@ func (k *K8sWatcher) updateK8sPodV1(oldK8sPod, newK8sPod *slim_corev1.Pod) error
 		return k.deleteK8sPodV1(newK8sPod)
 	}
 
-	if newK8sPod.Spec.HostNetwork {
-		logger.Debug("Pod is using host networking")
+	if newK8sPod.Spec.HostNetwork && !option.Config.EnableLocalRedirectPolicy {
+		logger.Debug("Skip pod event using host networking")
 		return nil
 	}
 
@@ -460,8 +460,13 @@ func (k *K8sWatcher) deleteK8sPodV1(pod *slim_corev1.Pod) error {
 }
 
 func (k *K8sWatcher) genServiceMappings(pod *slim_corev1.Pod, podIPs []string, logger *logrus.Entry) []loadbalancer.SVC {
-	var svcs []loadbalancer.SVC
-	for _, c := range pod.Spec.Containers {
+	var (
+		svcs       []loadbalancer.SVC
+		containers []slim_corev1.Container
+	)
+	containers = append(containers, pod.Spec.InitContainers...)
+	containers = append(containers, pod.Spec.Containers...)
+	for _, c := range containers {
 		for _, p := range c.Ports {
 			if p.HostPort <= 0 {
 				continue
@@ -665,6 +670,15 @@ func (k *K8sWatcher) deleteHostPortMapping(pod *slim_corev1.Pod, podIPs []string
 }
 
 func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIPs, newPodIPs k8sTypes.IPSlice) error {
+	if newPod.Spec.HostNetwork {
+		logger := log.WithFields(logrus.Fields{
+			logfields.K8sPodName:   newPod.ObjectMeta.Name,
+			logfields.K8sNamespace: newPod.ObjectMeta.Namespace,
+		})
+		logger.Debug("Pod is using host networking")
+		return nil
+	}
+
 	var namedPortsChanged bool
 
 	ipSliceEqual := oldPodIPs != nil && oldPodIPs.DeepEqual(&newPodIPs)
@@ -683,7 +697,7 @@ func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIP
 					}
 				}
 				if !found {
-					npc := ipcache.IPIdentityCache.Delete(oldPodIP, source.Kubernetes)
+					npc := k.ipcache.Delete(oldPodIP, source.Kubernetes)
 					if npc {
 						namedPortsChanged = true
 					}
@@ -754,7 +768,7 @@ func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIP
 		// Initial mapping of podIP <-> hostIP <-> identity. The mapping is
 		// later updated once the allocator has determined the real identity.
 		// If the endpoint remains unmanaged, the identity remains untouched.
-		npc, err := ipcache.IPIdentityCache.Upsert(podIP, hostIP, hostKey, k8sMeta, ipcache.Identity{
+		npc, err := k.ipcache.Upsert(podIP, hostIP, hostKey, k8sMeta, ipcache.Identity{
 			ID:     identity.ReservedIdentityUnmanaged,
 			Source: source.Kubernetes,
 		})
@@ -811,7 +825,7 @@ func (k *K8sWatcher) deletePodHostData(pod *slim_corev1.Pod) (bool, error) {
 		// a small race condition exists here as deletion could occur in
 		// parallel based on another event but it doesn't matter as the
 		// identity is going away
-		id, exists := ipcache.IPIdentityCache.LookupByIP(podIP)
+		id, exists := k.ipcache.LookupByIP(podIP)
 		if !exists {
 			skipped = true
 			errs = append(errs, fmt.Sprintf("identity for IP %s does not exist in case", podIP))
@@ -824,7 +838,7 @@ func (k *K8sWatcher) deletePodHostData(pod *slim_corev1.Pod) (bool, error) {
 			continue
 		}
 
-		ipcache.IPIdentityCache.DeleteOnMetadataMatch(podIP, source.Kubernetes, pod.Namespace, pod.Name)
+		k.ipcache.DeleteOnMetadataMatch(podIP, source.Kubernetes, pod.Namespace, pod.Name)
 	}
 
 	if len(errs) != 0 {

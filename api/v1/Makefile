@@ -1,9 +1,9 @@
-# Copyright 2017-2020 Authors of Cilium
+# Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 include ../../Makefile.defs
 
 # Update this via images/scripts/update-cilium-builder-image.sh
-CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:bd62d6091432f7b4634200e29746713becf58659@sha256:d48e6e9651ae94ff5ff299d7b36cad1489be4c9ecf15088ddd06f8975aac8baa
+CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:f6f42d782ae3ada789adccfb5b497ad8e8d8413a@sha256:365934aaf7b67b606373399c8c37168e91ff1b1d16a9616762c91142306e1406
 
 .PHONY: proto
 proto:

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package RuntimeTest
 
@@ -104,9 +104,11 @@ var _ = Describe("BenchmarkNetperfPerformance", func() {
 
 	createContainers := func() {
 		By("create Client container")
-		vm.ContainerCreate(helpers.Client, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.client")
-		By("create Server containers")
-		vm.ContainerCreate(helpers.Server, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.server")
+		res := vm.ContainerCreate(helpers.Client, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.client")
+		res.ExpectSuccess("failed to create client container")
+		By("create Server container")
+		res = vm.ContainerCreate(helpers.Server, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.server")
+		res.ExpectSuccess("failed to create server container")
 		vm.PolicyDelAll()
 		Expect(vm.WaitEndpointsReady()).To(BeNil(), "Endpoints are not ready")
 	}

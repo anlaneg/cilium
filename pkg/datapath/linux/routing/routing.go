@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package linuxrouting
 
@@ -74,7 +74,8 @@ func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
 		tableID = computeTableIDFromIfaceNumber(info.InterfaceNumber)
 	}
 
-	if info.Masquerade {
+	// The condition here should mirror the condition in Delete.
+	if info.Masquerade && info.IpamMode == ipamOption.IPAMENI {
 		// Lookup a VPC specific table for all traffic from an endpoint to the
 		// CIDR configured for the VPC on which the endpoint has the IP on.
 		for _, cidr := range info.IPv4CIDRs {
@@ -177,7 +178,9 @@ func Delete(ip net.IP, compat bool) error {
 	}
 
 	// Egress rules
-	if info := node.GetRouterInfo(); info != nil && option.Config.IPAM == ipamOption.IPAMENI {
+	// The condition here should mirror the conditions in Configure.
+	info := node.GetRouterInfo()
+	if info != nil && option.Config.EnableIPv4Masquerade && option.Config.IPAM == ipamOption.IPAMENI {
 		ipv4CIDRs := info.GetIPv4CIDRs()
 		cidrs := make([]*net.IPNet, 0, len(ipv4CIDRs))
 		for i := range ipv4CIDRs {
@@ -207,6 +210,22 @@ func Delete(ip net.IP, compat bool) error {
 			return fmt.Errorf("unable to delete egress rule with ip %s: %w", ipWithMask.String(), err)
 		}
 		scopedLog.WithField(logfields.Rule, egress).Debug("Deleted egress rule")
+	}
+
+	if option.Config.EnableUnreachableRoutes {
+		// Replace route to old IP with an unreachable route. This will
+		//   - trigger ICMP error messages for clients attempting to connect to the stale IP
+		//   - avoid hitting rp_filter and getting Martian packet warning
+		// When the IP is reused, the unreachable route will be replaced to target the new pod veth
+		// In CRD-based IPAM, when an IP is unassigned from the CiliumNode, we delete this route
+		// to avoid blackholing traffic to this IP if it gets reassigned to another node
+		if err := netlink.RouteReplace(&netlink.Route{
+			Dst:   &ipWithMask,
+			Table: route.MainTable,
+			Type:  unix.RTN_UNREACHABLE,
+		}); err != nil {
+			return fmt.Errorf("unable to add unreachable route for ip %s: %w", ipWithMask.String(), err)
+		}
 	}
 
 	return nil

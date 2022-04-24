@@ -13,7 +13,7 @@ Configuration
 ConfigMap Options
 -----------------
 
-In the `ConfigMap` there are several options that can be configured according
+In the :term:`ConfigMap` there are several options that can be configured according
 to your preferences:
 
 * ``debug`` - Sets to run Cilium in full debug mode, which enables verbose
@@ -47,13 +47,29 @@ to your preferences:
   packets that involve an L4 connection state change. Valid options are
   ``none``, ``low``, ``medium``, ``maximum``.
 
+  - ``none`` - Generate a tracing event on every receive and send packet.
+  - ``low`` - Generate a tracing event on every send packet.
+  - ``medium`` - Generate a tracing event on every new connection, any time a
+    packet contains TCP flags that have not been previously seen for the packet
+    direction, and on average once per ``monitor-aggregation-interval``
+    (assuming that a packet is seen during the interval). Each direction tracks
+    TCP flags and report interval separately. If Cilium drops a packet, it will
+    emit one event per packet dropped.
+  - ``maximum`` - An alias for the most aggressive aggregation level. Currently
+    this is equivalent to setting ``monitor-aggregation`` to ``medium``.
+
+* ``monitor-aggregation-interval`` - Defines the interval to report tracing
+  events. Only applicable for ``monitor-aggregation`` levels ``medium`` or higher.
+  Assuming new packets are sent at least once per interval, this ensures that on
+  average one event is sent during the interval.
+
 * ``preallocate-bpf-maps`` - Pre-allocation of map entries allows per-packet
   latency to be reduced, at the expense of up-front memory allocation for the
   entries in the maps. Set to ``true`` to optimize for latency. If this value
   is modified, then during the next Cilium startup connectivity may be
   temporarily disrupted for endpoints with active connections.
 
-Any changes that you perform in the Cilium `ConfigMap` and in
+Any changes that you perform in the Cilium :term:`ConfigMap` and in
 ``cilium-etcd-secrets`` ``Secret`` will require you to restart any existing
 Cilium pods in order for them to pick the latest configuration.
 
@@ -64,7 +80,7 @@ Cilium pods in order for them to pick the latest configuration.
    information see the official Kubernetes docs:
    `Mounted ConfigMaps are updated automatically <https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/#mounted-configmaps-are-updated-automatically>`__
 
-The following `ConfigMap` is an example where the etcd cluster is running in 2
+The following :term:`ConfigMap` is an example where the etcd cluster is running in 2
 nodes, ``node-1`` and ``node-2`` with TLS, and client to server authentication
 enabled.
 
@@ -109,25 +125,25 @@ enabled.
 CNI
 ===
 
-`CNI` - Container Network Interface is the plugin layer used by Kubernetes to
+:term:`CNI` - Container Network Interface is the plugin layer used by Kubernetes to
 delegate networking configuration. You can find additional information on the
-`CNI` project website.
+:term:`CNI` project website.
 
-.. note:: Kubernetes `` >= 1.3.5`` requires the ``loopback`` `CNI` plugin to be
+.. note:: Kubernetes `` >= 1.3.5`` requires the ``loopback`` :term:`CNI` plugin to be
           installed on all worker nodes. The binary is typically provided by
           most Kubernetes distributions. See section :ref:`install_cni` for
-          instructions on how to install `CNI` in case the ``loopback`` binary
+          instructions on how to install :term:`CNI` in case the ``loopback`` binary
           is not already installed on your worker nodes.
 
 CNI configuration is automatically being taken care of when deploying Cilium
-via the provided `DaemonSet`. The script ``cni-install.sh`` is automatically run
+via the provided :term:`DaemonSet`. The script ``cni-install.sh`` is automatically run
 via the ``postStart`` mechanism when the ``cilium`` pod is started.
 
 .. note:: In order for the ``cni-install.sh`` script to work properly, the
           ``kubelet`` task must either be running on the host filesystem of the
           worker node, or the ``/etc/cni/net.d`` and ``/opt/cni/bin``
           directories must be mounted into the container where ``kubelet`` is
-          running. This can be achieved with `Volumes` mounts.
+          running. This can be achieved with :term:`Volumes` mounts.
 
 The CNI auto installation is performed as follows:
 
@@ -174,7 +190,7 @@ configuration file by adding the following to the ``env:`` section of the
           value: "true"
 
 The CNI installation can be configured with environment variables. These
-environment variables can be specified in the `DaemonSet` file like this:
+environment variables can be specified in the :term:`DaemonSet` file like this:
 
 .. code-block:: yaml
 

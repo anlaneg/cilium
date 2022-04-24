@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Hubble
+// Copyright Authors of Hubble
 
 package threefour
 
@@ -18,7 +18,6 @@ import (
 
 	pb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/pkg/byteorder"
-	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/hubble/parser/errors"
 	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 	"github.com/cilium/cilium/pkg/identity"
@@ -36,6 +35,7 @@ type Parser struct {
 	dnsGetter      getters.DNSGetter
 	ipGetter       getters.IPGetter
 	serviceGetter  getters.ServiceGetter
+	linkGetter     getters.LinkGetter
 
 	// TODO: consider using a pool of these
 	packet *packet
@@ -63,6 +63,7 @@ func New(
 	dnsGetter getters.DNSGetter,
 	ipGetter getters.IPGetter,
 	serviceGetter getters.ServiceGetter,
+	linkGetter getters.LinkGetter,
 ) (*Parser, error) {
 	packet := &packet{}
 	packet.decLayer = gopacket.NewDecodingLayerParser(
@@ -81,6 +82,7 @@ func New(
 		identityGetter: identityGetter,
 		ipGetter:       ipGetter,
 		serviceGetter:  serviceGetter,
+		linkGetter:     linkGetter,
 		packet:         packet,
 	}, nil
 }
@@ -204,8 +206,8 @@ func (p *Parser) Decode(data []byte, decoded *pb.Flow) error {
 	decoded.DestinationService = destinationService
 	decoded.PolicyMatchType = decodePolicyMatchType(pvn)
 	decoded.DebugCapturePoint = decodeDebugCapturePoint(dbg)
-	decoded.Interface = decodeNetworkInterface(tn, dbg)
-	decoded.ProxyPort = decodeProxyPort(dbg)
+	decoded.Interface = p.decodeNetworkInterface(tn, dbg)
+	decoded.ProxyPort = decodeProxyPort(dbg, tn)
 	decoded.Summary = summary
 
 	return nil
@@ -261,7 +263,7 @@ func filterCIDRLabels(log logrus.FieldLogger, labels []string) []string {
 }
 
 func sortAndFilterLabels(log logrus.FieldLogger, labels []string, securityIdentity uint32) []string {
-	if securityIdentity&uint32(identity.LocalIdentityFlag) != 0 {
+	if identity.NumericIdentity(securityIdentity).HasLocalScope() {
 		labels = filterCIDRLabels(log, labels)
 	}
 	sort.Strings(labels)
@@ -494,22 +496,8 @@ func isReply(reason uint8) bool {
 
 func decodeIsReply(tn *monitor.TraceNotify, pvn *monitor.PolicyVerdictNotify) *wrapperspb.BoolValue {
 	switch {
-	case tn != nil && monitorAPI.TraceObservationPointHasConnState(tn.ObsPoint):
-		// Unfortunately, not all trace points have the connection
-		// tracking state available. For certain trace point
-		// events, we do not know if it actually was a reply or not.
-		return &wrapperspb.BoolValue{
-			Value: isReply(tn.Reason),
-		}
-	case tn != nil && tn.ObsPoint == monitorAPI.TraceToNetwork && tn.Reason > 0:
-		// FIXME(GH-18460): Even though the BPF programs emitting TraceToNetwork
-		// do have access to connection tracking state, that state is currently
-		// not exposed to userspace by all trace points. Therefore TraceToNetwork
-		// is currently excluded in TraceObservationPointHasConnState.
-		// However, the NodePort return path in handle_ipv4_from_lxc does
-		// populate tn.Reason, and always has with a non-zero value due it
-		// only being used for replies. Therefore, if tn.Reason is non-zero,
-		// we can safely determine if the traced packet was a reply or not.
+	case tn != nil && monitor.TraceReasonIsKnown(tn.Reason):
+		// Reason was specified by the datapath, just reuse it.
 		return &wrapperspb.BoolValue{
 			Value: isReply(tn.Reason),
 		}
@@ -569,8 +557,8 @@ func decodeTrafficDirection(srcEP uint32, dn *monitor.DropNotify, tn *monitor.Tr
 		// ongoing connection. Therefore, we want to access the connection
 		// tracking result from the `Reason` field to invert the direction for
 		// reply packets. The datapath currently populates the `Reason` field
-		// with CT information for some observation points
-		if monitorAPI.TraceObservationPointHasConnState(tn.ObsPoint) {
+		// with CT information for some observation points.
+		if monitor.TraceReasonIsKnown(tn.Reason) {
 			// true if the traffic source is the local endpoint, i.e. egress
 			isSourceEP := tn.Source == uint16(srcEP)
 			// true if the packet is a reply, i.e. reverse direction
@@ -656,7 +644,7 @@ func decodeDebugCapturePoint(dbg *monitor.DebugCapture) pb.DebugCapturePoint {
 	return pb.DebugCapturePoint(dbg.SubType)
 }
 
-func decodeNetworkInterface(tn *monitor.TraceNotify, dbg *monitor.DebugCapture) *pb.NetworkInterface {
+func (p *Parser) decodeNetworkInterface(tn *monitor.TraceNotify, dbg *monitor.DebugCapture) *pb.NetworkInterface {
 	ifIndex := uint32(0)
 	if tn != nil {
 		ifIndex = tn.Ifindex
@@ -678,15 +666,17 @@ func decodeNetworkInterface(tn *monitor.TraceNotify, dbg *monitor.DebugCapture) 
 
 	// if the interface is not found, `name` will be an empty string and thus
 	// omitted in the protobuf message
-	name, _ := link.GetIfNameCached(int(ifIndex))
+	name, _ := p.linkGetter.GetIfNameCached(int(ifIndex))
 	return &pb.NetworkInterface{
 		Index: ifIndex,
 		Name:  name,
 	}
 }
 
-func decodeProxyPort(dbg *monitor.DebugCapture) uint32 {
-	if dbg != nil {
+func decodeProxyPort(dbg *monitor.DebugCapture, tn *monitor.TraceNotify) uint32 {
+	if tn != nil && tn.ObsPoint == monitorAPI.TraceToProxy {
+		return uint32(tn.DstID)
+	} else if dbg != nil {
 		switch dbg.SubType {
 		case monitor.DbgCaptureProxyPre,
 			monitor.DbgCaptureProxyPost:

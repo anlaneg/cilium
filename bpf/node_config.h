@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2016-2021 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 /*
  *
@@ -30,7 +30,6 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define REMOTE_NODE_ID 6
 #define KUBE_APISERVER_NODE_ID 7
 #define HOST_IFINDEX_MAC { .addr = { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x56 } }
-#define NAT46_PREFIX { .addr = { 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xa, 0x0, 0x0, 0x0, 0x0, 0x0 } }
 #define NODEPORT_PORT_MIN 30000
 #define NODEPORT_PORT_MAX 32767
 #define NODEPORT_PORT_MIN_NAT (NODEPORT_PORT_MAX + 1)
@@ -58,6 +57,10 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define IPV4_MASK 0xffff
 #define IPV4_GATEWAY 0xfffff50a
 #define IPV4_LOOPBACK 0x1ffff50a
+# ifdef ENABLE_MASQUERADE
+#  define IPV4_SNAT_EXCLUSION_DST_CIDR 0xffff0000
+#  define IPV4_SNAT_EXCLUSION_DST_CIDR_LEN 16
+# endif /* ENABLE_MASQUERADE */
 #ifdef ENABLE_NODEPORT
 #define SNAT_MAPPING_IPV4 test_cilium_snat_v4_external
 #define SNAT_MAPPING_IPV4_SIZE 524288
@@ -87,6 +90,7 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define IPCACHE_MAP test_cilium_ipcache
 #define ENCRYPT_MAP test_cilium_encrypt_state
 #define TUNNEL_MAP test_cilium_tunnel_map
+#define VTEP_MAP test_cilium_vtep_map
 #define EP_POLICY_MAP test_cilium_ep_to_policy
 #define LB6_REVERSE_NAT_MAP test_cilium_lb6_reverse_nat
 #define LB6_SERVICES_MAP_V2 test_cilium_lb6_services
@@ -108,10 +112,16 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define THROTTLE_MAP_SIZE 65536
 #define ENABLE_ARP_RESPONDER
 #define TUNNEL_ENDPOINT_MAP_SIZE 65536
+#define VTEP_MAP_SIZE 8
 #define ENDPOINTS_MAP_SIZE 65536
 #define METRICS_MAP_SIZE 65536
 #define CILIUM_NET_MAC  { .addr = { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x57 } }
-#define CILIUM_LB_MAP_MAX_ENTRIES	65536
+#define CILIUM_LB_REV_NAT_MAP_MAX_ENTRIES	65536
+#define CILIUM_LB_SERVICE_MAP_MAX_ENTRIES	65536
+#define CILIUM_LB_BACKENDS_MAP_MAX_ENTRIES	65536
+#define CILIUM_LB_AFFINITY_MAP_MAX_ENTRIES	65536
+#define CILIUM_LB_REV_NAT_MAP_MAX_ENTRIES	65536
+#define CILIUM_LB_MAGLEV_MAP_MAX_ENTRIES	65536
 #define POLICY_MAP_SIZE 16384
 #define IPCACHE_MAP_SIZE 512000
 #define EGRESS_POLICY_MAP_SIZE 16384
@@ -126,7 +136,7 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #endif
 #define MTU 1500
 #define EPHEMERAL_MIN 32768
-#if defined(ENABLE_NODEPORT) || defined(ENABLE_HOST_FIREWALL) || defined(ENABLE_NAT46)
+#if defined(ENABLE_NODEPORT) || defined(ENABLE_HOST_FIREWALL) || defined(ENABLE_NAT_46X64)
 #define CT_MAP_TCP6 test_cilium_ct_tcp6_65535
 #define CT_MAP_ANY6 test_cilium_ct_any6_65535
 #define CT_MAP_TCP4 test_cilium_ct_tcp4_65535
@@ -173,6 +183,10 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 # define LB_SELECTION_RANDOM	1
 # define LB_SELECTION_MAGLEV	2
 # define LB_SELECTION		LB_SELECTION_RANDOM
+#endif
+
+#ifdef ENABLE_VTEP
+# define VTEP_MASK 0xffffff
 #endif
 
 /* It appears that we can support around the below number of prefixes in an

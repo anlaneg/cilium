@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests && integration_tests
-// +build !privileged_tests,integration_tests
 
 package cmd
 
@@ -28,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
@@ -189,7 +189,7 @@ func prepareEndpointDirs() (cleanup func(), err error) {
 }
 
 func (ds *DaemonSuite) prepareEndpoint(c *C, identity *identity.Identity, qa bool) *endpoint.Endpoint {
-	e := endpoint.NewEndpointWithState(ds.d, ds.d, ds.d.l7Proxy, ds.d.identityAllocator, testEndpointID, endpoint.StateWaitingForIdentity)
+	e := endpoint.NewEndpointWithState(ds.d, ds.d, ipcache.NewIPCache(nil), ds.d.l7Proxy, ds.d.identityAllocator, testEndpointID, endpoint.StateWaitingForIdentity)
 	if qa {
 		e.IPv6 = QAIPv6Addr
 		e.IPv4 = QAIPv4Addr
@@ -276,23 +276,23 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
-	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	prodBarLbls := labels.Labels{lblBar.Key: lblBar, lblProd.Key: lblProd}
-	prodBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodBarLbls, true)
+	prodBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), prodBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
-	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 	prodFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblProd.Key: lblProd}
-	prodFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooLbls, true)
+	prodFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), prodFooSecLblsCtx, false)
 	prodFooJoeLbls := labels.Labels{lblFoo.Key: lblFoo, lblProd.Key: lblProd, lblJoe.Key: lblJoe}
-	prodFooJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooJoeLbls, true)
+	prodFooJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooJoeLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), prodFooJoeSecLblsCtx, false)
 
@@ -301,19 +301,19 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 	c.Assert(err2, Equals, nil)
 	defer cleanup()
 
-	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(prodBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, true)
-	c.Assert(e.Allows(prodFooSecLblsCtx.ID), Equals, false)
+	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eQABar.Allows(prodBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, true)
+	c.Assert(eQABar.Allows(prodFooSecLblsCtx.ID), Equals, false)
 
-	e = ds.prepareEndpoint(c, prodBarSecLblsCtx, false)
-	c.Assert(e.Allows(0), Equals, false)
-	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(prodBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(prodFooSecLblsCtx.ID), Equals, true)
-	c.Assert(e.Allows(prodFooJoeSecLblsCtx.ID), Equals, true)
+	eProdBar := ds.prepareEndpoint(c, prodBarSecLblsCtx, false)
+	c.Assert(eProdBar.Allows(0), Equals, false)
+	c.Assert(eProdBar.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eProdBar.Allows(prodBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eProdBar.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	c.Assert(eProdBar.Allows(prodFooSecLblsCtx.ID), Equals, true)
+	c.Assert(eProdBar.Allows(prodFooJoeSecLblsCtx.ID), Equals, true)
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
@@ -334,7 +334,7 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 	})
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
 		Name:             QAIPv4Addr.String(),
-		Policy:           uint64(qaBarSecLblsCtx.ID),
+		EndpointId:       uint64(eQABar.ID),
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
@@ -377,7 +377,7 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 
 	expectedNetworkPolicy = &cilium.NetworkPolicy{
 		Name:             ProdIPv4Addr.String(),
-		Policy:           uint64(prodBarSecLblsCtx.ID),
+		EndpointId:       uint64(eProdBar.ID),
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
@@ -409,11 +409,11 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
-	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
-	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 
@@ -453,9 +453,9 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 	c.Assert(err, Equals, nil)
 	defer cleanup()
 
-	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, false)
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
@@ -465,7 +465,7 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
 		Name:             QAIPv4Addr.String(),
-		Policy:           uint64(qaBarSecLblsCtx.ID),
+		EndpointId:       uint64(eQABar.ID),
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
@@ -493,11 +493,11 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
-	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
-	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 
@@ -537,9 +537,9 @@ func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 	c.Assert(err, Equals, nil)
 	defer cleanup()
 
-	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, false)
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
@@ -549,7 +549,7 @@ func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
 		Name:             QAIPv4Addr.String(),
-		Policy:           uint64(qaBarSecLblsCtx.ID),
+		EndpointId:       uint64(eQABar.ID),
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
@@ -571,15 +571,15 @@ func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
 
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
-	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
-	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 	qaJoeLbls := labels.Labels{lblJoe.Key: lblJoe, lblQA.Key: lblQA}
-	qaJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaJoeLbls, true)
+	qaJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaJoeLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaJoeSecLblsCtx, false)
 
@@ -624,10 +624,10 @@ func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
 	c.Assert(err, Equals, nil)
 	defer cleanup()
 
-	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
-	c.Assert(e.Allows(qaBarSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(qaFooSecLblsCtx.ID), Equals, false)
-	c.Assert(e.Allows(qaJoeSecLblsCtx.ID), Equals, true)
+	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	c.Assert(eQABar.Allows(qaBarSecLblsCtx.ID), Equals, false)
+	c.Assert(eQABar.Allows(qaFooSecLblsCtx.ID), Equals, false)
+	c.Assert(eQABar.Allows(qaJoeSecLblsCtx.ID), Equals, true)
 
 	// Check that both policies have been updated in the xDS cache for the L7
 	// proxies.
@@ -637,7 +637,7 @@ func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
 	qaBarNetworkPolicy := networkPolicies[QAIPv4Addr.String()]
 	expectedNetworkPolicy := &cilium.NetworkPolicy{
 		Name:             QAIPv4Addr.String(),
-		Policy:           uint64(qaBarSecLblsCtx.ID),
+		EndpointId:       uint64(eQABar.ID),
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
@@ -733,7 +733,7 @@ func (ds *DaemonSuite) TestReplacePolicy(c *C) {
 
 func (ds *DaemonSuite) TestRemovePolicy(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
-	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 
@@ -818,7 +818,7 @@ func (ds *DaemonSuite) TestRemovePolicy(c *C) {
 
 func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
-	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
+	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 
@@ -884,7 +884,7 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	defer cleanup()
 
 	// Create the endpoint and generate its policy.
-	e := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
+	eQABar := ds.prepareEndpoint(c, qaBarSecLblsCtx, true)
 	// Check that the policy has been updated in the xDS cache for the L7
 	// proxies.
 	networkPolicies := ds.getXDSNetworkPolicies(c, nil)
@@ -907,12 +907,12 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 
 	// Allocate identities needed for this test
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
-	qaFooID, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
+	qaFooID, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true, identity.InvalidIdentity)
 	c.Assert(err, Equals, nil)
 	defer ds.d.identityAllocator.Release(context.Background(), qaFooID, false)
 
 	// Regenerate endpoint
-	ds.regenerateEndpoint(c, e)
+	ds.regenerateEndpoint(c, eQABar)
 
 	// Check that the policy has been updated in the xDS cache for the L7
 	// proxies. The plumbing of the identity when `AllocateIdentity` is performed
@@ -929,7 +929,7 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(qaBarNetworkPolicy, checker.ExportedEquals, &cilium.NetworkPolicy{
 		Name:             QAIPv4Addr.String(),
-		Policy:           uint64(qaBarSecLblsCtx.ID),
+		EndpointId:       uint64(eQABar.ID),
 		ConntrackMapName: "global",
 		IngressPerPortPolicies: []*cilium.PortNetworkPolicy{
 			{
@@ -957,7 +957,7 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	})
 
 	// Delete the endpoint.
-	e.Delete(endpoint.DeleteConfig{})
+	eQABar.Delete(endpoint.DeleteConfig{})
 
 	// Check that the policy has been removed from the xDS cache.
 	networkPolicies = ds.getXDSNetworkPolicies(c, nil)
@@ -1281,7 +1281,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		rules, policyImportErr := args.cnp.Parse()
 		c.Assert(policyImportErr, checker.DeepEquals, want.err)
 
-		policyImportErr = k8s.PreprocessRules(rules, &ds.d.k8sWatcher.K8sSvcCache)
+		policyImportErr = k8s.PreprocessRules(rules, &ds.d.k8sWatcher.K8sSvcCache, ipcache.NewIPCache(nil))
 		c.Assert(policyImportErr, IsNil)
 
 		// Only add policies if we have successfully parsed them. Otherwise, if

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package ipsec
 
@@ -15,7 +14,8 @@ import (
 	"github.com/vishvananda/netlink"
 	. "gopkg.in/check.v1"
 
-	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/ebpf/rlimit"
+
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 )
 
@@ -34,7 +34,7 @@ var (
 )
 
 func (p *IPSecSuitePrivileged) SetUpTest(c *C) {
-	err := bpf.ConfigureResourceLimits()
+	err := rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
 }
 

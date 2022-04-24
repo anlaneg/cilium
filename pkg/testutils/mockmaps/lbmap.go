@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package mockmaps
 
 import (
 	"fmt"
-	"net"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	lb "github.com/cilium/cilium/pkg/loadbalancer"
@@ -13,34 +12,37 @@ import (
 )
 
 type LBMockMap struct {
-	BackendByID      map[lb.BackendID]*lb.Backend
-	ServiceByID      map[uint16]*lb.SVC
-	AffinityMatch    lbmap.BackendIDByServiceIDSet
-	SourceRanges     lbmap.SourceRangeSetByServiceID
-	DummyMaglevTable map[uint16]int // svcID => backends count
+	BackendByID            map[lb.BackendID]*lb.Backend
+	ServiceByID            map[uint16]*lb.SVC
+	AffinityMatch          lbmap.BackendIDByServiceIDSet
+	SourceRanges           lbmap.SourceRangeSetByServiceID
+	DummyMaglevTable       map[uint16]int // svcID => backends count
+	SvcActiveBackendsCount map[uint16]int
 }
 
 func NewLBMockMap() *LBMockMap {
 	return &LBMockMap{
-		BackendByID:      map[lb.BackendID]*lb.Backend{},
-		ServiceByID:      map[uint16]*lb.SVC{},
-		AffinityMatch:    lbmap.BackendIDByServiceIDSet{},
-		SourceRanges:     lbmap.SourceRangeSetByServiceID{},
-		DummyMaglevTable: map[uint16]int{},
+		BackendByID:            map[lb.BackendID]*lb.Backend{},
+		ServiceByID:            map[uint16]*lb.SVC{},
+		AffinityMatch:          lbmap.BackendIDByServiceIDSet{},
+		SourceRanges:           lbmap.SourceRangeSetByServiceID{},
+		DummyMaglevTable:       map[uint16]int{},
+		SvcActiveBackendsCount: map[uint16]int{},
 	}
 }
 
 func (m *LBMockMap) UpsertService(p *lbmap.UpsertServiceParams) error {
-	backendsList := make([]lb.Backend, 0, len(p.Backends))
-	for name, backendID := range p.Backends {
+	backendIDs := lbmap.GetOrderedBackends(p)
+	backendsList := make([]lb.Backend, 0, len(backendIDs))
+	for _, backendID := range backendIDs {
 		b, found := m.BackendByID[backendID]
 		if !found {
-			return fmt.Errorf("Backend %s (%d) not found", name, p.ID)
+			return fmt.Errorf("backend %d not found", p.ID)
 		}
 		backendsList = append(backendsList, *b)
 	}
-	if p.UseMaglev && len(p.Backends) != 0 {
-		if err := m.UpsertMaglevLookupTable(p.ID, p.Backends, p.IPv6); err != nil {
+	if p.UseMaglev && len(p.ActiveBackends) != 0 {
+		if err := m.UpsertMaglevLookupTable(p.ID, p.ActiveBackends, p.IPv6); err != nil {
 			return err
 		}
 	}
@@ -49,8 +51,8 @@ func (m *LBMockMap) UpsertService(p *lbmap.UpsertServiceParams) error {
 		frontend := lb.NewL3n4AddrID(lb.NONE, p.IP, p.Port, p.Scope, lb.ID(p.ID))
 		svc = &lb.SVC{Frontend: *frontend}
 	} else {
-		if p.PrevActiveBackendCount != len(svc.Backends) {
-			return fmt.Errorf("Invalid backends count: %d vs %d", p.PrevActiveBackendCount, len(svc.Backends))
+		if p.PrevBackendsCount != len(svc.Backends) {
+			return fmt.Errorf("Invalid backends count: %d vs %d", p.PrevBackendsCount, len(svc.Backends))
 		}
 	}
 	svc.Backends = backendsList
@@ -59,6 +61,7 @@ func (m *LBMockMap) UpsertService(p *lbmap.UpsertServiceParams) error {
 	svc.Type = p.Type
 
 	m.ServiceByID[p.ID] = svc
+	m.SvcActiveBackendsCount[p.ID] = len(p.ActiveBackends)
 
 	return nil
 }
@@ -72,7 +75,7 @@ func (*LBMockMap) IsMaglevLookupTableRecreated(ipv6 bool) bool {
 	return true
 }
 
-func (m *LBMockMap) DeleteService(addr lb.L3n4AddrID, backendCount int, maglev bool) error {
+func (m *LBMockMap) DeleteService(addr lb.L3n4AddrID, backendCount int, maglev bool, natPolicy lb.SVCNatPolicy) error {
 	svc, found := m.ServiceByID[uint16(addr.ID)]
 	if !found {
 		return fmt.Errorf("Service not found %+v", addr)
@@ -87,17 +90,41 @@ func (m *LBMockMap) DeleteService(addr lb.L3n4AddrID, backendCount int, maglev b
 	return nil
 }
 
-func (m *LBMockMap) AddBackend(id lb.BackendID, ip net.IP, port uint16, ipv6 bool) error {
-	if _, found := m.BackendByID[id]; found {
+func (m *LBMockMap) AddBackend(b lb.Backend, ipv6 bool) error {
+	id := b.ID
+	ip := b.IP
+	port := b.Port
+
+	if be, found := m.BackendByID[id]; found {
+		if be.L3n4Addr.IP.Equal(ip) && be.L4Addr.Port == port {
+			return nil
+		}
 		return fmt.Errorf("Backend %d already exists", id)
 	}
 
-	m.BackendByID[id] = lb.NewBackend(lb.BackendID(id), lb.NONE, ip, port)
+	be := lb.NewBackendWithState(id, b.Protocol, ip, port, b.State, false)
+	m.BackendByID[id] = be
 
 	return nil
 }
 
-func (m *LBMockMap) DeleteBackendByID(id lb.BackendID, ipv6 bool) error {
+func (m *LBMockMap) UpdateBackendWithState(b lb.Backend) error {
+	id := b.ID
+
+	be, found := m.BackendByID[id]
+	if !found {
+		return fmt.Errorf("update failed : backend %d doesn't exist", id)
+	}
+	if b.ID != be.ID || b.Port != be.Port || !b.IP.Equal(be.IP) {
+		return fmt.Errorf("backend in the map  %+v doesn't match %+v: only backend"+
+			"state can be updated", be.String(), b.String())
+	}
+	be.State = b.State
+
+	return nil
+}
+
+func (m *LBMockMap) DeleteBackendByID(id lb.BackendID) error {
 	if _, found := m.BackendByID[id]; !found {
 		return fmt.Errorf("Backend %d does not exist", id)
 	}
@@ -118,6 +145,7 @@ func (m *LBMockMap) DumpServiceMaps() ([]*lb.SVC, []error) {
 func (m *LBMockMap) DumpBackendMaps() ([]*lb.Backend, error) {
 	list := make([]*lb.Backend, 0, len(m.BackendByID))
 	for _, backend := range m.BackendByID {
+		backend.RestoredFromDatapath = true
 		list = append(list, backend)
 	}
 	return list, nil

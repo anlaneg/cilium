@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package policymap
 
@@ -14,6 +13,8 @@ import (
 
 	"golang.org/x/sys/unix"
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/checker"
@@ -39,7 +40,7 @@ var (
 
 func runTests(m *testing.M) (int, error) {
 	bpf.CheckOrMountFS("")
-	if err := bpf.ConfigureResourceLimits(); err != nil {
+	if err := rlimit.RemoveMemlock(); err != nil {
 		return 1, fmt.Errorf("Failed to configure rlimit")
 	}
 

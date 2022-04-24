@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Hubble
+// Copyright Authors of Hubble
 
 package metrics
 
@@ -17,6 +17,7 @@ import (
 	_ "github.com/cilium/cilium/pkg/hubble/metrics/dns"               // invoke init
 	_ "github.com/cilium/cilium/pkg/hubble/metrics/drop"              // invoke init
 	_ "github.com/cilium/cilium/pkg/hubble/metrics/flow"              // invoke init
+	_ "github.com/cilium/cilium/pkg/hubble/metrics/flows-to-world"    // invoke init
 	_ "github.com/cilium/cilium/pkg/hubble/metrics/http"              // invoke init
 	_ "github.com/cilium/cilium/pkg/hubble/metrics/icmp"              // invoke init
 	_ "github.com/cilium/cilium/pkg/hubble/metrics/port-distribution" // invoke init

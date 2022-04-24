@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package test
 
@@ -22,10 +21,6 @@ type ProxyUpdaterMock struct {
 	Labels       []string
 	Identity     identity.NumericIdentity
 	SidecarProxy bool
-}
-
-func (m *ProxyUpdaterMock) GetProxyInfoByFields() (uint64, string, string, []string, string, uint64, error) {
-	return m.GetID(), m.GetIPv4Address(), m.GetIPv6Address(), m.GetLabels(), m.GetLabelsSHA(), uint64(m.GetIdentityLocked()), nil
 }
 
 func (m *ProxyUpdaterMock) UnconditionalRLock() { m.RWMutex.RLock() }

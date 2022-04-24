@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package helpers
 
@@ -342,14 +342,14 @@ func ManifestGet(base, manifestFilename string) string {
 	// needed since no integration is "" and that causes us to find the
 	// base_path/filename before we check the base_path/k8s_version/filename
 	if integration := GetCurrentIntegration(); integration != "" {
-		fullPath := filepath.Join(manifestsPath, integration, manifestFilename)
+		fullPath := filepath.Join(K8sManifestBase, integration, manifestFilename)
 		_, err := os.Stat(fullPath)
 		if err == nil {
 			return filepath.Join(base, fullPath)
 		}
 
 		// try dependent k8s version and integration file
-		fullPath = filepath.Join(manifestsPath, GetCurrentK8SEnv(), integration, manifestFilename)
+		fullPath = filepath.Join(K8sManifestBase, GetCurrentK8SEnv(), integration, manifestFilename)
 		_, err = os.Stat(fullPath)
 		if err == nil {
 			return filepath.Join(base, fullPath)
@@ -357,12 +357,12 @@ func ManifestGet(base, manifestFilename string) string {
 	}
 
 	// try dependent k8s version
-	fullPath := filepath.Join(manifestsPath, GetCurrentK8SEnv(), manifestFilename)
+	fullPath := filepath.Join(K8sManifestBase, GetCurrentK8SEnv(), manifestFilename)
 	_, err := os.Stat(fullPath)
 	if err == nil {
 		return filepath.Join(base, fullPath)
 	}
-	return filepath.Join(base, "k8sT", "manifests", manifestFilename)
+	return filepath.Join(base, K8sManifestBase, manifestFilename)
 }
 
 // WriteOrAppendToFile writes data to a file named by filename.
@@ -661,6 +661,24 @@ func GetFirstNodeWithoutCilium() string {
 	return noCiliumNodes[0]
 }
 
+// GetFirstNodeWithoutCiliumLabel returns the ci-node label value of the first node
+// which is running without Cilium.
+func (kub *Kubectl) GetFirstNodeWithoutCiliumLabel() string {
+	nodeName := GetFirstNodeWithoutCilium()
+	return kub.GetNodeCILabel(nodeName)
+}
+
+// GetNodeCILabel returns the ci-node label value of the given node.
+func (kub *Kubectl) GetNodeCILabel(nodeName string) string {
+	cmd := fmt.Sprintf("%s get node %s -o jsonpath='{.metadata.labels.cilium\\.io/ci-node}'",
+		KubectlCmd, nodeName)
+	res := kub.ExecShort(cmd)
+	if !res.WasSuccessful() {
+		return ""
+	}
+	return res.SingleOut()
+}
+
 // IsNodeWithoutCilium returns true if node node doesn't run Cilium.
 func IsNodeWithoutCilium(node string) bool {
 	for _, n := range GetNodesWithoutCilium() {
@@ -711,6 +729,8 @@ func SkipK8sVersions(k8sVersions string) bool {
 // enabled or not for the cluster.
 func DualStackSupported() bool {
 	supportedVersions := versioncheck.MustCompile(">=1.18.0")
+	kubeProxyOnlySupportedVersions := versioncheck.MustCompile(">=1.20.0")
+
 	k8sVersion, err := versioncheck.Version(GetCurrentK8SEnv())
 	if err != nil {
 		// If we cannot conclude the k8s version we assume that dual stack is not
@@ -718,8 +738,16 @@ func DualStackSupported() bool {
 		return false
 	}
 
-	// We only have DualStack enabled in Vagrant test env.
-	return GetCurrentIntegration() == "" && supportedVersions(k8sVersion)
+	// When running with kube-proxy only, some IPv6 family services are not
+	// provisioned in ip6tables on k8s < 1.20. Therefore, skip any DualStack
+	// tests on those versions/configurations.
+	if DoesNotRunWithKubeProxyReplacement() && !kubeProxyOnlySupportedVersions(k8sVersion) {
+		return false
+	}
+
+	// We only have DualStack enabled in Vagrant test env or on KIND.
+	return (GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)) &&
+		supportedVersions(k8sVersion)
 }
 
 // DualStackSupportBeta returns true if the environment has a Kubernetes version that
@@ -735,7 +763,8 @@ func DualStackSupportBeta() bool {
 		return false
 	}
 
-	return GetCurrentIntegration() == "" && supportedVersions(k8sVersion)
+	return (GetCurrentIntegration() == "" || IsIntegration(CIIntegrationKind)) &&
+		supportedVersions(k8sVersion)
 }
 
 // CiliumEndpointSliceFeatureEnabled returns true only if the environment has a kubernetes version
@@ -746,5 +775,6 @@ func CiliumEndpointSliceFeatureEnabled() bool {
 	if err != nil {
 		return false
 	}
-	return k8sVersionGreaterEqual121(k8sVersion) && GetCurrentIntegration() == ""
+	return k8sVersionGreaterEqual121(k8sVersion) && (GetCurrentIntegration() == "" ||
+		IsIntegration(CIIntegrationKind))
 }

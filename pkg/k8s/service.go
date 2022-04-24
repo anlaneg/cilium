@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package k8s
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
@@ -16,7 +16,7 @@ import (
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/comparator"
-	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/ip"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/utils"
@@ -71,7 +71,7 @@ func ParseServiceID(svc *slim_corev1.Service) ServiceID {
 }
 
 // ParseService parses a Kubernetes service and returns a Service.
-func ParseService(svc *slim_corev1.Service, nodeAddressing datapath.NodeAddressing) (ServiceID, *Service) {
+func ParseService(svc *slim_corev1.Service, nodeAddressing types.NodeAddressing) (ServiceID, *Service) {
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.K8sSvcName:    svc.ObjectMeta.Name,
 		logfields.K8sNamespace:  svc.ObjectMeta.Namespace,
@@ -286,11 +286,9 @@ type Service struct {
 
 	// IncludeExternal is true when external endpoints from other clusters
 	// should be included
-	// +deepequal-gen=false
 	IncludeExternal bool
 
 	// Shared is true when the service should be exposed/shared to other clusters
-	// +deepequal-gen=false
 	Shared bool
 
 	// TrafficPolicy controls how backends are selected. If set to "Local", only
@@ -348,6 +346,10 @@ func (s *Service) DeepEqual(other *Service) bool {
 	}
 
 	if !ip.UnsortedIPListsAreEqual(s.FrontendIPs, other.FrontendIPs) {
+		return false
+	}
+
+	if s.Shared != other.Shared || s.IncludeExternal != other.IncludeExternal {
 		return false
 	}
 
@@ -522,6 +524,9 @@ func NewClusterService(id ServiceID, k8sService *Service, k8sEndpoints *Endpoint
 		svc.Backends[ipString] = backend.Ports
 	}
 
+	svc.Shared = k8sService.Shared
+	svc.IncludeExternal = k8sService.IncludeExternal
+
 	return svc
 }
 
@@ -636,8 +641,8 @@ type ServiceIPGetter interface {
 // CreateCustomDialer returns a custom dialer that picks the service IP,
 // from the given ServiceIPGetter, if the address the used to dial is a k8s
 // service.
-func CreateCustomDialer(b ServiceIPGetter, log *logrus.Entry) func(s string, duration time.Duration) (conn net.Conn, e error) {
-	return func(s string, duration time.Duration) (conn net.Conn, e error) {
+func CreateCustomDialer(b ServiceIPGetter, log *logrus.Entry) func(ctx context.Context, addr string) (conn net.Conn, e error) {
+	return func(ctx context.Context, s string) (conn net.Conn, e error) {
 		// If the service is available, do the service translation to
 		// the service IP. Otherwise dial with the original service
 		// name `s`.

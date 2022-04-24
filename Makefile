@@ -1,4 +1,4 @@
-# Copyright 2017-2021 Authors of Cilium
+# Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
 ##@ Default
@@ -24,10 +24,10 @@ endif
 GOFILES_EVAL := $(subst _$(ROOT_DIR)/,,$(shell $(GO_LIST) -find -e ./...))
 GOFILES ?= $(GOFILES_EVAL)
 TESTPKGS_EVAL := $(subst github.com/cilium/cilium/,,$(shell echo $(GOFILES) | \
-	sed 's/ /\n/g' | \
-	grep -v '/api/v1\|/vendor\|/contrib' | \
-	grep -v '/test'))
-TESTPKGS_EVAL += "test/helpers/logutils"
+		sed 's/ /\n\//g' | \
+		grep -v '/api/v1\|/vendor\|/contrib\|/test' | \
+		sed 's/^\///g')) \
+	test/helpers/logutils
 TESTPKGS ?= $(TESTPKGS_EVAL)
 GOLANG_SRCFILES := $(shell for pkg in $(subst github.com/cilium/cilium/,,$(GOFILES)); do find $$pkg -name *.go -print; done | grep -v vendor | sort | uniq)
 
@@ -55,6 +55,7 @@ JOB_BASE_NAME ?= cilium_test
 GO_VERSION := $(shell cat GO_VERSION)
 GO_MAJOR_AND_MINOR_VERSION := $(shell sed 's/\([0-9]\+\).\([0-9]\+\)\(.[0-9]\+\)\?/\1.\2/' GO_VERSION)
 GO_IMAGE_VERSION := $(shell awk -F. '{ z=$$3; if (z == "") z=0; print $$1 "." $$2 "." z}' GO_VERSION)
+GO_INSTALLED_MAJOR_AND_MINOR_VERSION := $(shell $(GO) version | sed 's/go version go\([0-9]\+\).\([0-9]\+\)\(.[0-9]\+\)\?.*/\1.\2/')
 
 DOCKER_FLAGS ?=
 
@@ -131,7 +132,7 @@ build-container: ## Builds components required for cilium-agent container.
 $(SUBDIRS): force ## Execute default make target(make all) for the provided subdirectory.
 	@ $(MAKE) $(SUBMAKEOPTS) -C $@ all
 
-PRIV_TEST_PKGS_EVAL := $(shell for pkg in $(TESTPKGS); do echo $$pkg; done | xargs grep --include='*.go' -ril '+build [^!]*privileged_tests' | xargs dirname | sort | uniq)
+PRIV_TEST_PKGS_EVAL := $(shell for pkg in $(TESTPKGS); do echo $$pkg; done | xargs grep --include='*.go' -ril 'go:build [^!]*privileged_tests' | xargs dirname | sort | uniq)
 PRIV_TEST_PKGS ?= $(PRIV_TEST_PKGS_EVAL)
 tests-privileged: GO_TAGS_FLAGS+=privileged_tests ## Run integration-tests for Cilium that requires elevated privileges.
 tests-privileged:
@@ -310,6 +311,10 @@ manifests: ## Generate K8s manifests e.g. CRD, RBAC etc.
 	mv ${TMPDIR}/cilium.io_ciliumlocalredirectpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumlocalredirectpolicies.yaml
 	mv ${TMPDIR}/cilium.io_ciliumegressnatpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumegressnatpolicies.yaml
 	mv ${TMPDIR}/cilium.io_ciliumendpointslices.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumendpointslices.yaml
+	mv ${TMPDIR}/cilium.io_ciliumclusterwideenvoyconfigs.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumclusterwideenvoyconfigs.yaml
+	mv ${TMPDIR}/cilium.io_ciliumenvoyconfigs.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumenvoyconfigs.yaml
+	mv ${TMPDIR}/cilium.io_ciliumbgppeeringpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumbgppeeringpolicies.yaml
+	mv ${TMPDIR}/cilium.io_ciliumbgploadbalancerippools.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2alpha1/ciliumbgploadbalancerippools.yaml
 	rm -rf $(TMPDIR)
 
 generate-api: api/v1/openapi.yaml ## Generate cilium-agent client, model and server code from openapi spec.
@@ -412,6 +417,7 @@ generate-k8s-api: ## Generate Cilium k8s API client, deepcopy and deepequal Go s
 	maps:signalmap\
 	maps:sockmap\
 	maps:tunnel\
+	maps:vtep\
 	node:types\
 	policy:api\
 	service:store")
@@ -471,13 +477,21 @@ govet: ## Run govet on Go source files in the repository.
     ./test/ginkgo-ext/... \
     ./test/helpers/... \
     ./test/runtime/... \
-    ./test/k8sT/... \
+    ./test/k8s/... \
     ./tools/...
 
-lint: ## Run golangci-lint and check if the helper headers in bpf/mock are up-to-date.
+golangci-lint: ## Run golangci-lint
+ifneq (,$(findstring $(GOLANGCILINT_WANT_VERSION),$(GOLANGCILINT_VERSION)))
 	@$(ECHO_CHECK) golangci-lint
 	$(QUIET) golangci-lint run
+else
+	$(QUIET) $(CONTAINER_ENGINE) run --rm -v `pwd`:/app -w /app docker.io/golangci/golangci-lint:v$(GOLANGCILINT_WANT_VERSION)@$(GOLANGCILINT_IMAGE_SHA) golangci-lint run
+endif
+
+bpf-mock-lint: ## Check if the helper headers in bpf/mock are up-to-date.
 	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C bpf/mock/ check_helper_headers
+
+lint: golangci-lint bpf-mock-lint ## Run golangci-lint and bpf-mock linters.
 
 logging-subsys-field: ## Validate logrus subsystem field for logs in Go source code.
 	@$(ECHO_CHECK) contrib/scripts/check-logging-subsys-field.sh
@@ -499,6 +513,9 @@ microk8s: check-microk8s ## Build cilium-dev docker image and import to microk8s
 kind: ## Create a kind cluster for Cilium development.
 	$(QUIET)./contrib/scripts/kind.sh
 
+kind-down: ## Destroy a kind cluster for Cilium development.
+	$(QUIET)./contrib/scripts/kind-down.sh
+
 kind-image: export DOCKER_REGISTRY=localhost:5000
 kind-image: export LOCAL_IMAGE=$(DOCKER_REGISTRY)/$(DOCKER_DEV_ACCOUNT)/cilium-dev:$(LOCAL_IMAGE_TAG)
 kind-image:
@@ -509,7 +526,7 @@ kind-image:
 	$(QUIET)$(CONTAINER_ENGINE) push $(LOCAL_IMAGE)
 	$(QUIET)kind load docker-image $(LOCAL_IMAGE)
 
-precheck: logging-subsys-field ## Peform build precheck for the source code.
+precheck: check-go-version logging-subsys-field ## Peform build precheck for the source code.
 ifeq ($(SKIP_K8S_CODE_GEN_CHECK),"false")
 	@$(ECHO_CHECK) contrib/scripts/check-k8s-code-gen.sh
 	$(QUIET) contrib/scripts/check-k8s-code-gen.sh
@@ -524,6 +541,8 @@ endif
 	$(QUIET) contrib/scripts/check-assert-deep-equals.sh
 	@$(ECHO_CHECK) contrib/scripts/lock-check.sh
 	$(QUIET) contrib/scripts/lock-check.sh
+	@$(ECHO_CHECK) contrib/scripts/check-viper-get-string-map-string.sh
+	$(QUIET) contrib/scripts/check-viper-get-string-map-string.sh
 ifeq ($(SKIP_CUSTOMVET_CHECK),"false")
 	@$(ECHO_CHECK) contrib/scripts/custom-vet-check.sh
 	$(QUIET) contrib/scripts/custom-vet-check.sh
@@ -577,6 +596,14 @@ postcheck: build ## Run Cilium build postcheck (update-cmdref, build documentati
 
 licenses-all: ## Generate file with all the License from dependencies.
 	@$(GO) run ./tools/licensegen > LICENSE.all || ( rm -f LICENSE.all ; false )
+
+check-go-version: ## Check locally install Go version against required Go version.
+ifneq ($(GO_MAJOR_AND_MINOR_VERSION),$(GO_INSTALLED_MAJOR_AND_MINOR_VERSION))
+	@echo "Installed Go version $(GO_INSTALLED_MAJOR_AND_MINOR_VERSION) does not match requested Go version $(GO_MAJOR_AND_MINOR_VERSION)"
+	@exit 1
+else
+	@$(ECHO_CHECK) "Installed Go version $(GO_INSTALLED_MAJOR_AND_MINOR_VERSION) matches required version $(GO_MAJOR_AND_MINOR_VERSION)"
+endif
 
 update-go-version: ## Update Go version for all the components (images, CI, dev-doctor etc.).
 	# Update dev-doctor Go version.

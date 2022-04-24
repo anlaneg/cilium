@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/monitor"
 	"github.com/cilium/cilium/pkg/monitor/agent/listener"
@@ -44,7 +45,8 @@ programs attached to endpoints and devices. This includes:
 			runMonitor(args)
 		},
 	}
-	printer    = format.NewMonitorFormatter(format.INFO)
+	linkCache  = link.NewLinkCache()
+	printer    = format.NewMonitorFormatter(format.INFO, linkCache)
 	socketPath = ""
 	verbosity  = []bool{}
 )

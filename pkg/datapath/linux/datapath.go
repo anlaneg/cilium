@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package linux
 
@@ -7,6 +7,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/linux/config"
 	"github.com/cilium/cilium/pkg/datapath/loader"
+	"github.com/cilium/cilium/pkg/datapath/types"
 )
 
 // DatapathConfiguration is the static configuration of the datapath. The
@@ -14,13 +15,15 @@ import (
 type DatapathConfiguration struct {
 	// HostDevice is the name of the device to be used to access the host.
 	HostDevice string
+
+	ProcFs string
 }
 
 type linuxDatapath struct {
 	datapath.ConfigWriter
 	datapath.IptablesManager
 	node           datapath.NodeHandler
-	nodeAddressing datapath.NodeAddressing
+	nodeAddressing types.NodeAddressing
 	config         DatapathConfiguration
 	loader         *loader.Loader
 	wgAgent        datapath.WireguardAgent
@@ -48,7 +51,7 @@ func (l *linuxDatapath) Node() datapath.NodeHandler {
 
 // LocalNodeAddressing returns the node addressing implementation of the local
 // node
-func (l *linuxDatapath) LocalNodeAddressing() datapath.NodeAddressing {
+func (l *linuxDatapath) LocalNodeAddressing() types.NodeAddressing {
 	return l.nodeAddressing
 }
 
@@ -58,4 +61,8 @@ func (l *linuxDatapath) Loader() datapath.Loader {
 
 func (l *linuxDatapath) WireguardAgent() datapath.WireguardAgent {
 	return l.wgAgent
+}
+
+func (l *linuxDatapath) Procfs() string {
+	return l.config.ProcFs
 }

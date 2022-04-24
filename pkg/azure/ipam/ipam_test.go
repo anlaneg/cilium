@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package ipam
 
@@ -111,14 +110,6 @@ func (k *k8sMock) Get(node string) (*v2.CiliumNode, error) {
 	return &v2.CiliumNode{}, nil
 }
 
-func (k *k8sMock) Delete(nodeName string) error {
-	k.mutex.Lock()
-	k.specRev++
-	delete(k.latestCiliumNode, nodeName)
-	k.mutex.Unlock()
-	return nil
-}
-
 func newCiliumNode(node, instanceID string, preAllocate, minAllocate int) *v2.CiliumNode {
 	cn := &v2.CiliumNode{
 		ObjectMeta: metav1.ObjectMeta{Name: node, Namespace: "default"},
@@ -196,7 +187,7 @@ func (e *IPAMSuite) TestIpamPreAllocate8(c *check.C) {
 	instances.Resync(context.TODO())
 
 	k8sapi := newK8sMock()
-	mngr, err := ipam.NewNodeManager(instances, k8sapi, metricsmock.NewMockMetrics(), 10, false)
+	mngr, err := ipam.NewNodeManager(instances, k8sapi, metricsmock.NewMockMetrics(), 10, false, false)
 	c.Assert(err, check.IsNil)
 	c.Assert(mngr, check.Not(check.IsNil))
 
@@ -258,7 +249,7 @@ func (e *IPAMSuite) TestIpamMinAllocate10(c *check.C) {
 	instances.Resync(context.TODO())
 
 	k8sapi := newK8sMock()
-	mngr, err := ipam.NewNodeManager(instances, k8sapi, metricsmock.NewMockMetrics(), 10, false)
+	mngr, err := ipam.NewNodeManager(instances, k8sapi, metricsmock.NewMockMetrics(), 10, false, false)
 	c.Assert(err, check.IsNil)
 	c.Assert(mngr, check.Not(check.IsNil))
 
@@ -310,7 +301,7 @@ func (e *IPAMSuite) TestIpamManyNodes(c *check.C) {
 
 	k8sapi := newK8sMock()
 	metrics := metricsmock.NewMockMetrics()
-	mngr, err := ipam.NewNodeManager(instances, k8sapi, metrics, 10, false)
+	mngr, err := ipam.NewNodeManager(instances, k8sapi, metrics, 10, false, false)
 	c.Assert(err, check.IsNil)
 	c.Assert(mngr, check.Not(check.IsNil))
 
@@ -384,7 +375,7 @@ func benchmarkAllocWorker(c *check.C, workers int64, delay time.Duration, rateLi
 
 	k8sapi := newK8sMock()
 	metrics := metricsmock.NewMockMetrics()
-	mngr, err := ipam.NewNodeManager(instances, k8sapi, metrics, workers, false)
+	mngr, err := ipam.NewNodeManager(instances, k8sapi, metrics, workers, false, false)
 	c.Assert(err, check.IsNil)
 	c.Assert(mngr, check.Not(check.IsNil))
 

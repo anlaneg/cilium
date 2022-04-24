@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package types
 
@@ -51,9 +51,17 @@ func ParseCiliumNode(n *ciliumv2.CiliumNode) (node Node) {
 		ipnet, err := cidr.ParseCIDR(cidrString)
 		if err == nil {
 			if ipnet.IP.To4() != nil {
-				node.IPv4AllocCIDR = ipnet
+				if node.IPv4AllocCIDR == nil {
+					node.IPv4AllocCIDR = ipnet
+				} else {
+					node.IPv4SecondaryAllocCIDRs = append(node.IPv4SecondaryAllocCIDRs, ipnet)
+				}
 			} else {
-				node.IPv6AllocCIDR = ipnet
+				if node.IPv6AllocCIDR == nil {
+					node.IPv6AllocCIDR = ipnet
+				} else {
+					node.IPv6SecondaryAllocCIDRs = append(node.IPv6SecondaryAllocCIDRs, ipnet)
+				}
 			}
 		}
 	}
@@ -89,6 +97,12 @@ func (n *Node) ToCiliumNode() *ciliumv2.CiliumNode {
 	}
 	if n.IPv6AllocCIDR != nil {
 		podCIDRs = append(podCIDRs, n.IPv6AllocCIDR.String())
+	}
+	for _, ipv4AllocCIDR := range n.IPv4SecondaryAllocCIDRs {
+		podCIDRs = append(podCIDRs, ipv4AllocCIDR.String())
+	}
+	for _, ipv6AllocCIDR := range n.IPv6SecondaryAllocCIDRs {
+		podCIDRs = append(podCIDRs, ipv6AllocCIDR.String())
 	}
 	if n.IPv4HealthIP != nil {
 		healthIPv4 = n.IPv4HealthIP.String()
@@ -164,9 +178,17 @@ type Node struct {
 	// allocates IPs for local endpoints from
 	IPv4AllocCIDR *cidr.CIDR
 
+	// IPv4SecondaryAllocCIDRs contains additional IPv4 CIDRs from which this
+	//node allocates IPs for its local endpoints from
+	IPv4SecondaryAllocCIDRs []*cidr.CIDR
+
 	// IPv6AllocCIDR if set, is the IPv6 address pool out of which the node
 	// allocates IPs for local endpoints from
 	IPv6AllocCIDR *cidr.CIDR
+
+	// IPv6SecondaryAllocCIDRs contains additional IPv6 CIDRs from which this
+	// node allocates IPs for its local endpoints from
+	IPv6SecondaryAllocCIDRs []*cidr.CIDR
 
 	// IPv4HealthIP if not nil, this is the IPv4 address of the
 	// cilium-health endpoint located on the node.
@@ -213,11 +235,13 @@ type Address struct {
 	IP   net.IP
 }
 
-func (n *Node) getNodeIP(ipv6 bool) (net.IP, addressing.AddressType) {
-	var (
-		backupIP net.IP
-		ipType   addressing.AddressType
-	)
+// GetNodeIP returns one of the node's IP addresses available with the
+// following priority:
+// - NodeInternalIP
+// - NodeExternalIP
+// - other IP address type
+func (n *Node) GetNodeIP(ipv6 bool) net.IP {
+	var backupIP net.IP
 	for _, addr := range n.IPAddresses {
 		if (ipv6 && addr.IP.To4() != nil) ||
 			(!ipv6 && addr.IP.To4() == nil) {
@@ -229,22 +253,20 @@ func (n *Node) getNodeIP(ipv6 bool) (net.IP, addressing.AddressType) {
 			continue
 		// Always prefer a cluster internal IP
 		case addressing.NodeInternalIP:
-			return addr.IP, addr.Type
+			return addr.IP
 		case addressing.NodeExternalIP:
 			// Fall back to external Node IP
 			// if no internal IP could be found
 			backupIP = addr.IP
-			ipType = addr.Type
 		default:
 			// As a last resort, if no internal or external
 			// IP was found, use any node address available
 			if backupIP == nil {
 				backupIP = addr.IP
-				ipType = addr.Type
 			}
 		}
 	}
-	return backupIP, ipType
+	return backupIP
 }
 
 // GetExternalIP returns ExternalIP of k8s Node. If not present, then it
@@ -278,16 +300,6 @@ func (n *Node) GetK8sNodeIP() net.IP {
 	return externalIP
 }
 
-// GetNodeIP returns one of the node's IP addresses available with the
-// following priority:
-// - NodeInternalIP
-// - NodeExternalIP
-// - other IP address type
-func (n *Node) GetNodeIP(ipv6 bool) net.IP {
-	result, _ := n.getNodeIP(ipv6)
-	return result
-}
-
 // GetCiliumInternalIP returns the CiliumInternalIP e.g. the IP associated
 // with cilium_host on the node.
 func (n *Node) GetCiliumInternalIP(ipv6 bool) net.IP {
@@ -316,8 +328,8 @@ func (n *Node) GetIPByType(addrType addressing.AddressType, ipv6 bool) net.IP {
 }
 
 func (n *Node) getPrimaryAddress() *models.NodeAddressing {
-	v4, v4Type := n.getNodeIP(false)
-	v6, v6Type := n.getNodeIP(true)
+	v4 := n.GetNodeIP(false)
+	v6 := n.GetNodeIP(true)
 
 	var ipv4AllocStr, ipv6AllocStr string
 	if n.IPv4AllocCIDR != nil {
@@ -337,16 +349,14 @@ func (n *Node) getPrimaryAddress() *models.NodeAddressing {
 
 	return &models.NodeAddressing{
 		IPV4: &models.NodeAddressingElement{
-			Enabled:     option.Config.EnableIPv4,
-			IP:          v4Str,
-			AllocRange:  ipv4AllocStr,
-			AddressType: string(v4Type),
+			Enabled:    option.Config.EnableIPv4,
+			IP:         v4Str,
+			AllocRange: ipv4AllocStr,
 		},
 		IPV6: &models.NodeAddressingElement{
-			Enabled:     option.Config.EnableIPv6,
-			IP:          v6Str,
-			AllocRange:  ipv6AllocStr,
-			AddressType: string(v6Type),
+			Enabled:    option.Config.EnableIPv6,
+			IP:         v6Str,
+			AllocRange: ipv6AllocStr,
 		},
 	}
 }
@@ -365,8 +375,7 @@ func (n *Node) getSecondaryAddresses() []*models.NodeAddressingElement {
 		}
 		if !n.isPrimaryAddress(addr, ipv4) {
 			result = append(result, &models.NodeAddressingElement{
-				IP:          addr.IP.String(),
-				AddressType: string(addr.Type),
+				IP: addr.IP.String(),
 			})
 		}
 	}
@@ -425,6 +434,28 @@ func getCluster() string {
 // running on
 func (n *Node) IsLocal() bool {
 	return n != nil && n.Name == GetName() && n.Cluster == getCluster()
+}
+
+func (n *Node) GetIPv4AllocCIDRs() []*cidr.CIDR {
+	result := make([]*cidr.CIDR, 0, len(n.IPv4SecondaryAllocCIDRs)+1)
+	if n.IPv4AllocCIDR != nil {
+		result = append(result, n.IPv4AllocCIDR)
+	}
+	if len(n.IPv4SecondaryAllocCIDRs) > 0 {
+		result = append(result, n.IPv4SecondaryAllocCIDRs...)
+	}
+	return result
+}
+
+func (n *Node) GetIPv6AllocCIDRs() []*cidr.CIDR {
+	result := make([]*cidr.CIDR, 0, len(n.IPv6SecondaryAllocCIDRs)+1)
+	if n.IPv6AllocCIDR != nil {
+		result = append(result, n.IPv6AllocCIDR)
+	}
+	if len(n.IPv4SecondaryAllocCIDRs) > 0 {
+		result = append(result, n.IPv6SecondaryAllocCIDRs...)
+	}
+	return result
 }
 
 // GetKeyNodeName constructs the API name for the given cluster and node name.

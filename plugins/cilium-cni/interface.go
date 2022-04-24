@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package main
 
@@ -51,6 +51,7 @@ func interfaceAdd(ipConfig *current.IPConfig, ipam *models.IPAMAddressResponse, 
 		cidrs,
 		ipam.MasterMac,
 		ipam.InterfaceNumber,
+		conf.IpamMode,
 		masq,
 	)
 	if err != nil {

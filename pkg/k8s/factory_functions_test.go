@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package k8s
 
@@ -1066,7 +1065,8 @@ func (s *K8sSuite) Test_ConvertToK8sV1LoadBalancerIngress(c *C) {
 			},
 			want: []v1.LoadBalancerIngress{
 				{
-					IP: "1.1.1.1",
+					IP:    "1.1.1.1",
+					Ports: []v1.PortStatus{},
 				},
 			},
 		},
@@ -1364,12 +1364,11 @@ func (s *K8sSuite) Test_ConvertToCiliumEndpoint(c *C) {
 							},
 							OwnerReferences: []metav1.OwnerReference{
 								{
-									Kind:               "Pod",
-									APIVersion:         "v1",
-									Name:               "foo",
-									UID:                "65dasd54d45",
-									Controller:         nil,
-									BlockOwnerDeletion: func() *bool { a := true; return &a }(),
+									Kind:       "Pod",
+									APIVersion: "v1",
+									Name:       "foo",
+									UID:        "65dasd54d45",
+									Controller: nil,
 								},
 							},
 							ClusterName: "default",

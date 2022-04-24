@@ -8,6 +8,8 @@ default_controlplanes=1
 default_workers=1
 default_cluster_name=""
 default_image=""
+default_kubeproxy_mode="iptables"
+default_ipfamily="ipv4"
 
 PROG=${0}
 CONTROLPLANES="${1:-${default_controlplanes}}"
@@ -15,9 +17,12 @@ WORKERS="${2:-${default_workers}}"
 CLUSTER_NAME="${3:-${default_cluster_name}}"
 # IMAGE controls the K8s version as well (e.g. kindest/node:v1.11.10)
 IMAGE="${4:-${default_image}}"
+KUBEPROXY_MODE="${5:-${default_kubeproxy_mode}}"
+IPFAMILY="${6:-${default_ipfamily}}"
+CILIUM_ROOT="$(realpath $(dirname $(readlink -ne $BASH_SOURCE))/../..)"
 
 usage() {
-  echo "Usage: ${PROG} [control-plane node count] [worker node count] [cluster-name] [node image]"
+  echo "Usage: ${PROG} [control-plane node count] [worker node count] [cluster-name] [node image] [kube-proxy mode]"
 }
 
 have_kind() {
@@ -29,12 +34,12 @@ if ! have_kind; then
     echo "  https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
 fi
 
-if [[ "${#}" -gt 4 ]]; then
+if [[ "${#}" -gt 5 ]]; then
   usage
   exit 1
 fi
 
-if [[ "${#}" -gt 4 ]] ||
+if [[ "${#}" -gt 5 ]] ||
    [[ "${CONTROLPLANES}" == "-h" ||
       "${CONTROLPLANES}" == "--help" ]]; then
   usage
@@ -61,18 +66,20 @@ if [[ -n "${IMAGE}" ]]; then
 fi
 
 control_planes() {
-  line="- role: control-plane"
-
   for _ in $(seq 1 "${CONTROLPLANES}"); do
-    echo "$line"
+    echo "- role: control-plane"
+    echo "  extraMounts:"
+    echo "  - hostPath: $CILIUM_ROOT"
+    echo "    containerPath: /home/vagrant/go/src/github.com/cilium/cilium"
   done
 }
 
 workers() {
-  line="- role: worker"
-
   for _ in $(seq 1 "${WORKERS}"); do
-    echo "$line"
+    echo "- role: worker"
+    echo "  extraMounts:"
+    echo "  - hostPath: $CILIUM_ROOT"
+    echo "    containerPath: /home/vagrant/go/src/github.com/cilium/cilium"
   done
 }
 
@@ -85,6 +92,8 @@ $(control_planes)
 $(workers)
 networking:
   disableDefaultCNI: true
+  kubeProxyMode: ${KUBEPROXY_MODE}
+  ipFamily: ${IPFAMILY}
 containerdConfigPatches:
 - |-
   [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:${reg_port}"]

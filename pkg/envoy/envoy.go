@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017, 2018 Authors of Cilium
+// Copyright Authors of Cilium
 
 package envoy
 
@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/lumberjack/v2"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/cilium/cilium/pkg/flowdebug"
 	"github.com/cilium/cilium/pkg/logging"

@@ -1,23 +1,24 @@
 # syntax=docker/dockerfile:1.2
 
-# Copyright 2020-2021 Authors of Cilium
+# Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:bd62d6091432f7b4634200e29746713becf58659@sha256:d48e6e9651ae94ff5ff299d7b36cad1489be4c9ecf15088ddd06f8975aac8baa
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:05aefca72c6e53861ebd2e0892946e73abbd9d38@sha256:3c5b6d80c0596d952948f5330afed096cdc32f23e7b90161a89632a392734761
+ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:f6f42d782ae3ada789adccfb5b497ad8e8d8413a@sha256:365934aaf7b67b606373399c8c37168e91ff1b1d16a9616762c91142306e1406
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:fbffa51a34a16a156cbee235c206894f687114fa@sha256:294918335a8a86a0719c1e24f402aa7ee37bd948750893e1a28e7dd3b2a79ed2
 
 # cilium-envoy from github.com/cilium/proxy
 #
-FROM quay.io/cilium/cilium-envoy:9b1701da9cc035a1696f3e492ee2526101262e56@sha256:c0e0586bf97e69b9c16c95eff707a264c1c00bb89371205e88f6849d12ed2de2 as cilium-envoy
+FROM quay.io/cilium/cilium-envoy:12e3081cc292764b1308668cab1e7e523429bedc@sha256:3b43de6e585376cc8037b84b2b4d37bdf41242253987e7ff7f72e4e200e61fb5 as cilium-envoy
 
 #
 # Hubble CLI
 #
 FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} as hubble
+ARG BUILDPLATFORM
 COPY images/cilium/hubble-version.sh /tmp/hubble-version.sh
 COPY images/cilium/download-hubble.sh /tmp/download-hubble.sh
 RUN /tmp/download-hubble.sh
-RUN /out/linux/amd64/bin/hubble completion bash > /out/linux/bash_completion
+RUN /out/${BUILDPLATFORM}/bin/hubble completion bash > /out/linux/bash_completion
 
 #
 # Cilium incremental build. Should be fast given builder-deps is up-to-date!
@@ -48,15 +49,15 @@ ARG LIBNETWORK_PLUGIN
 #
 WORKDIR /go/src/github.com/cilium/cilium
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium --mount=target=/root/.cache,type=cache --mount=target=/go/pkg,type=cache \
-    make IMAGE_CROSS_TARGET_PLATFORM=${TARGETOS}/${TARGETARCH} GOARCH=${TARGETARCH} RACE=${RACE} NOSTRIP=${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} PKG_BUILD=1 V=${V} LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
-    SKIP_DOCS=true DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} build-container install-container-binary
+    make GOARCH=${TARGETARCH} RACE=${RACE} NOSTRIP=${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} PKG_BUILD=1 V=${V} LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
+    DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} build-container install-container-binary
 
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium --mount=target=/root/.cache,type=cache --mount=target=/go/pkg,type=cache \
     # install-bash-completion will execute the bash_completion script. It is
     # fine to run this with same architecture as BUILDARCH since the output of
     # bash_completion is the same for both architectures.
     make GOARCH=${BUILDARCH} RACE=${RACE} NOSTRIP=${NOSTRIP} NOOPT=${NOOPT} LOCKDEBUG=${LOCKDEBUG} PKG_BUILD=1 V=${V} LIBNETWORK_PLUGIN=${LIBNETWORK_PLUGIN} \
-    SKIP_DOCS=true DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} install-bash-completion licenses-all && \
+    DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} install-bash-completion licenses-all && \
     mv LICENSE.all /tmp/install/${TARGETOS}/${TARGETARCH}/LICENSE.all
 
 COPY images/cilium/init-container.sh \

@@ -14,14 +14,14 @@ Quick Installation
 
 This guide will walk you through the quick default installation. It will
 automatically detect and use the best configuration possible for the Kubernetes
-distribution you are using. All state is stored using Kubernetes CRDs.
+distribution you are using. All state is stored using Kubernetes custom resource definitions (CRDs).
 
 This is the best installation method for most use cases.  For large
 environments (> 500 nodes) or if you want to run specific datapath modes, refer
 to the :ref:`k8s_install_advanced` guide.
 
 Should you encounter any issues during the installation, please refer to the
-:ref:`troubleshooting_k8s` section and / or seek help on the `Slack channel`.
+:ref:`troubleshooting_k8s` section and / or seek help on the :term:`Slack channel`.
 
 .. _create_cluster:
 
@@ -45,11 +45,16 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
 
            export NAME="$(whoami)-$RANDOM"
            # Create the node pool with the following taint to guarantee that
-           # Pods are only scheduled in the node when Cilium is ready.
+           # Pods are only scheduled/executed in the node when Cilium is ready.
+           # Alternatively, see the note below.
            gcloud container clusters create "${NAME}" \
-            --node-taints node.cilium.io/agent-not-ready=true:NoSchedule \
+            --node-taints node.cilium.io/agent-not-ready=true:NoExecute \
             --zone us-west2-a
            gcloud container clusters get-credentials "${NAME}" --zone us-west2-a
+
+       .. note::
+
+          Please make sure to read and understand the documentation page on :ref:`taint effects and unmanaged pods<taint_effects>`.
 
     .. group-tab:: AKS
 
@@ -91,14 +96,14 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
              --node-taints "CriticalAddonsOnly=true:NoSchedule" \
              --no-wait
 
-           # Create user node pool tainted with `node.cilium.io/agent-not-ready=true:NoSchedule`
+           # Create user node pool tainted with `node.cilium.io/agent-not-ready=true:NoExecute`
            az aks nodepool add \
              --resource-group "${AZURE_RESOURCE_GROUP}" \
              --cluster-name "${NAME}" \
              --name userpool \
              --mode user \
              --node-count 2 \
-             --node-taints "node.cilium.io/agent-not-ready=true:NoSchedule" \
+             --node-taints "node.cilium.io/agent-not-ready=true:NoExecute" \
              --no-wait
 
            # Delete the initial system node pool
@@ -119,15 +124,18 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
 
        .. note::
 
-          `Node pools <https://aka.ms/aks/nodepools>`_ must be tainted with
-          ``node.cilium.io/agent-not-ready=true:NoSchedule`` to ensure that
-          applications pods will only be scheduled once Cilium is ready to
-          manage them, however on AKS:
+          `Node pools <https://aka.ms/aks/nodepools>`_ should be tainted with
+          ``node.cilium.io/agent-not-ready=true:NoExecute`` to ensure that
+          applications pods will only be scheduled/executed once Cilium is ready
+          to manage them. However, there are other options. Please make sure to
+          read and understand the documentation page on :ref:`taint effects and unmanaged pods<taint_effects>`.
+
+          Additionally on AKS:
 
           * It is not possible to assign taints to the initial node pool at this
             time, cf. `Azure/AKS#1402 <https://github.com/Azure/AKS/issues/1402>`_.
 
-          * It is not possible to assign custom node taints such as ``node.cilium.io/agent-not-ready=true:NoSchedule``
+          * It is not possible to assign custom node taints such as ``node.cilium.io/agent-not-ready=true:NoExecute``
             to system node pools, cf. `Azure/AKS#2578 <https://github.com/Azure/AKS/issues/2578>`_.
 
           In order to have Cilium properly manage application pods on AKS with
@@ -137,8 +145,8 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
             with ``CriticalAddonsOnly=true:NoSchedule``, preventing application
             pods from being scheduled on it.
 
-          * Create a secondary user node pool tainted with ``node.cilium.io/agent-not-ready=true:NoSchedule``,
-            preventing application pods from being scheduled on it until Cilium
+          * Create a secondary user node pool tainted with ``node.cilium.io/agent-not-ready=true:NoExecute``,
+            preventing application pods from being scheduled/executed on it until Cilium
             is ready to manage them.
 
     .. group-tab:: EKS
@@ -165,13 +173,18 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
              desiredCapacity: 2
              privateNetworking: true
              # taint nodes so that application pods are
-             # not scheduled until Cilium is deployed.
+             # not scheduled/executed until Cilium is deployed.
+             # Alternatively, see the note below.
              taints:
               - key: "node.cilium.io/agent-not-ready"
                 value: "true"
-                effect: "NoSchedule"
+                effect: "NoExecute"
            EOF
            eksctl create cluster -f ./eks-config.yaml
+
+       .. note::
+
+          Please make sure to read and understand the documentation page on :ref:`taint effects and unmanaged pods<taint_effects>`.
 
     .. group-tab:: kind
 
@@ -185,7 +198,7 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
 
     .. group-tab:: minikube
 
-       Install minikube >= v1.12 as per minikube documentation: 
+       Install minikube >= v1.12 as per minikube documentation:
        `Install Minikube <https://kubernetes.io/docs/tasks/tools/install-minikube/>`_.
        The following command will bring up a single node minikube cluster prepared for installing cilium.
 
@@ -198,6 +211,16 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
           From minikube v1.12.1+, cilium networking plugin can be enabled directly with
           ``--cni=cilium`` parameter in ``minikube start`` command. However, this may not
           install the latest version of cilium.
+
+    .. group-tab:: Rancher Desktop
+
+       Install Rancher Desktop >= v1.1.0 as per Rancher Desktop documentation:
+       `Install Rancher Desktop <https://docs.rancherdesktop.io/getting-started/installation>`_.
+
+       Next you need to configure Rancher Desktop so to disable the builtin CNI so you can install Cilium.
+
+       .. include:: rancher-desktop-configure.rst
+
 
 Install the Cilium CLI
 ======================
@@ -298,7 +321,7 @@ You can install Cilium on any Kubernetes cluster. Pick one of the options below:
 
        .. code-block:: shell-session
 
-           KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium install
+           cilium install
 
 
 If the installation fails for some reason, run ``cilium status`` to retrieve

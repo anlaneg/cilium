@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2016-2021 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_MAPS_H_
 #define __LIB_MAPS_H_
@@ -40,6 +40,18 @@ struct bpf_elf_map __section_maps POLICY_CALL_MAP = {
 	.max_elem	= POLICY_PROG_MAP_SIZE,
 };
 #endif /* SKIP_POLICY_MAP */
+
+#ifdef ENABLE_L7_LB
+/* Global map to jump into policy enforcement of sending endpoint */
+struct bpf_elf_map __section_maps POLICY_EGRESSCALL_MAP = {
+	.type		= BPF_MAP_TYPE_PROG_ARRAY,
+	.id		= CILIUM_MAP_EGRESSPOLICY,
+	.size_key	= sizeof(__u32),
+	.size_value	= sizeof(__u32),
+	.pinning	= PIN_GLOBAL_NS,
+	.max_elem	= POLICY_PROG_MAP_SIZE,
+};
+#endif
 
 #ifdef ENABLE_BANDWIDTH_MANAGER
 struct {
@@ -198,6 +210,17 @@ struct {
 } EGRESS_POLICY_MAP __section_maps_btf;
 
 #endif /* ENABLE_EGRESS_GATEWAY */
+
+#ifdef ENABLE_VTEP
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct vtep_key);
+	__type(value, struct vtep_value);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, VTEP_MAP_SIZE);
+	__uint(map_flags, CONDITIONAL_PREALLOC);
+} VTEP_MAP __section_maps_btf;
+#endif /* ENABLE_VTEP */
 
 #ifndef SKIP_CALLS_MAP
 static __always_inline void ep_tail_call(struct __ctx_buff *ctx __maybe_unused,

@@ -63,7 +63,7 @@ concurrency:
 env:
   clusterName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
   region: us-east-2
-  cilium_cli_version: v0.10.1
+  cilium_cli_version: v0.11.1
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
@@ -84,7 +84,7 @@ jobs:
       # paths-filter to work.
       - name: Checkout code
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Retrieve pull request's base and head
@@ -147,6 +147,12 @@ jobs:
           state: pending
           target_url: ${{ env.check_url }}
 
+      - name: Checkout code
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
+        with:
+          ref: ${{ steps.vars.outputs.sha }}
+          persist-credentials: false
+
       - name: Install Cilium CLI
         run: |
           curl -sSL --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${{ env.cilium_cli_version }}/cilium-linux-amd64.tar.gz{,.sha256sum}
@@ -194,7 +200,7 @@ jobs:
               taints:
                - key: "node.cilium.io/agent-not-ready"
                  value: "true"
-                 effect: "NoSchedule"
+                 effect: "NoExecute"
           EOF
 
           eksctl create cluster -f ./eks-config.yaml
@@ -208,7 +214,7 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/$image/tag/${{ steps.vars.outputs.sha }}/images" &> /dev/null; do sleep 45s; done
+            until docker manifest inspect quay.io/${{ github.repository_owner }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Install Cilium
@@ -253,6 +259,7 @@ jobs:
       - name: Run connectivity test
         run: |
           cilium connectivity test \
+            --base-version=v1.11 \
             --flow-validation=disabled \
             --test '!fqdn,!l7' # L7 policies are not supported in chaining mode.
 
@@ -279,7 +286,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535
         with:
           name: cilium-sysdump-out.zip
           path: cilium-sysdump-out.zip

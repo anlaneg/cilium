@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Hubble
-// Copyright 2020-2021 Authors of Cilium
+// Copyright Authors of Hubble
+// Copyright Authors of Cilium
 
 package parser
 
@@ -38,10 +38,11 @@ func New(
 	dnsGetter getters.DNSGetter,
 	ipGetter getters.IPGetter,
 	serviceGetter getters.ServiceGetter,
+	linkGetter getters.LinkGetter,
 	opts ...options.Option,
 ) (*Parser, error) {
 
-	l34, err := threefour.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter)
+	l34, err := threefour.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, linkGetter)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package main
 
@@ -242,7 +242,7 @@ func (m *VMManager) AllocateNodeIdentity(n *nodeTypes.RegisterNode) *identity.Id
 		return id
 	}
 
-	id, allocated, err := m.identityAllocator.AllocateIdentity(ctx, vmLabels, true)
+	id, allocated, err := m.identityAllocator.AllocateIdentity(ctx, vmLabels, true, identity.InvalidIdentity)
 	if err != nil {
 		log.WithError(err).Error("unable to resolve identity")
 	} else {
@@ -348,11 +348,10 @@ func (m *VMManager) UpdateCiliumEndpointResource(name string, id *identity.Ident
 					Name:      name,
 					Namespace: namespace,
 					OwnerReferences: []metav1.OwnerReference{{
-						APIVersion:         "cilium.io/v2",
-						Kind:               "CiliumNode",
-						Name:               nr.ObjectMeta.Name,
-						UID:                nr.ObjectMeta.UID,
-						BlockOwnerDeletion: func() *bool { a := true; return &a }(),
+						APIVersion: "cilium.io/v2",
+						Kind:       "CiliumNode",
+						Name:       nr.ObjectMeta.Name,
+						UID:        nr.ObjectMeta.UID,
 					}},
 					Labels: map[string]string{
 						"name": name,

@@ -43,10 +43,21 @@ replace the variables with values from your environment:
     curl -sfL https://get.k3s.io | K3S_URL='https://${MASTER_IP}:6443' K3S_TOKEN=${NODE_TOKEN} sh -
 
 Should you encounter any issues during the installation, please refer to the
-:ref:`troubleshooting_k8s` section and / or seek help on the `Slack channel`.
+:ref:`troubleshooting_k8s` section and / or seek help on the :term:`Slack channel`.
 
 Please consult the Kubernetes :ref:`k8s_requirements` for information on  how
 you need to configure your Kubernetes cluster to operate with Cilium.
+
+Configure Cluster Access
+========================
+
+For the Cilium CLI to access the cluster in successive steps you will need to
+use the ``kubeconfig`` file stored at ``/etc/rancher/k3s/k3s.yaml`` by setting
+the ``KUBECONFIG`` environment variable:
+
+.. code-block:: shell-session
+
+    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 Install Cilium
 ==============

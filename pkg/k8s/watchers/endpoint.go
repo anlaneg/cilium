@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package watchers
 
@@ -7,11 +7,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -74,8 +72,8 @@ func (k *K8sWatcher) endpointsInit(k8sClient kubernetes.Interface, swgEps *lock.
 		},
 		nil,
 	)
-	k.blockWaitGroupToSyncResources(wait.NeverStop, swgEps, endpointController.HasSynced, K8sAPIGroupEndpointV1Core)
-	go endpointController.Run(wait.NeverStop)
+	k.blockWaitGroupToSyncResources(k.stop, swgEps, endpointController.HasSynced, K8sAPIGroupEndpointV1Core)
+	go endpointController.Run(k.stop)
 	k.k8sAPIGroups.AddAPI(K8sAPIGroupEndpointV1Core)
 }
 
@@ -131,23 +129,17 @@ func (k *K8sWatcher) handleKubeAPIServerServiceEPChanges(desiredIPs map[string]s
 	//     an update event.
 	//   * if the entire object is deleted, then it will quickly be recreated
 	//     and this will be in the form of an add event.
-	ipcache.RemoveLabelsExcluded(
+	k.ipcache.RemoveLabelsExcluded(
 		labels.LabelKubeAPIServer,
 		desiredIPs,
 		src,
-		k.policyRepository.GetSelectorCache(),
-		k.policyManager,
 	)
 
 	for ip := range desiredIPs {
-		ipcache.UpsertMetadata(ip, labels.LabelKubeAPIServer)
+		k.ipcache.UpsertMetadata(ip, labels.LabelKubeAPIServer)
 	}
 
-	ipcache.IPIdentityCache.TriggerLabelInjection(
-		src,
-		k.policyRepository.GetSelectorCache(),
-		k.policyManager,
-	)
+	k.ipcache.TriggerLabelInjection(src)
 }
 
 // TODO(christarazi): Convert to subscriber model along with the corresponding

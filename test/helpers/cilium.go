@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package helpers
 
@@ -10,12 +10,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/test/config"
@@ -64,6 +66,66 @@ func (s *SSHMeta) BpfLBList(noDuplicates bool) (map[string][]string, error) {
 	}
 
 	return result, nil
+}
+
+// BpfIPCacheList returns the output of `cilium bpf ipcache list -o json` as a map
+// Key will be the CIDR (address with mask) and the value is the associated numeric security identity
+func (s *SSHMeta) BpfIPCacheList(localScopeOnly bool) (map[string]uint32, error) {
+	var (
+		dump   map[string][]string
+		result map[string]uint32
+		res    *CmdRes
+	)
+
+	res = s.ExecCilium("bpf ipcache list -o json")
+
+	if !res.WasSuccessful() {
+		return nil, fmt.Errorf("cannot get bpf ipcache list: %s", res.CombineOutput())
+	}
+	err := res.Unmarshal(&dump)
+	if err != nil {
+		return nil, err
+	}
+
+	result = make(map[string]uint32, len(dump))
+	for k, v := range dump {
+		var nid uint32
+		for _, s := range v {
+			idWord := "identity="
+			idIdx := strings.Index(s, idWord)
+			if idIdx >= 0 {
+				idIdx += len(idWord)
+				endIdx := strings.Index(s[idIdx:], " ")
+				if endIdx >= 0 {
+					endIdx += idIdx
+				} else {
+					endIdx = len(s)
+				}
+				nid64, err := strconv.ParseUint(s[idIdx:endIdx], 10, 32)
+				if err != nil {
+					return nil, fmt.Errorf("cannot parse identity from: %s (%s): %s", s, s[idIdx:endIdx], err)
+				}
+				nid = uint32(nid64)
+				if localScopeOnly && !identity.NumericIdentity(nid).HasLocalScope() {
+					nid = 0
+					continue
+				}
+			}
+		}
+		if nid != 0 {
+			result[k] = nid
+		}
+	}
+
+	return result, nil
+}
+
+// SelectedIdentities returns filtered identities from the output of `cilium policy selectors list
+// -o json` as a string
+func (s *SSHMeta) SelectedIdentities(match string) string {
+	res := s.Exec(fmt.Sprintf(`cilium policy selectors list -o json | jq '.[] | select(.selector | test("%s")) | .identities[] | .'`, match))
+	res.ExpectSuccess("Failed getting identities for %s selectors", match)
+	return res.Stdout()
 }
 
 // ExecCilium runs a Cilium CLI command and returns the resultant cmdRes.
@@ -167,6 +229,34 @@ func (s *SSHMeta) WaitEndpointsDeleted() bool {
 	}
 	return true
 
+}
+
+// WaitDockerPluginReady waits up until timeout reached for Cilium docker plugin to be ready
+func (s *SSHMeta) WaitDockerPluginReady() bool {
+	logger := s.logger.WithFields(logrus.Fields{"functionName": "WaitDockerPluginReady"})
+
+	body := func() bool {
+		// check that docker plugin socket exists
+		cmd := `stat /run/docker/plugins/cilium.sock`
+		res := s.ExecWithSudo(cmd)
+		if !res.WasSuccessful() {
+			return false
+		}
+		// check that connect works
+		cmd = `nc -U -z /run/docker/plugins/cilium.sock`
+		res = s.ExecWithSudo(cmd)
+		if !res.WasSuccessful() {
+			return false
+		}
+		return true
+	}
+	err := WithTimeout(body, "Docker plugin is not ready after timeout", &TimeoutConfig{Timeout: HelperTimeout})
+	if err != nil {
+		logger.WithError(err).Warn("Docker plugin is not ready after timeout")
+		s.ExecWithSudo("ls -l /run/docker/plugins/cilium.sock") // This function is only for debugginag.
+		return false
+	}
+	return true
 }
 
 func (s *SSHMeta) MonitorDebug(on bool, epID string) bool {
@@ -805,7 +895,7 @@ func (s *SSHMeta) ServiceIsSynced(id int) (bool, error) {
 		target := fmt.Sprintf("%s (%d)", backendSVC, id)
 
 		for _, addr := range lb {
-			if addr == target {
+			if strings.Contains(addr, target) {
 				result = true
 			}
 		}
@@ -883,23 +973,36 @@ func (s *SSHMeta) SetUpCilium() error {
 // SetUpCiliumWithOptions sets up Cilium as a systemd service with a given set of options. It
 // returns an error if any of the operations needed to start Cilium fail.
 func (s *SSHMeta) SetUpCiliumWithOptions(ciliumOpts string) error {
+	// Default kvstore options
+	if !strings.Contains(ciliumOpts, "--kvstore") {
+		ciliumOpts += " --kvstore consul --kvstore-opt consul.address=127.0.0.1:8500"
+	}
+
 	ciliumOpts += " --exclude-local-address=" + DockerBridgeIP + "/32"
 	ciliumOpts += " --exclude-local-address=" + FakeIPv4WorldAddress + "/32"
 	ciliumOpts += " --exclude-local-address=" + FakeIPv6WorldAddress + "/128"
 
+	// Get the current CILIUM_IMAGE from the service definition
+	res := s.Exec("grep CILIUM_IMAGE= /etc/sysconfig/cilium")
+	if !res.WasSuccessful() {
+		return fmt.Errorf("Could not find CILIUM_IMAGE from /etc/sysconfig/cilium: %s", res.CombineOutput())
+	}
+	ciliumImage := res.Stdout()
+
 	systemdTemplate := `
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
-CILIUM_OPTS=--kvstore consul --kvstore-opt consul.address=127.0.0.1:8500 --debug --pprof=true --log-system-load %s
+%s
+CILIUM_OPTS=--debug --pprof=true --log-system-load %s
 INITSYSTEM=SYSTEMD`
 
 	ciliumConfig := "cilium.conf.ginkgo"
-	err := s.RenderTemplateToFile(ciliumConfig, fmt.Sprintf(systemdTemplate, ciliumOpts), os.ModePerm)
+	err := s.RenderTemplateToFile(ciliumConfig, fmt.Sprintf(systemdTemplate, ciliumImage, ciliumOpts), os.ModePerm)
 	if err != nil {
 		return err
 	}
 
 	confPath := filepath.Join("/home/vagrant/go/src/github.com/cilium/cilium/test", ciliumConfig)
-	res := s.Exec(fmt.Sprintf("sudo cp %s /etc/sysconfig/cilium", confPath))
+	res = s.Exec(fmt.Sprintf("sudo cp %s /etc/sysconfig/cilium", confPath))
 	if !res.WasSuccessful() {
 		return fmt.Errorf("%s", res.CombineOutput())
 	}

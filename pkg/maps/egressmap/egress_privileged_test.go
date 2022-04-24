@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package egressmap
 
@@ -12,6 +11,8 @@ import (
 	"testing"
 
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/ebpf"
@@ -28,7 +29,7 @@ func Test(t *testing.T) {
 
 func (k *EgressMapTestSuite) SetUpSuite(c *C) {
 	bpf.CheckOrMountFS("")
-	err := bpf.ConfigureResourceLimits()
+	err := rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
 }
 

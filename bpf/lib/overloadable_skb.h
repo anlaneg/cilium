@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_OVERLOADABLE_SKB_H_
 #define __LIB_OVERLOADABLE_SKB_H_
@@ -23,6 +23,15 @@ static __always_inline __maybe_unused int
 get_identity(const struct __sk_buff *ctx)
 {
 	return ((ctx->mark & 0xFF) << 16) | ctx->mark >> 16;
+}
+
+/**
+ * get_epid - returns source endpoint identity from the mark field
+ */
+static __always_inline __maybe_unused __u32
+get_epid(const struct __sk_buff *ctx)
+{
+	return ctx->mark >> 16;
 }
 
 static __always_inline __maybe_unused void

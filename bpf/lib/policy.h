@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2016-2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_POLICY_H_
 #define __LIB_POLICY_H_
@@ -149,7 +149,7 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 local_id,
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip6))
 			return DROP_INVALID;
-		off = ((void *)ip6 - data) + ipv6_hdrlen(ctx, ETH_HLEN, &ip6->nexthdr);
+		off = ((void *)ip6 - data) + ipv6_hdrlen(ctx, &ip6->nexthdr);
 		if (ctx_load_bytes(ctx, off, &icmp_type, sizeof(icmp_type)) < 0)
 			return DROP_INVALID;
 
@@ -320,8 +320,8 @@ static __always_inline int policy_can_egress4(struct __ctx_buff *ctx,
  * Mark ctx to skip policy enforcement
  * @arg ctx	packet
  *
- * Will cause the packet to ignore the policy enforcement layer and
- * be considered accepted despite of the policy outcome.
+ * Will cause the packet to ignore the policy enforcement verdict for allow rules and
+ * be considered accepted despite of the policy outcome. Has no effect on deny rules.
  */
 static __always_inline void policy_mark_skip(struct __ctx_buff *ctx)
 {

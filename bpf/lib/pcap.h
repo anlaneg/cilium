@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2021 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_PCAP_H_
 #define __LIB_PCAP_H_
@@ -357,7 +357,7 @@ cilium_capture6_classify_wcard(struct __ctx_buff *ctx)
 	okey.smask = 128;
 	okey.nexthdr = ip6->nexthdr;
 
-	ret = ipv6_hdrlen(ctx, l3_off, &okey.nexthdr);
+	ret = ipv6_hdrlen(ctx, &okey.nexthdr);
 	if (ret < 0)
 		return NULL;
 	if (okey.nexthdr != IPPROTO_TCP &&

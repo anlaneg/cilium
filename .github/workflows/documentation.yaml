@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Checkout code
         if: ${{ !github.event.pull_request }}
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Check code changes
@@ -32,6 +32,7 @@ jobs:
         with:
           filters: |
             src:
+              - .github/workflows/documentation.yaml
               - 'Documentation/**'
               - 'bugtool/cmd/**'
               - 'cilium/cmd/**'
@@ -49,10 +50,10 @@ jobs:
     name: Validate & Build HTML
     runs-on: ubuntu-18.04
     steps:
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
-      - uses: docker://cilium/docs-builder:latest
+      - uses: docker://cilium/docs-builder:2022-04-08@sha256:44f59d844a7e1162080e6fdd62c72a16fc268c893c6cb81e1fbd31cfa189e691
         with:
           entrypoint: ./Documentation/check-build.sh
           args: html

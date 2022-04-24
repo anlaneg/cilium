@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 The Kubernetes Authors.
-// Copyright 2020-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package v1
 
@@ -32,6 +32,10 @@ var (
 // Adds the list of known types to the given scheme.
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
+		&Ingress{},
+		&IngressList{},
+		&IngressClass{},
+		&IngressClassList{},
 		&NetworkPolicy{},
 		&NetworkPolicyList{},
 	)

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests && integration_tests
-// +build !privileged_tests,integration_tests
 
 package cache
 
@@ -38,7 +37,7 @@ func (s *IdentityCacheTestSuite) TestLocalIdentityCache(c *C) {
 	// allocate identities for all available numeric identities with a
 	// unique label
 	for i := minID; i <= maxID; i++ {
-		id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{fmt.Sprintf("%d", i)}))
+		id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{fmt.Sprintf("%d", i)}), identity.InvalidIdentity)
 		c.Assert(err, IsNil)
 		c.Assert(isNew, Equals, true)
 		identities[id.ID] = id
@@ -47,7 +46,7 @@ func (s *IdentityCacheTestSuite) TestLocalIdentityCache(c *C) {
 	// allocate the same labels again. This must be successful and the same
 	// identities must be returned.
 	for i := minID; i <= maxID; i++ {
-		id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{fmt.Sprintf("%d", i)}))
+		id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{fmt.Sprintf("%d", i)}), identity.InvalidIdentity)
 		c.Assert(isNew, Equals, false)
 		c.Assert(err, IsNil)
 
@@ -56,7 +55,7 @@ func (s *IdentityCacheTestSuite) TestLocalIdentityCache(c *C) {
 	}
 
 	// Allocation must fail as we are out of IDs
-	_, _, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{"foo"}))
+	_, _, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{"foo"}), identity.InvalidIdentity)
 	c.Assert(err, Not(IsNil))
 
 	// release all identities, this must decrement the reference count but not release the identities yet
@@ -78,7 +77,7 @@ func (s *IdentityCacheTestSuite) TestLocalIdentityCache(c *C) {
 
 	// allocate all identities again
 	for i := minID; i <= maxID; i++ {
-		id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{fmt.Sprintf("%d", i)}))
+		id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{fmt.Sprintf("%d", i)}), identity.InvalidIdentity)
 		c.Assert(err, IsNil)
 		c.Assert(isNew, Equals, true)
 		identities[id.ID] = id
@@ -88,7 +87,7 @@ func (s *IdentityCacheTestSuite) TestLocalIdentityCache(c *C) {
 	randomID := identity.NumericIdentity(3) | identity.LocalIdentityFlag
 	c.Assert(cache.release(identities[randomID]), Equals, true)
 
-	id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{"foo"}))
+	id, isNew, err := cache.lookupOrCreate(labels.NewLabelsFromModel([]string{"foo"}), identity.InvalidIdentity)
 	c.Assert(err, IsNil)
 	c.Assert(isNew, Equals, true)
 	// the selected numeric identity must be the one released before

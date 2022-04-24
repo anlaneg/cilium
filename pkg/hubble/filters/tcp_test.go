@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Hubble
+// Copyright Authors of Hubble
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package filters
 
@@ -101,6 +100,13 @@ func TestFlowTCPFilter(t *testing.T) {
 			argsev: &flowpb.TCPFlags{PSH: true, ACK: true},
 			want:   true,
 		},
+		// regression test for GH-18830
+		{
+			name:   "TCP flow without flags",
+			argsf:  []*flowpb.TCPFlags{{SYN: true}},
+			argsev: nil,
+			want:   false,
+		},
 	}
 
 	for _, tt := range testflags {
@@ -110,9 +116,8 @@ func TestFlowTCPFilter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fl, err := BuildFilterList(context.Background(), argsfilter, []OnBuildFilter{&TCPFilter{}})
 			if err != nil {
-				return
-			}
-			if got := fl.MatchOne(argsevent); got != tt.want {
+				t.Errorf("unexpected filter build error: %s", err)
+			} else if got := fl.MatchOne(argsevent); got != tt.want {
 				t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
 			}
 		})

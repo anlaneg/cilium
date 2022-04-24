@@ -19,7 +19,11 @@ will return `quay.io/cilium/cilium:v1.10.1@abcdefgh`
 */}}
 {{- define "cilium.image" -}}
 {{- $digest := (.useDigest | default false) | ternary (printf "@%s" .digest) "" -}}
+{{- if .override -}}
+{{- printf "%s" .override -}}
+{{- else -}}
 {{- printf "%s:%s%s" .repository .tag $digest -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -96,4 +100,35 @@ Return the appropriate apiVersion for podDisruptionBudget.
 {{- else -}}
 {{- print "policy/v1beta1" -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Generate TLS CA for Cilium
+Note: Always use this template as follows:
+    {{- $_ := include "cilum.ca.setup" . -}}
+
+The assignment to `$_` is required because we store the generated CI in a global `commonCA`
+and `commonCASecretName` variables.
+
+*/}}
+{{- define "cilum.ca.setup" }}
+  {{- if not .commonCA -}}
+    {{- $ca := "" -}}
+    {{- $secretName := "cilium-ca" -}}
+    {{- $crt := .Values.tls.ca.cert -}}
+    {{- $key := .Values.tls.ca.key -}}
+    {{- if and $crt $key }}
+      {{- $ca = buildCustomCert $crt $key -}}
+    {{- else }}
+      {{- with lookup "v1" "Secret" .Release.Namespace $secretName }}
+        {{- $crt := index .data "ca.crt" }}
+        {{- $key := index .data "ca.key" }}
+        {{- $ca = buildCustomCert $crt $key -}}
+      {{- else }}
+        {{- $validity := ( .Values.tls.ca.certValidityDuration | int) -}}
+        {{- $ca = genCA "Cilium CA" $validity -}}
+      {{- end }}
+    {{- end -}}
+    {{- $_ := set (set . "commonCA" $ca) "commonCASecretName" $secretName -}}
+  {{- end -}}
 {{- end -}}

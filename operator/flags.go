@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package main
 
@@ -13,6 +13,7 @@ import (
 	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/pkg/defaults"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -34,6 +35,10 @@ func init() {
 	flags.StringSliceVar(&operatorOption.Config.IPAMSubnetsIDs, operatorOption.IPAMSubnetsIDs, operatorOption.Config.IPAMSubnetsIDs,
 		"Subnets IDs (separated by commas)")
 	option.BindEnv(operatorOption.IPAMSubnetsIDs)
+
+	flags.StringToStringVar(&operatorOption.Config.IPAMInstanceTags, operatorOption.IPAMInstanceTags, operatorOption.Config.IPAMInstanceTags,
+		"EC2 Instance tags in the form of k1=v1,k2=v2 (multiple k/v pairs can also be passed by repeating the CLI flag")
+	option.BindEnv(operatorOption.IPAMInstanceTags)
 
 	flags.Int64(operatorOption.ParallelAllocWorkers, defaults.ParallelAllocWorkers, "Maximum number of parallel IPAM workers")
 	option.BindEnv(operatorOption.ParallelAllocWorkers)
@@ -130,7 +135,7 @@ func init() {
 				return "cilium-operator-azure"
 			case ipamOption.IPAMAlibabaCloud:
 				return "cilium-operator-alibabacloud"
-			case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool, ipamOption.IPAMCRD:
+			case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2, ipamOption.IPAMCRD:
 				return "cilium-operator-generic"
 			default:
 				return ""
@@ -179,14 +184,14 @@ func init() {
 	option.BindEnv(option.EnableIPv4Name)
 
 	flags.StringSlice(operatorOption.ClusterPoolIPv4CIDR, []string{},
-		fmt.Sprintf("IPv4 CIDR Range for Pods in cluster. Requires '%s=%s' and '%s=%s'",
-			option.IPAM, ipamOption.IPAMClusterPool,
+		fmt.Sprintf("IPv4 CIDR Range for Pods in cluster. Requires '%s=%s|%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2,
 			option.EnableIPv4Name, "true"))
 	option.BindEnv(operatorOption.ClusterPoolIPv4CIDR)
 
 	flags.Int(operatorOption.NodeCIDRMaskSizeIPv4, 24,
-		fmt.Sprintf("Mask size for each IPv4 podCIDR per node. Requires '%s=%s' and '%s=%s'",
-			option.IPAM, ipamOption.IPAMClusterPool,
+		fmt.Sprintf("Mask size for each IPv4 podCIDR per node. Requires '%s=%s|%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2,
 			option.EnableIPv4Name, "true"))
 	option.BindEnv(operatorOption.NodeCIDRMaskSizeIPv4)
 
@@ -194,14 +199,14 @@ func init() {
 	option.BindEnv(option.EnableIPv6Name)
 
 	flags.StringSlice(operatorOption.ClusterPoolIPv6CIDR, []string{},
-		fmt.Sprintf("IPv6 CIDR Range for Pods in cluster. Requires '%s=%s' and '%s=%s'",
-			option.IPAM, ipamOption.IPAMClusterPool,
+		fmt.Sprintf("IPv6 CIDR Range for Pods in cluster. Requires '%s=%s|%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2,
 			option.EnableIPv6Name, "true"))
 	option.BindEnv(operatorOption.ClusterPoolIPv6CIDR)
 
 	flags.Int(operatorOption.NodeCIDRMaskSizeIPv6, 112,
-		fmt.Sprintf("Mask size for each IPv6 podCIDR per node. Requires '%s=%s' and '%s=%s'",
-			option.IPAM, ipamOption.IPAMClusterPool,
+		fmt.Sprintf("Mask size for each IPv6 podCIDR per node. Requires '%s=%s|%s' and '%s=%s'",
+			option.IPAM, ipamOption.IPAMClusterPool, ipamOption.IPAMClusterPoolV2,
 			option.EnableIPv6Name, "true"))
 	option.BindEnv(operatorOption.NodeCIDRMaskSizeIPv6)
 
@@ -223,7 +228,7 @@ func init() {
 	option.BindEnv(option.KVStore)
 
 	flags.Var(option.NewNamedMapOptions(option.KVStoreOpt, &option.Config.KVStoreOpt, nil),
-		option.KVStoreOpt, "Key-value store options")
+		option.KVStoreOpt, "Key-value store options e.g. etcd.address=127.0.0.1:4001")
 	option.BindEnv(option.KVStoreOpt)
 
 	flags.String(option.K8sAPIServer, "", "Kubernetes API server URL")
@@ -317,6 +322,18 @@ func init() {
 	flags.String(operatorOption.CESSlicingMode, operatorOption.CESSlicingModeDefault, "Slicing mode define how ceps are grouped into a CES")
 	flags.MarkHidden(operatorOption.CESSlicingMode)
 	option.BindEnv(operatorOption.CESSlicingMode)
+
+	flags.String(operatorOption.CiliumK8sNamespace, "", fmt.Sprintf("Name of the Kubernetes namespace in which Cilium is deployed in. Defaults to the same namespace defined in %s", option.K8sNamespaceName))
+	option.BindEnv(operatorOption.CiliumK8sNamespace)
+
+	flags.String(operatorOption.CiliumPodLabels, "k8s-app=cilium", "Cilium Pod's labels. Used to detect if a Cilium pod is running to remove the node taints where its running and set NetworkUnavailable to false")
+	option.BindEnv(operatorOption.CiliumPodLabels)
+
+	flags.Bool(operatorOption.RemoveCiliumNodeTaints, true, fmt.Sprintf("Remove node taint %q from Kubernetes nodes once Cilium is up and running", ciliumio.AgentNotReadyNodeTaint))
+	option.BindEnv(operatorOption.RemoveCiliumNodeTaints)
+
+	flags.Bool(operatorOption.SetCiliumIsUpCondition, true, "Set CiliumIsUp Node condition to mark a Kubernetes Node that a Cilium pod is up and running in that node")
+	option.BindEnv(operatorOption.SetCiliumIsUpCondition)
 
 	viper.BindPFlags(flags)
 }

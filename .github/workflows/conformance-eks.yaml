@@ -66,7 +66,7 @@ concurrency:
 env:
   clusterName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
   region: us-east-2
-  cilium_cli_version: v0.10.1
+  cilium_cli_version: v0.11.1
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
@@ -87,7 +87,7 @@ jobs:
       # paths-filter to work.
       - name: Checkout code
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Retrieve pull request's base and head
@@ -138,13 +138,23 @@ jobs:
           fi
 
           CILIUM_INSTALL_DEFAULTS="--cluster-name=${{ env.clusterName }} \
-            --agent-image=quay.io/${{ github.repository_owner }}/cilium-ci \
-            --operator-image=quay.io/${{ github.repository_owner }}/operator-aws-ci \
-            --version=${SHA} \
+            --chart-directory=install/kubernetes/cilium \
+            --helm-set=image.repository=quay.io/${{ github.repository_owner }}/cilium-ci \
+            --helm-set=image.tag=${SHA} \
+            --helm-set=operator.image.repository=quay.io/${{ github.repository_owner }}/operator \
+            --helm-set=operator.image.suffix=-ci \
+            --helm-set=operator.image.tag=${SHA} \
+            --helm-set=clustermesh.apiserver.image.repository=quay.io/${{ github.repository_owner }}/clustermesh-apiserver-ci \
+            --helm-set=clustermesh.apiserver.image.tag=${SHA} \
+            --helm-set=hubble.relay.image.repository=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
+            --helm-set=hubble.relay.image.tag=${SHA} \
             --wait=false \
             --rollback=false \
-            --config monitor-aggregation=none"
-          HUBBLE_ENABLE_DEFAULTS="--relay-image=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
+            --config monitor-aggregation=none \
+            --base-version=v1.12 \
+            --version="
+          HUBBLE_ENABLE_DEFAULTS=" --chart-directory=install/kubernetes/cilium \
+            --relay-image=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
             --relay-version=${SHA}"
           echo ::set-output name=cilium_install_defaults::${CILIUM_INSTALL_DEFAULTS}
           echo ::set-output name=hubble_enable_defaults::${HUBBLE_ENABLE_DEFAULTS}
@@ -208,7 +218,7 @@ jobs:
             taints:
              - key: "node.cilium.io/agent-not-ready"
                value: "true"
-               effect: "NoSchedule"
+               effect: "NoExecute"
           EOF
 
           eksctl create cluster -f ./eks-config.yaml
@@ -218,8 +228,14 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-aws-ci hubble-relay-ci ; do
-            until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/$image/tag/${{ steps.vars.outputs.sha }}/images" &> /dev/null; do sleep 45s; done
+            until docker manifest inspect quay.io/${{ github.repository_owner }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
+
+      - name: Checkout code
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
+        with:
+          ref: ${{ steps.vars.outputs.sha }}
+          persist-credentials: false
 
       - name: Install Cilium
         run: |
@@ -243,8 +259,8 @@ jobs:
       - name: Clean up Cilium
         if: ${{ false }} # see comment above for details
         run: |
-          cilium uninstall --wait
           pkill -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay"
+          cilium uninstall --wait
 
       - name: Create custom IPsec secret
         if: ${{ false }} # see comment above for details
@@ -294,7 +310,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535
         with:
           name: cilium-sysdump-out.zip
           path: cilium-sysdump-out.zip

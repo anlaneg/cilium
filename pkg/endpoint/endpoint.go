@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package endpoint
 
@@ -20,6 +20,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/addressing"
@@ -115,6 +117,9 @@ type Endpoint struct {
 
 	// policyGetter can get the policy.Repository object.
 	policyGetter policyRepoGetter
+
+	// namedPortsGetter can get the ipcache.IPCache object.
+	namedPortsGetter namedPortsGetter
 
 	// ID of the endpoint, unique in the scope of the node
 	ID uint16
@@ -340,6 +345,12 @@ type Endpoint struct {
 	isHost bool
 
 	noTrackPort uint16
+
+	ciliumEndpointUID types.UID
+}
+
+type namedPortsGetter interface {
+	GetNamedPorts() (npm policy.NamedPortMultiMap)
 }
 
 type policyRepoGetter interface {
@@ -435,8 +446,8 @@ func (e *Endpoint) waitForProxyCompletions(proxyWaitGroup *completion.WaitGroup)
 }
 
 // NewEndpointWithState creates a new endpoint useful for testing purposes
-func NewEndpointWithState(owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, state State) *Endpoint {
-	ep := createEndpoint(owner, policyGetter, proxy, allocator, ID, "")
+func NewEndpointWithState(owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, state State) *Endpoint {
+	ep := createEndpoint(owner, policyGetter, namedPortsGetter, proxy, allocator, ID, "")
 	ep.state = state
 	ep.eventQueue = eventqueue.NewEventQueueBuffered(fmt.Sprintf("endpoint-%d", ID), option.Config.EndpointQueueSize)
 
@@ -447,28 +458,31 @@ func NewEndpointWithState(owner regeneration.Owner, policyGetter policyRepoGette
 	return ep
 }
 
-func createEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, ifName string) *Endpoint {
+func createEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, ifName string) *Endpoint {
 	ep := &Endpoint{
-		owner:           owner,
-		policyGetter:    policyGetter,
-		ID:              ID,
-		createdAt:       time.Now(),
-		proxy:           proxy,
-		ifName:          ifName,
-		OpLabels:        labels.NewOpLabels(),
-		DNSRules:        nil,
-		DNSHistory:      fqdn.NewDNSCacheWithLimit(option.Config.ToFQDNsMinTTL, option.Config.ToFQDNsMaxIPsPerHost),
-		DNSZombies:      fqdn.NewDNSZombieMappings(option.Config.ToFQDNsMaxDeferredConnectionDeletes),
-		state:           "",
-		status:          NewEndpointStatus(),
-		hasBPFProgram:   make(chan struct{}, 0),
-		desiredPolicy:   policy.NewEndpointPolicy(policyGetter.GetPolicyRepository()),
-		controllers:     controller.NewManager(),
-		regenFailedChan: make(chan struct{}, 1),
-		allocator:       allocator,
-		logLimiter:      logging.NewLimiter(10*time.Second, 3), // 1 log / 10 secs, burst of 3
-		noTrackPort:     0,
+		owner:            owner,
+		policyGetter:     policyGetter,
+		namedPortsGetter: namedPortsGetter,
+		ID:               ID,
+		createdAt:        time.Now(),
+		proxy:            proxy,
+		ifName:           ifName,
+		OpLabels:         labels.NewOpLabels(),
+		DNSRules:         nil,
+		DNSHistory:       fqdn.NewDNSCacheWithLimit(option.Config.ToFQDNsMinTTL, option.Config.ToFQDNsMaxIPsPerHost),
+		DNSZombies:       fqdn.NewDNSZombieMappings(option.Config.ToFQDNsMaxDeferredConnectionDeletes, option.Config.ToFQDNsMaxIPsPerHost),
+		state:            "",
+		status:           NewEndpointStatus(),
+		hasBPFProgram:    make(chan struct{}, 0),
+		desiredPolicy:    policy.NewEndpointPolicy(policyGetter.GetPolicyRepository()),
+		controllers:      controller.NewManager(),
+		regenFailedChan:  make(chan struct{}, 1),
+		allocator:        allocator,
+		logLimiter:       logging.NewLimiter(10*time.Second, 3), // 1 log / 10 secs, burst of 3
+		noTrackPort:      0,
 	}
+
+	ep.initDNSHistoryTrigger()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ep.aliveCancel = cancel
@@ -481,14 +495,27 @@ func createEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, pro
 	return ep
 }
 
+func (e *Endpoint) initDNSHistoryTrigger() {
+	// Note: This can only fail if the trigger func is nil.
+	var err error
+	e.dnsHistoryTrigger, err = trigger.NewTrigger(trigger.Parameters{
+		Name:        "sync_endpoint_header_file",
+		MinInterval: 5 * time.Second,
+		TriggerFunc: e.syncEndpointHeaderFile,
+	})
+	if err != nil {
+		log.WithField(logfields.EndpointID, e.ID).WithError(err).Error("Failed to create the endpoint header file sync trigger")
+	}
+}
+
 // CreateHostEndpoint creates the endpoint corresponding to the host.
-func CreateHostEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
+func CreateHostEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, namedPortsGetter namedPortsGetter, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
 	mac, err := link.GetHardwareAddr(defaults.HostDevice)
 	if err != nil {
 		return nil, err
 	}
 
-	ep := createEndpoint(owner, policyGetter, proxy, allocator, 0, defaults.HostDevice)
+	ep := createEndpoint(owner, policyGetter, namedPortsGetter, proxy, allocator, 0, defaults.HostDevice)
 	ep.isHost = true
 	ep.mac = mac
 	ep.nodeMAC = mac
@@ -810,6 +837,8 @@ func parseEndpoint(ctx context.Context, owner regeneration.Owner, policyGetter p
 	if err := parseBase64ToEndpoint(epSlice[1], &ep); err != nil {
 		return nil, fmt.Errorf("failed to parse restored endpoint: %s", err)
 	}
+
+	ep.initDNSHistoryTrigger()
 
 	// Validate the options that were parsed
 	ep.SetDefaultOpts(ep.Options)
@@ -1863,7 +1892,7 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	// identity is new, then this will start updating the policy for other
 	// co-located endpoints without having to wait for that RTT.
 	notifySelectorCache := true
-	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, notifySelectorCache)
+	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, notifySelectorCache, identity.InvalidIdentity)
 	if err != nil {
 		err = fmt.Errorf("unable to resolve identity: %s", err)
 		e.LogStatus(Other, Warning, fmt.Sprintf("%s (will retry)", err.Error()))
@@ -2141,30 +2170,12 @@ func (e *Endpoint) syncEndpointHeaderFile(reasons []string) {
 	}
 }
 
-// SyncEndpointHeaderFile it bumps the current DNS History information for the
-// endpoint in the ep_config.h file.
-func (e *Endpoint) SyncEndpointHeaderFile() error {
-	if err := e.lockAlive(); err != nil {
-		// endpoint was removed in the meanwhile, return
-		return nil
+// SyncEndpointHeaderFile triggers the header file sync to the ep_config.h
+// file. This includes updating the current DNS History information.
+func (e *Endpoint) SyncEndpointHeaderFile() {
+	if e.dnsHistoryTrigger != nil {
+		e.dnsHistoryTrigger.Trigger()
 	}
-	defer e.unlock()
-
-	if e.dnsHistoryTrigger == nil {
-		t, err := trigger.NewTrigger(trigger.Parameters{
-			Name:        "sync_endpoint_header_file",
-			MinInterval: 5 * time.Second,
-			TriggerFunc: func(reasons []string) { e.syncEndpointHeaderFile(reasons) },
-		})
-		if err != nil {
-			return fmt.Errorf(
-				"Sync Endpoint header file trigger for endpoint cannot be activated: %s",
-				err)
-		}
-		e.dnsHistoryTrigger = t
-	}
-	e.dnsHistoryTrigger.Trigger()
-	return nil
 }
 
 // Delete cleans up all resources associated with this endpoint, including the
@@ -2248,21 +2259,6 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 	return errs
 }
 
-// GetProxyInfoByFields returns the ID, IPv4 address, IPv6 address, labels,
-// SHA of labels, and identity of the endpoint. Returns an error if the endpoint
-// is in the process of being deleted / has been deleted.
-func (e *Endpoint) GetProxyInfoByFields() (uint64, string, string, []string, string, uint64, error) {
-	// We use unconditional locking here because we explicitly handle state
-	// in which the endpoint is being deleted.
-	e.unconditionalRLock()
-	defer e.runlock()
-	var err error
-	if e.IsDisconnecting() {
-		err = fmt.Errorf("endpoint is in the process of being deleted")
-	}
-	return e.GetID(), e.GetIPv4Address(), e.GetIPv6Address(), e.GetLabels(), e.GetLabelsSHA(), uint64(e.getIdentity()), err
-}
-
 // WaitForFirstRegeneration waits for specific conditions before returning:
 // * if the endpoint has a sidecar proxy, it waits for the endpoint's BPF
 // program to be generated for the first time.
@@ -2315,7 +2311,7 @@ func (e *Endpoint) WaitForFirstRegeneration(ctx context.Context) error {
 		}
 
 		if ctx.Err() != nil {
-			return fmt.Errorf("timeout while waiting for initial endpoint generation to complete")
+			return fmt.Errorf("timeout while waiting for initial endpoint generation to complete: %w", ctx.Err())
 		}
 	}
 }

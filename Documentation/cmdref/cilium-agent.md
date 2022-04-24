@@ -16,8 +16,8 @@ cilium-agent [flags]
       --allocator-list-timeout duration                      Timeout for listing allocator state before exiting (default 3m0s)
       --allow-icmp-frag-needed                               Allow ICMP Fragmentation Needed type packets for purposes like TCP Path MTU. (default true)
       --allow-localhost string                               Policy when to allow local stack to reach local endpoints { auto | always | policy } (default "auto")
-      --annotate-k8s-node                                    Annotate Kubernetes node (default true)
-      --api-rate-limit map                                   API rate limiting configuration (example: --rate-limit endpoint-create=rate-limit:10/m,rate-burst:2) (default map[])
+      --annotate-k8s-node                                    Annotate Kubernetes node
+      --api-rate-limit map                                   API rate limiting configuration (example: --rate-limit endpoint-create=rate-limit:10/m,rate-burst:2)
       --arping-refresh-period duration                       Period for remote node ARP entry refresh (set 0 to disable) (default 30s)
       --auto-create-cilium-node-resource                     Automatically create CiliumNode resource for own node on startup (default true)
       --auto-direct-node-routes                              Enable automatic L2 routing between nodes
@@ -66,15 +66,18 @@ cilium-agent [flags]
   -D, --debug                                                Enable debugging mode
       --debug-verbose strings                                List of enabled verbose debug groups
       --devices strings                                      List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'
-      --direct-routing-device string                         Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF fast redirect; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)
+      --direct-routing-device string                         Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF host routing; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)
       --disable-cnp-status-updates                           Do not send CNP NodeStatus updates to the Kubernetes api-server (recommended to run with "cnp-node-status-gc-interval=0" in cilium-operator)
       --disable-endpoint-crd                                 Disable use of CiliumEndpoint CRD
       --disable-iptables-feeder-rules strings                Chains to ignore when installing feeder rules.
       --dns-max-ips-per-restored-rule int                    Maximum number of IPs to maintain for each restored DNS rule (default 1000)
+      --dns-policy-unload-on-shutdown                        Unload DNS policy rules on graceful shutdown
       --egress-masquerade-interfaces string                  Limit egress masquerading to interface selector
       --egress-multi-home-ip-rule-compat                     Offset routing table IDs under ENI IPAM mode to avoid collisions with reserved table IDs. If false, the offset is performed (new scheme), otherwise, the old scheme stays in-place.
       --enable-auto-protect-node-port-range                  Append NodePort range to net.ipv4.ip_local_reserved_ports if it overlaps with ephemeral port range (net.ipv4.ip_local_port_range) (default true)
       --enable-bandwidth-manager                             Enable BPF bandwidth manager
+      --enable-bbr                                           Enable BBR for the bandwidth manager
+      --enable-bgp-control-plane                             Enable the BGP control plane.
       --enable-bpf-clock-probe                               Enable BPF clock source probing for more efficient tick retrieval
       --enable-bpf-masquerade                                Masquerade packets from endpoints leaving the host with BPF instead of iptables
       --enable-bpf-tproxy                                    Enable BPF-based proxy redirection, if support available
@@ -82,6 +85,7 @@ cilium-agent [flags]
       --enable-custom-calls                                  Enable tail call hooks for custom eBPF programs
       --enable-endpoint-health-checking                      Enable connectivity health checking between virtual endpoints (default true)
       --enable-endpoint-routes                               Use per endpoint routes instead of routing via cilium_host
+      --enable-envoy-config                                  Enable Envoy Config CRDs
       --enable-external-ips                                  Enable k8s service externalIPs feature (requires enabling enable-node-port) (default true)
       --enable-health-check-nodeport                         Enables a healthcheck nodePort server for NodePort services with 'healthCheckNodePort' being set (default true)
       --enable-health-checking                               Enable connectivity health checking (default true)
@@ -118,6 +122,8 @@ cilium-agent [flags]
       --enable-session-affinity                              Enable support for service session affinity
       --enable-svc-source-range-check                        Enable check of service source ranges (currently, only for LoadBalancer) (default true)
       --enable-tracing                                       Enable tracing while determining policy (debugging)
+      --enable-unreachable-routes                            Add unreachable routes on pod deletion
+      --enable-vtep                                          Enable  VXLAN Tunnel Endpoint (VTEP) Integration (beta)
       --enable-well-known-identities                         Enable well-known identities for known Kubernetes components (default true)
       --enable-wireguard                                     Enable wireguard
       --enable-wireguard-userspace-fallback                  Enables the fallback to the wireguard userspace implementation
@@ -127,13 +133,13 @@ cilium-agent [flags]
       --encrypt-node                                         Enables encrypting traffic from non-Cilium pods and host networking
       --endpoint-queue-size int                              size of EventQueue per-endpoint (default 25)
       --endpoint-status strings                              Enable additional CiliumEndpoint status features (controllers,health,log,policy,state)
+      --envoy-config-timeout duration                        Timeout duration for Envoy Config acknowledgements (default 2m0s)
       --envoy-log string                                     Path to a separate Envoy log file, if any
       --exclude-local-address strings                        Exclude CIDR from being recognized as local address
-      --fixed-identity-mapping map                           Key-value for the fixed identity mapping which allows to use reserved label for fixed identities (default map[])
+      --fixed-identity-mapping map                           Key-value for the fixed identity mapping which allows to use reserved label for fixed identities, e.g. 128=kv-store,129=kube-dns
       --force-local-policy-eval-at-source                    Force policy evaluation of all local communication at the source endpoint (default true)
       --gops-port int                                        Port for gops server to listen on (default 9890)
   -h, --help                                                 help for cilium-agent
-      --host-reachable-services-protos strings               Only enable reachability of services for host applications for specific protocols (default [tcp,udp])
       --http-idle-timeout uint                               Time after which a non-gRPC HTTP stream is considered failed unless traffic in the stream has been processed (in seconds); defaults to 0 (unlimited)
       --http-max-grpc-timeout uint                           Time after which a forwarded gRPC request is considered failed unless completed (in seconds). A "grpc-timeout" header may override this with a shorter value; defaults to 0 (unlimited)
       --http-normalize-path                                  Use Envoy HTTP path normalization options, which currently includes RFC 3986 path normalization, Envoy merge slashes option, and unescaping and redirecting for paths that contain escaped slashes. These are necessary to keep path based access control functional, and should not interfere with normal operation. Set this to false only with caution. (default true)
@@ -158,6 +164,7 @@ cilium-agent [flags]
       --hubble-tls-key-file string                           Path to the private key file for the Hubble server. The file must contain PEM encoded data.
       --identity-allocation-mode string                      Method to use for identity allocation (default "kvstore")
       --identity-change-grace-period duration                Time to wait before using new identity on endpoint identity change (default 5s)
+      --identity-restore-grace-period duration               Time to wait before releasing unused restored CIDR identities during agent restart (default 10m0s)
       --install-iptables-rules                               Install base iptables rules for cilium to mainly interact with kube-proxy (and masquerading) (default true)
       --install-no-conntrack-iptables-rules                  Install Iptables rules to skip netfilter connection tracking on all pod traffic. This option is only effective when Cilium is running in direct routing and full KPR mode. Moreover, this option cannot be enabled when Cilium is running in a managed Kubernetes environment or in a chained CNI setup.
       --ip-allocation-timeout duration                       Time after which an incomplete CIDR allocation is considered failed (default 2m0s)
@@ -166,7 +173,7 @@ cilium-agent [flags]
       --ipsec-key-file string                                Path to IPSec key file
       --iptables-lock-timeout duration                       Time to pass to each iptables invocation to wait for xtables lock acquisition (default 5s)
       --iptables-random-fully                                Set iptables flag random-fully on masquerading rules
-      --ipv4-native-routing-cidr string                      Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr.
+      --ipv4-native-routing-cidr string                      Allows to explicitly specify the IPv4 CIDR for native routing. When specified, Cilium assumes networking for this CIDR is preconfigured and hands traffic destined for that range to the Linux network stack without applying any SNAT. Generally speaking, specifying a native routing CIDR implies that Cilium can depend on the underlying networking stack to route packets to their destination. To offer a concrete example, if Cilium is configured to use direct routing and the Kubernetes CIDR is included in the native routing CIDR, the user must configure the routes to reach pods, either manually or by setting the auto-direct-node-routes flag.
       --ipv4-node string                                     IPv4 address of node (default "auto")
       --ipv4-pod-subnets strings                             List of IPv4 pod subnets to preconfigure for encryption
       --ipv4-range string                                    Per-node IPv4 endpoint prefix, e.g. 10.16.0.0/16 (default "auto")
@@ -174,7 +181,7 @@ cilium-agent [flags]
       --ipv4-service-range string                            Kubernetes IPv4 services CIDR if not inside cluster prefix (default "auto")
       --ipv6-cluster-alloc-cidr string                       IPv6 /64 CIDR used to allocate per node endpoint /96 CIDR (default "f00d::/64")
       --ipv6-mcast-device string                             Device that joins a Solicited-Node multicast group for IPv6
-      --ipv6-native-routing-cidr string                      Allows to explicitly specify the IPv6 CIDR for native routing. This value corresponds to the configured cluster-cidr.
+      --ipv6-native-routing-cidr string                      Allows to explicitly specify the IPv6 CIDR for native routing. When specified, Cilium assumes networking for this CIDR is preconfigured and hands traffic destined for that range to the Linux network stack without applying any SNAT. Generally speaking, specifying a native routing CIDR implies that Cilium can depend on the underlying networking stack to route packets to their destination. To offer a concrete example, if Cilium is configured to use direct routing and the Kubernetes CIDR is included in the native routing CIDR, the user must configure the routes to reach pods, either manually or by setting the auto-direct-node-routes flag.
       --ipv6-node string                                     IPv6 address of node (default "auto")
       --ipv6-pod-subnets strings                             List of IPv6 pod subnets to preconfigure for encryption
       --ipv6-range string                                    Per-node IPv6 endpoint prefix, e.g. fd02:1:1::/96 (default "auto")
@@ -194,7 +201,7 @@ cilium-agent [flags]
       --kvstore string                                       Key-value store type
       --kvstore-connectivity-timeout duration                Time after which an incomplete kvstore operation  is considered failed (default 2m0s)
       --kvstore-max-consecutive-quorum-errors int            Max acceptable kvstore consecutive quorum errors before the agent assumes permanent failure (default 2)
-      --kvstore-opt map                                      Key-value store options (default map[])
+      --kvstore-opt map                                      Key-value store options e.g. etcd.address=127.0.0.1:4001
       --kvstore-periodic-sync duration                       Periodic KVstore synchronization interval (default 5m0s)
       --label-prefix-file string                             Valid label prefixes file path
       --labels strings                                       List of label prefixes used to determine identity of an endpoint
@@ -202,7 +209,7 @@ cilium-agent [flags]
       --local-router-ipv4 string                             Link-local IPv4 used for Cilium's router devices
       --local-router-ipv6 string                             Link-local IPv6 used for Cilium's router devices
       --log-driver strings                                   Logging endpoints to use for example syslog
-      --log-opt map                                          Log driver options for cilium-agent, configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local5","syslog.tag":"cilium-agent"} (default map[])
+      --log-opt map                                          Log driver options for cilium-agent, configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local5","syslog.tag":"cilium-agent"}
       --log-system-load                                      Enable periodic logging of system load
       --metrics strings                                      Metrics that should be enabled or disabled from the default metric list. (+metric_foo to enable metric_foo , -metric_bar to disable metric_bar)
       --monitor-aggregation string                           Level of monitor aggregation for traces from the datapath (default "None")
@@ -210,7 +217,6 @@ cilium-agent [flags]
       --monitor-aggregation-interval duration                Monitor report interval when monitor aggregation is enabled (default 5s)
       --monitor-queue-size int                               Size of the event queue when reading monitor events
       --mtu int                                              Overwrite auto-detected MTU of underlying network
-      --nat46-range string                                   IPv6 prefix to map IPv4 addresses to (default "0:0:0:0:0:FFFF::/96")
       --node-port-bind-protection                            Reject application bind(2) requests to service ports in the NodePort range (default true)
       --node-port-range strings                              Set the min/max NodePort port range (default [30000,32767])
       --policy-audit-mode                                    Enable policy audit (non-drop) mode
@@ -219,8 +225,12 @@ cilium-agent [flags]
       --pprof-port int                                       Port that the pprof listens on (default 6060)
       --preallocate-bpf-maps                                 Enable BPF map pre-allocation (default true)
       --prepend-iptables-chains                              Prepend custom iptables chains instead of appending (default true)
+      --procfs string                                        Root's proc filesystem path (default "/proc")
       --prometheus-serve-addr string                         IP:Port on which to serve prometheus metrics (pass ":Port" to bind on all interfaces, "" is off)
       --proxy-connect-timeout uint                           Time after which a TCP connect attempt is considered failed unless completed (in seconds) (default 1)
+      --proxy-gid uint                                       Group ID for proxy control plane sockets. (default 1337)
+      --proxy-max-connection-duration-seconds int            Set Envoy HTTP option max_connection_duration seconds. Default 0 (disable)
+      --proxy-max-requests-per-connection int                Set Envoy HTTP option max_requests_per_connection. Default 0 (disable)
       --proxy-prometheus-port int                            Port to serve Envoy metrics on. Default 0 (disabled).
       --read-cni-conf string                                 Read to the CNI configuration at specified path to extract per node configuration
       --restore                                              Restores state, if possible, from previous daemon (default true)
@@ -244,6 +254,10 @@ cilium-agent [flags]
       --tunnel-port int                                      Tunnel port (default 8472 for "vxlan" and 6081 for "geneve")
       --version                                              Print version information
       --vlan-bpf-bypass ints                                 List of explicitly allowed VLAN IDs, '0' id will allow all VLAN IDs
+      --vtep-cidr strings                                    List of VTEP CIDRs that will be routed towards VTEPs for traffic cluster egress
+      --vtep-endpoint strings                                List of VTEP IP addresses
+      --vtep-mac strings                                     List of VTEP MAC addresses for forwarding traffic outside the cluster
+      --vtep-mask string                                     VTEP CIDR Mask for all VTEP CIDRs (default "255.255.255.0")
       --write-cni-conf-when-ready string                     Write the CNI configuration as specified via --read-cni-conf to path when agent is ready
 ```
 

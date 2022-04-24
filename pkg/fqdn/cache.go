@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018 Authors of Cilium
+// Copyright Authors of Cilium
 
 package fqdn
 
@@ -11,12 +11,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 // cacheEntry objects hold data passed in via DNSCache.Update, nominally
@@ -716,13 +714,17 @@ type DNSZombieMappings struct {
 	deletes        map[string]*DNSZombieMapping // map[ip]toDelete
 	lastCTGCUpdate time.Time
 	max            int // max allowed zombies
+
+	// perHostLimit is the number of maximum number of IP per host.
+	perHostLimit int
 }
 
 // NewDNSZombieMappings constructs a DNSZombieMappings that is read to use
-func NewDNSZombieMappings(max int) *DNSZombieMappings {
+func NewDNSZombieMappings(max, perHostLimit int) *DNSZombieMappings {
 	return &DNSZombieMappings{
-		deletes: make(map[string]*DNSZombieMapping),
-		max:     max,
+		deletes:      make(map[string]*DNSZombieMapping),
+		max:          max,
+		perHostLimit: perHostLimit,
 	}
 }
 
@@ -762,12 +764,16 @@ func (zombies *DNSZombieMappings) isConnectionAlive(zombie *DNSZombieMapping) bo
 
 // getAliveNames returns all the names that are alive
 //   a name is alive if at least one of the IPs that resolve to it is alive
-func (zombies *DNSZombieMappings) getAliveNames() map[string]struct{} {
-	var aliveNames map[string]struct{} = map[string]struct{}{}
+func (zombies *DNSZombieMappings) getAliveNames() map[string][]*DNSZombieMapping {
+	aliveNames := make(map[string][]*DNSZombieMapping)
+
 	for _, z := range zombies.deletes {
 		if zombies.isConnectionAlive(z) {
 			for _, name := range z.Names {
-				aliveNames[name] = struct{}{}
+				if _, ok := aliveNames[name]; !ok {
+					aliveNames[name] = make([]*DNSZombieMapping, 0, 5)
+				}
+				aliveNames[name] = append(aliveNames[name], z)
 			}
 		}
 	}
@@ -780,22 +786,40 @@ func (zombies *DNSZombieMappings) getAliveNames() map[string]struct{} {
 // A zombie is alive if its connection is alive or if one of its names is
 // alive. The function takes an argument that contains the aliveNames (can be
 // obtained via getAliveNames())
-func (zombies *DNSZombieMappings) isZombieAlive(zombie *DNSZombieMapping, aliveNames map[string]struct{}) bool {
+func (zombies *DNSZombieMappings) isZombieAlive(zombie *DNSZombieMapping, aliveNames map[string][]*DNSZombieMapping) (alive, overLimit bool) {
 	if zombies.isConnectionAlive(zombie) {
-		return true
-	}
-
-	for _, name := range zombie.Names {
-		if _, ok := aliveNames[name]; ok {
-			log.WithFields(logrus.Fields{
-				logfields.DNSName: name,
-				logfields.IPAddr:  zombie.IP,
-			}).Debug("FQDN has multiple IPs. One IP has an expired TTL.")
-			return true
+		alive = true
+		if zombies.perHostLimit == 0 {
+			return alive, overLimit
 		}
 	}
 
-	return false
+	for _, name := range zombie.Names {
+		if z, ok := aliveNames[name]; ok {
+			alive = true
+			if zombies.perHostLimit == 0 {
+				return alive, overLimit
+			} else if len(z) > zombies.perHostLimit {
+				overLimit = true
+				return alive, overLimit
+			}
+		}
+	}
+
+	return alive, overLimit
+}
+
+// sortZombieMappingSlice sorts the provided slice by whether the connection is
+// marked alive or not, the oldest created connections, and tie-break by the
+// number of DNS names for that IP.
+//
+// Important zombies shuffle to the end of the slice.
+func sortZombieMappingSlice(alive []*DNSZombieMapping) {
+	sort.Slice(alive, func(i, j int) bool {
+		return alive[i].AliveAt.Before(alive[j].AliveAt) ||
+			alive[i].DeletePendingAt.Before(alive[j].DeletePendingAt) ||
+			len(alive[i].Names) < len(alive[j].Names)
+	})
 }
 
 // GC returns alive and dead DNSZombieMapping entries. This removes dead
@@ -810,15 +834,66 @@ func (zombies *DNSZombieMappings) GC() (alive, dead []*DNSZombieMapping) {
 	zombies.Lock()
 	defer zombies.Unlock()
 
-	var aliveNames map[string]struct{} = zombies.getAliveNames()
+	aliveNames := zombies.getAliveNames()
 
 	// Collect zombies we can delete
 	for _, zombie := range zombies.deletes {
-		if zombies.isZombieAlive(zombie, aliveNames) {
+		zombieAlive, overLimit := zombies.isZombieAlive(zombie, aliveNames)
+		if overLimit {
+			// No-op: This zombie is part of a name in 'aliveNames'
+			// that needs to impose a per-host IP limit. Decide
+			// whether to add to alive or dead in the next loop.
+		} else if zombieAlive {
 			alive = append(alive, zombie.DeepCopy())
 		} else {
 			// Emit the actual object here since we will no longer update it
 			dead = append(dead, zombie)
+		}
+	}
+
+	if zombies.perHostLimit > 0 {
+		warnActiveDNSEntries := false
+		deadIdx := len(dead)
+
+		// Find names which have too many IPs associated mark them dead.
+		//
+		// Multiple names can refer to the same IP, so if we expire the
+		// zombie by IP then we need to ensure that it doesn't get
+		// added to both 'alive' and 'dead'.
+		//
+		// 1) Assemble all of the 'dead', starting from 'deadIdx'.
+		//    Assemble alive candidates in 'possibleAlive'.
+		// 2) Ensure that 'possibleAlive' doesn't contain any of the
+		//    entries in 'dead[deadIdx:]'.
+		// 3) Add the remaining 'possibleAlive' to 'alive'.
+		possibleAlive := make(map[*DNSZombieMapping]struct{})
+		for _, aliveIPsForName := range aliveNames {
+			if len(aliveIPsForName) <= zombies.perHostLimit {
+				// Already handled in the loop above.
+				continue
+			}
+			overLimit := len(aliveIPsForName) - zombies.perHostLimit
+			sortZombieMappingSlice(aliveIPsForName)
+			dead = append(dead, aliveIPsForName[:overLimit]...)
+			for _, z := range aliveIPsForName[overLimit:] {
+				possibleAlive[z] = struct{}{}
+			}
+			if dead[len(dead)-1].AliveAt.IsZero() {
+				warnActiveDNSEntries = true
+			}
+		}
+		if warnActiveDNSEntries {
+			log.Warningf("Evicting expired DNS cache entries that may be in-use due to per-host limits. This may cause recently created connections to be disconnected. Raise %s to mitigate this.", option.ToFQDNsMaxIPsPerHost)
+		}
+
+		for _, dead := range dead[deadIdx:] {
+			if _, ok := possibleAlive[dead]; ok {
+				delete(possibleAlive, dead)
+			}
+		}
+
+		for zombie := range possibleAlive {
+			alive = append(alive, zombie.DeepCopy())
 		}
 	}
 
@@ -828,11 +903,7 @@ func (zombies *DNSZombieMappings) GC() (alive, dead []*DNSZombieMapping) {
 	// that IP.
 	overLimit := len(alive) - zombies.max
 	if overLimit > 0 {
-		sort.Slice(alive, func(i, j int) bool {
-			return alive[i].AliveAt.Before(alive[j].AliveAt) ||
-				alive[i].DeletePendingAt.Before(alive[j].DeletePendingAt) ||
-				len(alive[i].Names) < len(alive[j].Names)
-		})
+		sortZombieMappingSlice(alive)
 		dead = append(dead, alive[:overLimit]...)
 		alive = alive[overLimit:]
 		if dead[len(dead)-1].AliveAt.IsZero() {
@@ -968,7 +1039,7 @@ func (zombies *DNSZombieMappings) DumpAlive(cidrMatcher CIDRMatcherFunc) (alive 
 
 	aliveNames := zombies.getAliveNames()
 	for _, zombie := range zombies.deletes {
-		if !zombies.isZombieAlive(zombie, aliveNames) {
+		if alive, _ := zombies.isZombieAlive(zombie, aliveNames); !alive {
 			continue
 		}
 		// only proceed if zombie is alive and the IP matches the CIDR selector

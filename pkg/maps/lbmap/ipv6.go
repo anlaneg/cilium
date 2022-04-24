@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package lbmap
 
@@ -200,7 +200,7 @@ type Service6Value struct {
 
 func (s *Service6Value) String() string {
 	sHost := s.ToHost().(*Service6Value)
-	return fmt.Sprintf("%d (%d) [FLAGS: 0x%x]", sHost.BackendID, sHost.RevNat, sHost.Flags)
+	return fmt.Sprintf("%d %d (%d) [0x%x 0x%x]", sHost.BackendID, sHost.Count, sHost.RevNat, sHost.Flags, sHost.Flags2)
 }
 
 func (s *Service6Value) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(s) }
@@ -222,6 +222,12 @@ func (s *Service6Value) GetFlags() uint16 {
 func (s *Service6Value) SetSessionAffinityTimeoutSec(t uint32) {
 	// See (* Service4Value).SetSessionAffinityTimeoutSec() for comment
 	s.BackendID = t
+}
+
+func (s *Service6Value) SetL7LBProxyPort(port uint16) {
+	// Go doesn't support union types, so we use BackendID to access the
+	// lb4_service.l7_lb_proxy_port field
+	s.BackendID = uint32(byteorder.HostToNetwork16(port))
 }
 
 func (s *Service6Value) SetBackendID(id loadbalancer.BackendID) {
@@ -281,18 +287,20 @@ type Backend6Value struct {
 	Address types.IPv6      `align:"address"`
 	Port    uint16          `align:"port"`
 	Proto   u8proto.U8proto `align:"proto"`
-	Pad     uint8           `align:"pad"`
+	Flags   uint8           `align:"flags"`
 }
 
-func NewBackend6Value(ip net.IP, port uint16, proto u8proto.U8proto) (*Backend6Value, error) {
+func NewBackend6Value(ip net.IP, port uint16, proto u8proto.U8proto, state loadbalancer.BackendState) (*Backend6Value, error) {
 	ip6 := ip.To16()
 	if ip6 == nil {
 		return nil, fmt.Errorf("Not an IPv6 address")
 	}
+	flags := loadbalancer.NewBackendFlags(state)
 
 	val := Backend6Value{
 		Port:  port,
 		Proto: proto,
+		Flags: flags,
 	}
 	copy(val.Address[:], ip.To16())
 
@@ -308,6 +316,7 @@ func (v *Backend6Value) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) 
 
 func (b *Backend6Value) GetAddress() net.IP { return b.Address.IP() }
 func (b *Backend6Value) GetPort() uint16    { return b.Port }
+func (b *Backend6Value) GetFlags() uint8    { return b.Flags }
 
 func (v *Backend6Value) ToNetwork() BackendValue {
 	n := *v
@@ -327,8 +336,9 @@ type Backend6V2 struct {
 	Value *Backend6Value
 }
 
-func NewBackend6V2(id loadbalancer.BackendID, ip net.IP, port uint16, proto u8proto.U8proto) (*Backend6V2, error) {
-	val, err := NewBackend6Value(ip, port, proto)
+func NewBackend6V2(id loadbalancer.BackendID, ip net.IP, port uint16, proto u8proto.U8proto,
+	state loadbalancer.BackendState) (*Backend6V2, error) {
+	val, err := NewBackend6Value(ip, port, proto, state)
 	if err != nil {
 		return nil, err
 	}

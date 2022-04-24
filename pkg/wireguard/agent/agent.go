@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 // This package contains the agent code used to configure the Wireguard tunnel
 // between nodes. The code supports adding and removing peers at run-time
@@ -67,6 +67,7 @@ type Agent struct {
 	privKey          wgtypes.Key
 	peerByNodeName   map[string]*peerConfig
 	nodeNameByNodeIP map[string]string
+	nodeNameByPubKey map[wgtypes.Key]string
 	restoredPubKeys  map[wgtypes.Key]struct{}
 	cleanup          []func()
 }
@@ -87,11 +88,11 @@ func NewAgent(privKeyPath string) (*Agent, error) {
 
 	return &Agent{
 		wgClient:         wgClient,
-		ipCache:          ipcache.IPIdentityCache,
 		privKey:          key,
 		listenPort:       listenPort,
 		peerByNodeName:   map[string]*peerConfig{},
 		nodeNameByNodeIP: map[string]string{},
+		nodeNameByPubKey: map[wgtypes.Key]string{},
 		restoredPubKeys:  map[wgtypes.Key]struct{}{},
 		cleanup:          []func(){},
 	}, nil
@@ -164,9 +165,10 @@ func (a *Agent) initUserspaceDevice(linkMTU int) (netlink.Link, error) {
 }
 
 // Init creates and configures the local WireGuard tunnel device.
-func (a *Agent) Init(mtuConfig mtu.Configuration) error {
+func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.Configuration) error {
 	addIPCacheListener := false
 	a.Lock()
+	a.ipCache = ipcache
 	defer func() {
 		// IPCache will call back into OnIPIdentityCacheChange which requires
 		// us to release a.mutex before we can add ourself as a listener.
@@ -260,7 +262,7 @@ func (a *Agent) Init(mtuConfig mtu.Configuration) error {
 
 		subnet := net.IPNet{
 			IP:   net.IPv4zero,
-			Mask: net.CIDRMask(0, net.IPv4len),
+			Mask: net.CIDRMask(0, 8*net.IPv4len),
 		}
 		rt.Prefix = subnet
 		if _, err := route.Upsert(rt); err != nil {
@@ -274,7 +276,7 @@ func (a *Agent) Init(mtuConfig mtu.Configuration) error {
 
 		subnet := net.IPNet{
 			IP:   net.IPv6zero,
-			Mask: net.CIDRMask(0, net.IPv6len),
+			Mask: net.CIDRMask(0, 8*net.IPv6len),
 		}
 		rt.Prefix = subnet
 		if _, err := route.Upsert(rt); err != nil {
@@ -320,10 +322,22 @@ func (a *Agent) UpdatePeer(nodeName, pubKeyHex string, nodeIPv4, nodeIPv6 net.IP
 	a.Lock()
 	defer a.Unlock()
 
+	pubKey, err := wgtypes.ParseKey(pubKeyHex)
+	if err != nil {
+		return err
+	}
+
+	if prevNodeName, ok := a.nodeNameByPubKey[pubKey]; ok {
+		if nodeName != prevNodeName {
+			return fmt.Errorf("detected duplicate public key. "+
+				"node %q uses same key as existing node %q", nodeName, prevNodeName)
+		}
+	}
+
 	var allowedIPs []net.IPNet = nil
 	if prev := a.peerByNodeName[nodeName]; prev != nil {
 		// Handle pubKey change
-		if prev.pubKey.String() != pubKeyHex {
+		if prev.pubKey != pubKey {
 			log.WithField(logfields.NodeName, nodeName).Debug("Pubkey has changed")
 			// pubKeys differ, so delete old peer
 			if err := a.deletePeerByPubKey(prev.pubKey); err != nil {
@@ -357,11 +371,6 @@ func (a *Agent) UpdatePeer(nodeName, pubKeyHex string, nodeIPv4, nodeIPv6 net.IP
 			lookupIPv6 = nodeIPv6
 		}
 		allowedIPs = append(allowedIPs, a.ipCache.LookupByHostRLocked(lookupIPv4, lookupIPv6)...)
-	}
-
-	pubKey, err := wgtypes.ParseKey(pubKeyHex)
-	if err != nil {
-		return err
 	}
 
 	ep := ""
@@ -398,6 +407,7 @@ func (a *Agent) UpdatePeer(nodeName, pubKeyHex string, nodeIPv4, nodeIPv6 net.IP
 	}
 
 	a.peerByNodeName[nodeName] = peer
+	a.nodeNameByPubKey[pubKey] = nodeName
 	if nodeIPv4 != nil {
 		a.nodeNameByNodeIP[nodeIPv4.String()] = nodeName
 	}
@@ -422,6 +432,8 @@ func (a *Agent) DeletePeer(nodeName string) error {
 	}
 
 	delete(a.peerByNodeName, nodeName)
+	delete(a.nodeNameByPubKey, peer.pubKey)
+
 	if peer.nodeIPv4 != nil {
 		delete(a.nodeNameByNodeIP, peer.nodeIPv4.String())
 	}

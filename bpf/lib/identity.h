@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2016-2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __LIB_IDENTITY_H_
 #define __LIB_IDENTITY_H_
@@ -55,11 +55,9 @@ static __always_inline bool identity_is_reserved(__u32 identity)
 }
 
 #if __ctx_is == __ctx_skb
-static __always_inline bool inherit_identity_from_host(struct __ctx_buff *ctx,
-						       __u32 *identity)
+static __always_inline __u32 inherit_identity_from_host(struct __ctx_buff *ctx, __u32 *identity)
 {
 	__u32 magic = ctx->mark & MARK_MAGIC_HOST_MASK;
-	bool from_proxy = false;
 
 	/* Packets from the ingress proxy must skip the proxy when the
 	 * destination endpoint evaluates the policy. As the packet would loop
@@ -68,7 +66,6 @@ static __always_inline bool inherit_identity_from_host(struct __ctx_buff *ctx,
 	if (magic == MARK_MAGIC_PROXY_INGRESS) {
 		*identity = get_identity(ctx);
 		ctx->tc_index |= TC_INDEX_F_SKIP_INGRESS_PROXY;
-		from_proxy = true;
 	/* (Return) packets from the egress proxy must skip the redirection to
 	 * the proxy, as the packet would loop and/or the connection be reset
 	 * otherwise.
@@ -76,20 +73,32 @@ static __always_inline bool inherit_identity_from_host(struct __ctx_buff *ctx,
 	} else if (magic == MARK_MAGIC_PROXY_EGRESS) {
 		*identity = get_identity(ctx);
 		ctx->tc_index |= TC_INDEX_F_SKIP_EGRESS_PROXY;
-		from_proxy = true;
 	} else if (magic == MARK_MAGIC_IDENTITY) {
 		*identity = get_identity(ctx);
 	} else if (magic == MARK_MAGIC_HOST) {
 		*identity = HOST_ID;
+	} else if (magic == MARK_MAGIC_ENCRYPT) {
+		*identity = get_identity(ctx);
+#if defined(ENABLE_L7_LB)
+	} else if (magic == MARK_MAGIC_PROXY_EGRESS_EPID) {
+		*identity = get_epid(ctx); /* endpoint identity, not security identity! */
+#endif
 	} else {
 		*identity = WORLD_ID;
 	}
 
 	/* Reset packet mark to avoid hitting routing rules again */
 	ctx->mark = 0;
-	cilium_dbg(ctx, DBG_INHERIT_IDENTITY, *identity, 0);
 
-	return from_proxy;
+#if defined(ENABLE_L7_LB)
+	/* Caller tail calls back to source endpoint egress in this case,
+	 * do not log the (world) identity.
+	 */
+	if (magic != MARK_MAGIC_PROXY_EGRESS_EPID)
+#endif
+		cilium_dbg(ctx, DBG_INHERIT_IDENTITY, *identity, 0);
+
+	return magic;
 }
 #endif /* __ctx_is == __ctx_skb */
 

@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2020 Authors of Cilium */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/* Copyright Authors of Cilium */
 
 #ifndef __BPF_CTX_SKB_H_
 #define __BPF_CTX_SKB_H_
@@ -25,6 +25,7 @@
 #define CTX_ACT_OK		TC_ACT_OK
 #define CTX_ACT_DROP		TC_ACT_SHOT
 #define CTX_ACT_TX		TC_ACT_REDIRECT
+#define CTX_ACT_REDIRECT	TC_ACT_REDIRECT
 
 /* Discouraged since prologue will unclone full skb. */
 #define CTX_DIRECT_WRITE_OK	0

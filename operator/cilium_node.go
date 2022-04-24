@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package main
 
@@ -260,10 +260,6 @@ func (c *ciliumNodeUpdateImplementation) Update(origNode, node *cilium_v2.Cilium
 		return ciliumK8sClient.CiliumV2().CiliumNodes().Update(context.TODO(), node, meta_v1.UpdateOptions{})
 	}
 	return nil, nil
-}
-
-func (c *ciliumNodeUpdateImplementation) Delete(nodeName string) error {
-	return ciliumK8sClient.CiliumV2().CiliumNodes().Delete(context.TODO(), nodeName, meta_v1.DeleteOptions{})
 }
 
 func RunCNPNodeStatusGC(nodeStore cache.Store) {

@@ -26,6 +26,8 @@ Installation
    k8s-install-default
    k8s-install-helm
    k8s-install-advanced
+   taints
+
 
 Observability
 -------------
@@ -74,8 +76,10 @@ Advanced Networking
    ipam
    local-redirect-policy
    bgp
+   bgp-control-plane 
    egress-gateway
    ciliumendpointslice
+   vtep
 
 Cluster Mesh
 ------------

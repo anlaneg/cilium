@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package lbmap
 
@@ -80,6 +80,9 @@ type ServiceValue interface {
 	// Set timeout for sessionAffinity=clientIP
 	SetSessionAffinityTimeoutSec(t uint32)
 
+	// Set proxy port for l7 loadbalancer services
+	SetL7LBProxyPort(port uint16)
+
 	// Set backend identifier
 	SetBackendID(id loadbalancer.BackendID)
 
@@ -119,6 +122,9 @@ type BackendValue interface {
 
 	// Get backend port
 	GetPort() uint16
+
+	// Get backend flags
+	GetFlags() uint8
 
 	// Convert fields to network byte order.
 	ToNetwork() BackendValue
@@ -184,6 +190,7 @@ func svcBackend(backendID loadbalancer.BackendID, backend BackendValue) *loadbal
 	beIP := backend.GetAddress()
 	bePort := backend.GetPort()
 	beProto := loadbalancer.NONE
-	beBackend := loadbalancer.NewBackend(backendID, beProto, beIP, bePort)
+	beState := loadbalancer.GetBackendStateFromFlags(backend.GetFlags())
+	beBackend := loadbalancer.NewBackendWithState(backendID, beProto, beIP, bePort, beState, true)
 	return beBackend
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package eni
 
@@ -349,6 +349,17 @@ func (n *Node) loggerLocked() *logrus.Entry {
 	}
 
 	return log.WithField("instanceID", n.instanceID)
+}
+
+func (n *Node) IsPrefixDelegated() bool {
+	return false
+}
+
+func (n *Node) GetUsedIPWithPrefixes() int {
+	if n.k8sObj == nil {
+		return 0
+	}
+	return len(n.k8sObj.Status.IPAM.Used)
 }
 
 // getLimits returns the interface and IP limits of this node

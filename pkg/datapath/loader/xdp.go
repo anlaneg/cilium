@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package loader
 
@@ -39,7 +39,8 @@ func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode string) {
 	}
 
 	for _, link := range links {
-		if link.Attrs().Xdp == nil {
+		linkxdp := link.Attrs().Xdp
+		if linkxdp == nil || !linkxdp.Attached {
 			// No XDP program is attached
 			continue
 		}
@@ -51,7 +52,7 @@ func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode string) {
 		used := false
 		for _, xdpDev := range xdpDevs {
 			if link.Attrs().Name == xdpDev &&
-				link.Attrs().Xdp.Flags&xdpModeToFlag(xdpMode) != 0 {
+				linkxdp.Flags&xdpModeToFlag(xdpMode) != 0 {
 				// XDP mode matches; don't unload, otherwise we might introduce
 				// intermittent connectivity problems
 				used = true
@@ -117,5 +118,11 @@ func compileAndLoadXDPProg(ctx context.Context, xdpDev, xdpMode string, extraCAr
 	}
 
 	objPath := path.Join(dirs.Output, prog.Output)
-	return replaceDatapath(ctx, xdpDev, objPath, symbolFromHostNetdevEp, "", true, xdpMode)
+	finalize, err := replaceDatapath(ctx, xdpDev, objPath, symbolFromHostNetdevEp, "", true, xdpMode)
+	if err != nil {
+		return err
+	}
+	finalize()
+
+	return err
 }

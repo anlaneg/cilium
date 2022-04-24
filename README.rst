@@ -1,6 +1,6 @@
 |logo|
 
-|cii| |slack| |go-report| |go-doc| |rtd| |apache| |gpl|
+|cii| |go-report| |clomonitor| |artifacthub| |slack| |go-doc| |rtd| |apache| |bsd| |gpl|
 
 Cilium is open source software for providing and transparently securing network
 connectivity and loadbalancing between application workloads such as
@@ -31,13 +31,13 @@ For upgrades to new major releases please consult the `Cilium Upgrade Guide
 Listed below are the actively maintained release branches along with their latest
 minor release, corresponding image pull tags and their release notes:
 
-+---------------------------------------------------------+------------+-----------------------------------+---------------------------------------------------------------------------+--------------------------------------------------------------------------------+
-| `v1.11 <https://github.com/cilium/cilium/tree/v1.11>`__ | 2022-01-18 | ``quay.io/cilium/cilium:v1.11.1`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.11.1>`__ | `General Announcement <https://isovalent.com/blog/post/2021-12-release-111>`__ |
-+---------------------------------------------------------+------------+-----------------------------------+---------------------------------------------------------------------------+--------------------------------------------------------------------------------+
-| `v1.10 <https://github.com/cilium/cilium/tree/v1.10>`__ | 2022-01-18 | ``quay.io/cilium/cilium:v1.10.7`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.10.7>`__ | `General Announcement <https://cilium.io/blog/2021/05/20/cilium-110>`__        |
-+---------------------------------------------------------+------------+-----------------------------------+---------------------------------------------------------------------------+--------------------------------------------------------------------------------+
-| `v1.9 <https://github.com/cilium/cilium/tree/v1.9>`__   | 2022-01-18 | ``quay.io/cilium/cilium:v1.9.12`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.9.12>`__ | `General Announcement <https://cilium.io/blog/2020/11/10/cilium-19>`__         |
-+---------------------------------------------------------+------------+-----------------------------------+---------------------------------------------------------------------------+--------------------------------------------------------------------------------+
++---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `v1.11 <https://github.com/cilium/cilium/tree/v1.11>`__ | 2022-04-15 | ``quay.io/cilium/cilium:v1.11.4``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.11.4>`__  | `General Announcement <https://isovalent.com/blog/post/2021-12-release-111>`__ |
++---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `v1.10 <https://github.com/cilium/cilium/tree/v1.10>`__ | 2022-04-15 | ``quay.io/cilium/cilium:v1.10.10`` | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.10.10>`__ | `General Announcement <https://cilium.io/blog/2021/05/20/cilium-110>`__        |
++---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+--------------------------------------------------------------------------------+
+| `v1.9 <https://github.com/cilium/cilium/tree/v1.9>`__   | 2022-04-15 | ``quay.io/cilium/cilium:v1.9.15``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.9.15>`__  | `General Announcement <https://cilium.io/blog/2020/11/10/cilium-19>`__         |
++---------------------------------------------------------+------------+------------------------------------+----------------------------------------------------------------------------+--------------------------------------------------------------------------------+
 
 Functionality Overview
 ======================
@@ -254,12 +254,29 @@ eBPF & Cilium Office Hours livestream
 -------------------------------------
 We host a weekly community `YouTube livestream called eCHO <https://www.youtube.com/channel/UCJFUxkVQTBJh3LD1wYBWvuQ>`_ which (very loosely!) stands for eBPF & Cilium Office Hours. Join us live, catch up with past episodes, or head over to the `eCHO repo <https://github.com/isovalent/eCHO>`_ and let us know your ideas for topics we should cover.
 
+Governance
+----------
+The Cilium project is governed by a group of `Maintainers and Committers <https://raw.githubusercontent.com/cilium/cilium/master/MAINTAINERS.md>`__.
+How they are selected and govern is outlined in our `governance document <https://docs.cilium.io/en/latest/contributing/governance/commit_access/>`__.
+
+Adopters
+--------
+A list of adopters of the Cilium project who are deploying it in production, and of their use cases,
+can be found in file `USERS.md <https://raw.githubusercontent.com/cilium/cilium/master/USERS.md>`__.
+
 License
 =======
 
-The cilium user space components are licensed under the
-`Apache License, Version 2.0 <LICENSE>`_. The BPF code templates are licensed
-under the `General Public License, Version 2.0 <bpf/COPYING>`_.
+.. _apache-license: LICENSE
+.. _bsd-license: bpf/LICENSE.BSD-2-Clause
+.. _gpl-license: bpf/LICENSE.GPL-2.0
+
+The Cilium user space components are licensed under the
+`Apache License, Version 2.0 <apache-license_>`__.
+The BPF code templates are dual-licensed under the
+`General Public License, Version 2.0 (only) <gpl-license_>`__
+and the `2-Clause BSD License <bsd-license_>`__
+(you can use the terms of either license, at your option).
 
 .. _`Why Cilium?`: http://docs.cilium.io/en/stable/intro/#why-cilium
 .. _`Getting Started`: http://docs.cilium.io/en/stable/gettingstarted/
@@ -290,11 +307,15 @@ under the `General Public License, Version 2.0 <bpf/COPYING>`_.
 
 .. |apache| image:: https://img.shields.io/badge/license-Apache-blue.svg
     :alt: Apache licensed
-    :target: https://github.com/cilium/cilium/blob/master/LICENSE
+    :target: apache-license_
+
+.. |bsd| image:: https://img.shields.io/badge/license-BSD-blue.svg
+    :alt: BSD licensed
+    :target: bsd-license_
 
 .. |gpl| image:: https://img.shields.io/badge/license-GPL-blue.svg
     :alt: GPL licensed
-    :target: https://github.com/cilium/cilium/blob/master/bpf/COPYING
+    :target: gpl-license_
 
 .. |slack| image:: https://cilium.herokuapp.com/badge.svg
     :alt: Join the Cilium slack channel
@@ -303,3 +324,11 @@ under the `General Public License, Version 2.0 <bpf/COPYING>`_.
 .. |cii| image:: https://bestpractices.coreinfrastructure.org/projects/1269/badge
     :alt: CII Best Practices
     :target: https://bestpractices.coreinfrastructure.org/projects/1269
+
+.. |clomonitor| image:: https://img.shields.io/endpoint?url=https://clomonitor.io/api/projects/cncf/cilium/cilium/badge
+    :alt: CLOMonitor
+    :target: https://clomonitor.io/projects/cncf/cilium/cilium
+
+.. |artifacthub| image:: https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/cilium
+    :alt: Artifact Hub
+    :target: https://artifacthub.io/packages/helm/cilium/cilium

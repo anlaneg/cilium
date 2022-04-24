@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package loader
 
@@ -18,7 +17,8 @@ import (
 	"github.com/vishvananda/netlink"
 	. "gopkg.in/check.v1"
 
-	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/ebpf/rlimit"
+
 	"github.com/cilium/cilium/pkg/datapath/linux/config"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
@@ -61,7 +61,7 @@ func (s *LoaderTestSuite) SetUpSuite(c *C) {
 		fmt.Sprintf("-I%s", filepath.Join(bpfDir, "include")),
 	})
 
-	err := bpf.ConfigureResourceLimits()
+	err := rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
 	sourceFile := filepath.Join(bpfDir, endpointProg)
 	err = os.Symlink(sourceFile, endpointProg)
@@ -191,11 +191,13 @@ func (s *LoaderTestSuite) TestReload(c *C) {
 	c.Assert(err, IsNil)
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
-	err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
+	finalize, err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
 	c.Assert(err, IsNil)
+	finalize()
 
-	err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
+	finalize, err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
 	c.Assert(err, IsNil)
+	finalize()
 }
 
 func (s *LoaderTestSuite) testCompileFailure(c *C, ep *testutils.TestEndpoint) {
@@ -277,9 +279,11 @@ func BenchmarkReplaceDatapath(b *testing.B) {
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, ""); err != nil {
+		finalize, err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress, false, "")
+		if err != nil {
 			b.Fatal(err)
 		}
+		finalize()
 	}
 }
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 // Package k8s abstracts all Kubernetes specific behaviour
 package k8s
@@ -7,11 +7,14 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/client-go/rest"
 
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
@@ -67,7 +70,7 @@ func retrieveNodeInformation(ctx context.Context, nodeGetter nodeGetter, nodeNam
 	mightAutoDetectDevices := option.MightAutoDetectDevices()
 	var n *nodeTypes.Node
 
-	if option.Config.IPAM == ipamOption.IPAMClusterPool {
+	if option.Config.IPAM == ipamOption.IPAMClusterPool || option.Config.IPAM == ipamOption.IPAMClusterPoolV2 {
 		ciliumNode, err := CiliumClient().CiliumV2().CiliumNodes().Get(ctx, nodeName, v1.GetOptions{})
 		if err != nil {
 			// If no CIDR is required, retrieving the node information is
@@ -134,18 +137,46 @@ func useNodeCIDR(n *nodeTypes.Node) {
 // Init initializes the Kubernetes package. It is required to call Configure()
 // beforehand.
 func Init(conf k8sconfig.Configuration) error {
-	k8sRestClient, closeAllDefaultClientConns, err := createDefaultClient()
+	restConfig, err := CreateConfig()
+	if err != nil {
+		return fmt.Errorf("unable to create k8s client rest configuration: %s", err)
+	}
+
+	defaultCloseAllConns := setDialer(restConfig)
+
+	// Use the same http client for all k8s connections. It does not matter that
+	// we are using a restConfig for the HTTP client that differs from each
+	// individual client since the rest.HTTPClientFor only does not use fields
+	// that are specific for each client, for example:
+	// restConfig.ContentConfig.ContentType.
+	httpClient, err := rest.HTTPClientFor(restConfig)
+	if err != nil {
+		return fmt.Errorf("unable to create k8s REST client: %s", err)
+	}
+
+	k8sRestClient, err := createDefaultClient(restConfig, httpClient)
 	if err != nil {
 		return fmt.Errorf("unable to create k8s client: %s", err)
 	}
 
-	closeAllCiliumClientConns, err := createDefaultCiliumClient()
+	err = createDefaultCiliumClient(restConfig, httpClient)
 	if err != nil {
 		return fmt.Errorf("unable to create cilium k8s client: %s", err)
 	}
 
-	if err := createAPIExtensionsClient(); err != nil {
+	if err := createAPIExtensionsClient(restConfig, httpClient); err != nil {
 		return fmt.Errorf("unable to create k8s apiextensions client: %s", err)
+	}
+
+	// We are implementing the same logic as Kubelet, see
+	// https://github.com/kubernetes/kubernetes/blob/v1.24.0-beta.0/cmd/kubelet/app/server.go#L852.
+	var closeAllConns func()
+	if s := os.Getenv("DISABLE_HTTP2"); len(s) > 0 {
+		closeAllConns = defaultCloseAllConns
+	} else {
+		closeAllConns = func() {
+			utilnet.CloseIdleConnectionsFor(restConfig.Transport)
+		}
 	}
 
 	heartBeat := func(ctx context.Context) error {
@@ -165,8 +196,7 @@ func Init(conf k8sconfig.Configuration) error {
 					runHeartbeat(
 						heartBeat,
 						option.Config.K8sHeartbeatTimeout,
-						closeAllDefaultClientConns,
-						closeAllCiliumClientConns,
+						closeAllConns,
 					)
 					return nil
 				},

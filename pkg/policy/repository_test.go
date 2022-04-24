@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package policy
 
@@ -2117,4 +2116,79 @@ func (ds *PolicyTestSuite) TestremoveIdentityFromRuleCaches(c *C) {
 	wg.Wait()
 
 	c.Assert(addedRule.metadata.IdentitySelected, checker.DeepEquals, map[identity.NumericIdentity]bool{})
+}
+
+func (ds *PolicyTestSuite) TestIterate(c *C) {
+	repo := NewPolicyRepository(nil, nil, nil)
+	repo.selectorCache = testSelectorCache
+
+	numWithEgress := 0
+	countEgressRules := func(r *api.Rule) {
+		if len(r.Egress) > 0 {
+			numWithEgress++
+		}
+	}
+	repo.Iterate(countEgressRules)
+
+	c.Assert(numWithEgress, Equals, 0)
+
+	numRules := 10
+	lbls := make([]labels.Label, 10)
+	for i := 0; i < numRules; i++ {
+		it := fmt.Sprintf("baz%d", i)
+		epSelector := api.NewESFromLabels(
+			labels.NewLabel(
+				"foo",
+				it,
+				labels.LabelSourceK8s,
+			),
+		)
+		lbls[i] = labels.NewLabel("tag3", it, labels.LabelSourceK8s)
+		_, _, err := repo.Add(api.Rule{
+			EndpointSelector: epSelector,
+			Labels:           labels.LabelArray{lbls[i]},
+			Egress: []api.EgressRule{
+				{
+					EgressCommonRule: api.EgressCommonRule{
+						ToEndpoints: []api.EndpointSelector{
+							epSelector,
+						},
+					},
+				},
+			},
+		}, []Endpoint{})
+		c.Assert(err, IsNil)
+	}
+
+	numWithEgress = 0
+	repo.Iterate(countEgressRules)
+
+	c.Assert(numWithEgress, Equals, numRules)
+
+	numModified := 0
+	modifyRules := func(r *api.Rule) {
+		if r.Labels.Contains(labels.LabelArray{lbls[1]}) || r.Labels.Contains(labels.LabelArray{lbls[3]}) {
+			r.Egress = nil
+			numModified++
+		}
+	}
+
+	repo.Iterate(modifyRules)
+
+	c.Assert(numModified, Equals, 2)
+
+	numWithEgress = 0
+	repo.Iterate(countEgressRules)
+
+	c.Assert(numWithEgress, Equals, numRules-numModified)
+
+	repo.Mutex.Lock()
+	_, _, numDeleted := repo.DeleteByLabelsLocked(labels.LabelArray{lbls[0]})
+	repo.Mutex.Unlock()
+	c.Assert(numDeleted, Equals, 1)
+
+	numWithEgress = 0
+	repo.Iterate(countEgressRules)
+
+	c.Assert(numWithEgress, Equals, numRules-numModified-numDeleted)
 }

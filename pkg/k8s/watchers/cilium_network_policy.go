@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package watchers
 
@@ -10,7 +10,6 @@ import (
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/cilium/cilium/pkg/controller"
@@ -150,8 +149,8 @@ func (k *K8sWatcher) ciliumNetworkPoliciesInit(ciliumNPClient *k8s.K8sCiliumClie
 		cnpStore,
 	)
 
-	k.blockWaitGroupToSyncResources(wait.NeverStop, nil, ciliumV2Controller.HasSynced, k8sAPIGroupCiliumNetworkPolicyV2)
-	go ciliumV2Controller.Run(wait.NeverStop)
+	k.blockWaitGroupToSyncResources(k.stop, nil, ciliumV2Controller.HasSynced, k8sAPIGroupCiliumNetworkPolicyV2)
+	go ciliumV2Controller.Run(k.stop)
 	k.k8sAPIGroups.AddAPI(k8sAPIGroupCiliumNetworkPolicyV2)
 }
 
@@ -168,7 +167,7 @@ func (k *K8sWatcher) addCiliumNetworkPolicyV2(ciliumNPClient clientset.Interface
 
 	rules, policyImportErr := cnp.Parse()
 	if policyImportErr == nil {
-		policyImportErr = k8s.PreprocessRules(rules, &k.K8sSvcCache)
+		policyImportErr = k8s.PreprocessRules(rules, &k.K8sSvcCache, k.ipcache)
 		// Replace all rules with the same name, namespace and
 		// resourceTypeCiliumNetworkPolicy
 		if policyImportErr == nil {

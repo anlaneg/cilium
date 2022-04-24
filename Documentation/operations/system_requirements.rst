@@ -245,6 +245,7 @@ BPF-based proxy redirection                 >= 5.7
 BPF-based host routing                      >= 5.10
 Socket-level LB bypass in pod netns         >= 5.7
 :ref:`egress-gateway`                       >= 5.2
+VXLAN Tunnel Endpoint (VTEP) Integration    >= 5.2
 =========================================== ===============================
 
 .. _req_kvstore:
@@ -428,7 +429,7 @@ Privileges
 ==========
 
 The following privileges are required to run Cilium. When running the standard
-Kubernetes `DaemonSet`, the privileges are automatically granted to Cilium.
+Kubernetes :term:`DaemonSet`, the privileges are automatically granted to Cilium.
 
 * Cilium interacts with the Linux kernel to install eBPF program which will then
   perform networking tasks and implement security rules. In order to install

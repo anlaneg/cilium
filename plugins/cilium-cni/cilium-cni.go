@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 // Ensure build fails on versions of Go that are not supported by Cilium.
 // This build tag should be kept in sync with the version specified in go.mod.
 //go:build go1.17
-// +build go1.17
 
 package main
 
@@ -389,6 +388,31 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	conf := *configResult.Status
 
+	podName := string(cniArgs.K8S_POD_NAMESPACE) + "/" + string(cniArgs.K8S_POD_NAME)
+	ipam, err = c.IPAMAllocate("", podName, true)
+	if err != nil {
+		err = fmt.Errorf("unable to allocate IP via local cilium agent: %s", err)
+		return
+	}
+
+	if ipam.Address == nil {
+		err = fmt.Errorf("Invalid IPAM response, missing addressing")
+		return
+	}
+
+	// release addresses on failure
+	defer func() {
+		if err != nil && ipam != nil && ipam.Address != nil {
+			releaseIP(c, ipam.Address.IPV4)
+			releaseIP(c, ipam.Address.IPV6)
+		}
+	}()
+
+	if err = connector.SufficientAddressing(ipam.HostAddressing); err != nil {
+		err = fmt.Errorf("IP allocation addressing in insufficient: %s", err)
+		return
+	}
+
 	ep := &models.EndpointChangeRequest{
 		ContainerID:  args.ContainerID,
 		Labels:       addLabels,
@@ -442,31 +466,6 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			return
 		}
 		defer m.Close()
-	}
-
-	podName := string(cniArgs.K8S_POD_NAMESPACE) + "/" + string(cniArgs.K8S_POD_NAME)
-	ipam, err = c.IPAMAllocate("", podName, true)
-	if err != nil {
-		err = fmt.Errorf("unable to allocate IP via local cilium agent: %s", err)
-		return
-	}
-
-	if ipam.Address == nil {
-		err = fmt.Errorf("Invalid IPAM response, missing addressing")
-		return
-	}
-
-	// release addresses on failure
-	defer func() {
-		if err != nil {
-			releaseIP(c, ipam.Address.IPV4)
-			releaseIP(c, ipam.Address.IPV6)
-		}
-	}()
-
-	if err = connector.SufficientAddressing(ipam.HostAddressing); err != nil {
-		err = fmt.Errorf("IP allocation addressing in insufficient: %s", err)
-		return
 	}
 
 	state := CmdState{

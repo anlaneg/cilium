@@ -1,19 +1,7 @@
-//  Copyright 2020 Authors of Cilium
-//
-//  Licensed under the Apache License, Version 2.0 (the "License");
-//  you may not use this file except in compliance with the License.
-//  You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-//  Unless required by applicable law or agreed to in writing, software
-//  distributed under the License is distributed on an "AS IS" BASIS,
-//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//  See the License for the specific language governing permissions and
-//  limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package redirectpolicy
 
@@ -560,4 +548,30 @@ func (m *ManagerSuite) TestManager_AddrMatcherConfigDualStack(c *C) {
 	}
 }
 
-//TODO Tests for svcMatcher
+// Tests add and update pod operations with namespace mismatched pods.
+func (m *ManagerSuite) TestManager_OnAddandUpdatePod(c *C) {
+	configFe := configAddrType
+	m.rpm.policyFrontendsByHash[fe1.Hash()] = configFe.id
+	configSvc := configSvcType
+	m.rpm.policyConfigs[configSvc.id] = &configSvc
+	pod := pod1.DeepCopy()
+	pod.Namespace = "ns2"
+	podID := k8s.ServiceID{
+		Name:      pod.Name,
+		Namespace: pod.Namespace,
+	}
+
+	m.rpm.OnAddPod(pod)
+
+	// Namespace mismatched pod not selected.
+	c.Assert(len(m.rpm.policyPods), Equals, 0)
+	_, found := m.rpm.policyPods[podID]
+	c.Assert(found, Equals, false)
+
+	m.rpm.OnUpdatePod(pod, true, true)
+
+	// Namespace mismatched pod not selected.
+	c.Assert(len(m.rpm.policyPods), Equals, 0)
+	_, found = m.rpm.policyPods[podID]
+	c.Assert(found, Equals, false)
+}

@@ -4,8 +4,9 @@ set -e
 export CILIUM_DS_TAG="k8s-app=cilium"
 export KUBE_SYSTEM_NAMESPACE="kube-system"
 export KUBECTL="/usr/bin/kubectl"
+export VMUSER=${VMUSER:-vagrant}
 export PROVISIONSRC="/tmp/provision"
-export GOPATH="/home/vagrant/go"
+export GOPATH="/home/${VMUSER}/go"
 export REGISTRY="k8s1:5000"
 export DOCKER_REGISTRY="docker.io"
 export CILIUM_TAG="cilium/cilium-dev"
@@ -111,28 +112,42 @@ then
     else
         echo "Not on master K8S node; no need to compile Cilium container"
     fi
-else
-    echo "compiling cilium..."
-    sudo -u vagrant -H -E make SKIP_CUSTOMVET_CHECK=true LOCKDEBUG=1 SKIP_K8S_CODE_GEN_CHECK=false SKIP_DOCS=true
-    echo "installing cilium..."
-    make install
-    mkdir -p /etc/sysconfig/
-    cp -f contrib/systemd/cilium /etc/sysconfig/cilium
-    services=$(ls -1 ./contrib/systemd/*.*)
-    for svc in ${services}; do
-        cp -f "${svc}" /etc/systemd/system/
-    done
-    for svc in ${services}; do
-        service=$(echo "$svc" | sed -E -n 's/.*\/(.*?).(service|mount)/\1.\2/p')
-        if [ -n "$service" ] ; then
-          echo "installing service $service"
-          systemctl enable $service || echo "service $service failed"
-          systemctl restart $service || echo "service $service failed to restart"
-        fi
-    done
-    echo "running \"sudo adduser vagrant cilium\" "
-    sudo adduser vagrant cilium
-fi
 
-# Download all images needed for tests.
-./test/provision/container-images.sh test_images .
+    # Download all images needed for k8s tests.
+    ./test/provision/container-images.sh test_images test/k8s
+else
+    echo "Installing docker-plugin..."
+    make -C plugins/cilium-docker
+    make -C plugins/cilium-docker install
+    
+    if [[ "${CILIUM_IMAGE}" == "" ]]; then
+	export CILIUM_IMAGE=cilium/cilium:latest
+	echo "Building Cilium..."
+	make docker-cilium-image LOCKDEBUG=1
+    fi
+    sudo cp ${PROVISIONSRC}/docker-run-cilium.sh /usr/bin/docker-run-cilium
+
+    mkdir -p /etc/sysconfig/
+    sed "s|CILIUM_IMAGE[^[:space:]]*$|CILIUM_IMAGE=${CILIUM_IMAGE}|" contrib/systemd/cilium > /etc/sysconfig/cilium
+
+    cp -f contrib/systemd/*.* /etc/systemd/system/
+    # Use dockerized Cilium with runtime tests
+    cp -f contrib/systemd/cilium.service-with-docker /etc/systemd/system/cilium.service
+    # Do not run cilium-operator with runtime tests, as it fails to connect to k8s api-server
+    rm -f /etc/systemd/system/cilium-operator.service
+
+    services=$(cd /etc/systemd/system; ls -1 cilium*.service cilium*.mount)
+    for service in ${services}; do
+        echo "installing service $service"
+        systemctl enable $service || echo "service $service failed"
+        systemctl restart $service || echo "service $service failed to restart"
+    done
+
+    echo "running \"sudo adduser ${VMUSER} cilium\" "
+    # Add group explicitly to avoid the case where the group was not added yet
+    getent group cilium >/dev/null || sudo groupadd -r cilium
+    sudo adduser ${VMUSER} cilium
+
+    # Download all images needed for runtime tests.
+    ./test/provision/container-images.sh test_images test/helpers
+fi

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package k8s
 
@@ -10,7 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 	core_v1 "k8s.io/api/core/v1"
 
-	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/ip"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_discovery_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
@@ -88,13 +88,13 @@ type ServiceCache struct {
 	// externalEndpoints is a list of additional service backends derived from source other than the local cluster
 	externalEndpoints map[ServiceID]externalEndpoints
 
-	nodeAddressing datapath.NodeAddressing
+	nodeAddressing types.NodeAddressing
 
 	selfNodeZoneLabel string
 }
 
 // NewServiceCache returns a new ServiceCache
-func NewServiceCache(nodeAddressing datapath.NodeAddressing) ServiceCache {
+func NewServiceCache(nodeAddressing types.NodeAddressing) ServiceCache {
 	return ServiceCache{
 		services:          map[ServiceID]*Service{},
 		endpoints:         map[ServiceID]*EndpointSlices{},
@@ -179,7 +179,7 @@ func (s *ServiceCache) GetEndpointsOfService(svcID ServiceID) *Endpoints {
 }
 
 // GetNodeAddressing returns the registered node addresses to this service cache.
-func (s *ServiceCache) GetNodeAddressing() datapath.NodeAddressing {
+func (s *ServiceCache) GetNodeAddressing() types.NodeAddressing {
 	return s.nodeAddressing
 }
 
@@ -519,7 +519,7 @@ func (s *ServiceCache) correlateEndpoints(id ServiceID) (*Endpoints, bool) {
 	}
 
 	// Report the service as ready if a local endpoints object exists or if
-	// external endpoints have have been identified
+	// external endpoints have been identified
 	return endpoints, hasLocalEndpoints || len(endpoints.Backends) > 0
 }
 
@@ -548,23 +548,27 @@ func (s *ServiceCache) mergeServiceUpdateLocked(service *serviceStore.ClusterSer
 		s.externalEndpoints[id] = externalEndpoints
 	}
 
-	scopedLog.Debugf("Updating backends to %+v", service.Backends)
-	backends := map[string]*Backend{}
-	for ipString, portConfig := range service.Backends {
-		backends[ipString] = &Backend{Ports: portConfig}
-	}
-	externalEndpoints.endpoints[service.Cluster] = &Endpoints{
-		Backends: backends,
+	// we don't need to check if the current cluster is remote or local,
+	// as externalEndpoints should not have any local cluster endpoints anyway.
+	if service.IncludeExternal && !service.Shared {
+		delete(externalEndpoints.endpoints, service.Cluster)
+	} else {
+		scopedLog.Debugf("Updating backends to %+v", service.Backends)
+		backends := map[string]*Backend{}
+		for ipString, portConfig := range service.Backends {
+			backends[ipString] = &Backend{Ports: portConfig}
+		}
+		externalEndpoints.endpoints[service.Cluster] = &Endpoints{
+			Backends: backends,
+		}
 	}
 
 	svc, ok := s.services[id]
 
 	endpoints, serviceReady := s.correlateEndpoints(id)
 
-	// Only send event notification if service is shared and ready.
-	// External endpoints are still tracked but correlation will not happen
-	// until the service is marked as shared.
-	if ok && svc.Shared && serviceReady {
+	// Only send event notification if service is ready.
+	if ok && serviceReady {
 		swg.Add()
 		s.Events <- ServiceEvent{
 			Action:     UpdateService,
@@ -604,9 +608,7 @@ func (s *ServiceCache) MergeExternalServiceDelete(service *serviceStore.ClusterS
 
 		endpoints, serviceReady := s.correlateEndpoints(id)
 
-		// Only send event notification if service is shared. External
-		// endpoints are still tracked but correlation will not happen
-		// until the service is marked as shared.
+		// Only send event notification if service is shared.
 		if ok && svc.Shared {
 			swg.Add()
 			event := ServiceEvent{

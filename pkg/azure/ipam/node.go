@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package ipam
 
@@ -189,4 +189,15 @@ func (n *Node) GetMaximumAllocatableIPv4() int {
 // must be allocated to the instance.
 func (n *Node) GetMinimumAllocatableIPv4() int {
 	return defaults.IPAMPreAllocation
+}
+
+func (n *Node) IsPrefixDelegated() bool {
+	return false
+}
+
+func (n *Node) GetUsedIPWithPrefixes() int {
+	if n.k8sObj == nil {
+		return 0
+	}
+	return len(n.k8sObj.Status.IPAM.Used)
 }

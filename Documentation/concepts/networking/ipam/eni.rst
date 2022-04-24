@@ -112,6 +112,10 @@ to them:
          ]
        }
 
+Additional parameters may be configured in the ``eni`` or ``ipam`` section of
+the CNI configuration file. See the list of ENI allocation parameters below
+for a reference of the supported options.
+
 Deploy the ``ConfigMap``:
 
 .. code-block:: shell-session
@@ -121,14 +125,13 @@ Deploy the ``ConfigMap``:
 Configure Cilium with subnet-tags-filter
 ----------------------------------------
 
-Using the instructions above to deploy Cilium, specify the following additional
-arguments to Helm:
+Using the instructions above to deploy Cilium and CNI config, specify the
+following additional arguments to Helm:
 
 .. code-block:: shell-session
 
    --set cni.customConf=true \
-   --set cni.configMap=cni-configuration \
-   --set eni.subnetTagsFilter="foo=true"
+   --set cni.configMap=cni-configuration
 
 ENI Allocation Parameters
 =========================
@@ -222,6 +225,14 @@ allocation:
   VPC of the instance.
 
   If unspecified, no tags are required.
+
+``spec.eni.exclude-interface-tags``
+  The tags used to exclude interfaces from IP allocation. Any ENI attached to
+  a node which matches this set of tags will be ignored by Cilium and may be
+  used for other purposes. This parameter can be used in combination with
+  ``subnet-tags`` or ``first-interface-index`` to exclude additional interfaces.
+
+  If unspecified, no tags are used to exclude interfaces.
 
 ``spec.eni.delete-on-termination``
   Remove the ENI when the instance is terminated

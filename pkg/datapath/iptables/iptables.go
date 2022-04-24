@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package iptables
 
@@ -448,8 +448,8 @@ func (m *IptablesManager) Init() {
 	if err := modulesManager.FindOrLoadModules(
 		"ip6_tables", "ip6table_mangle", "ip6table_raw", "ip6table_filter"); err != nil {
 		if option.Config.EnableIPv6 {
-			log.WithError(err).Warning(
-				"IPv6 is enabled and ip6tables modules could not be initialized (try loading ip6_tables, ip6table_mangle, ip6table_raw and ip6table_filter modules)")
+			log.WithError(err).Fatal(
+				"IPv6 is enabled and ip6tables modules could not be initialized (try disabling IPv6 in Cilium or loading ip6_tables, ip6table_mangle, ip6table_raw and ip6table_filter kernel modules)")
 		}
 		log.WithError(err).Debug(
 			"ip6tables kernel modules could not be loaded, so IPv6 cannot be used")
@@ -512,8 +512,8 @@ func (m *IptablesManager) SupportsOriginalSourceAddr() bool {
 	return (m.haveSocketMatch || m.ipEarlyDemuxDisabled) && option.Config.Tunnel == option.TunnelDisabled
 }
 
-// removeRulesAndIpsets removes iptables rules and ipsets installed by Cilium.
-func (m *IptablesManager) removeRulesAndIpsets(prefix string, quiet bool) {
+// removeRules removes iptables rules installed by Cilium.
+func (m *IptablesManager) removeRules(prefix string, quiet bool) {
 	// Set of tables that have had iptables rules in any Cilium version
 	tables := []string{"nat", "mangle", "raw", "filter"}
 	for _, t := range tables {
@@ -532,24 +532,14 @@ func (m *IptablesManager) removeRulesAndIpsets(prefix string, quiet bool) {
 		c.name = prefix + c.name
 		c.remove(quiet)
 	}
-
-	// ipset removal is always quiet since there won't be anything to remove
-	// if Cilium wasn't using iptables-based masquerading before the restart.
-	removeIpset(strings.ToLower(prefix) + ciliumNodeIpsetV4)
-	removeIpset(strings.ToLower(prefix) + ciliumNodeIpsetV6)
 }
 
-// renameChainsAndIpsets renames iptables chains and ipsets installed by Cilium.
-func (m *IptablesManager) renameChainsAndIpsets(prefix string, quiet bool) {
+// renameChains renames iptables chains installed by Cilium.
+func (m *IptablesManager) renameChains(prefix string, quiet bool) {
 	// Rename any old chains we may have
 	for _, c := range ciliumChains {
 		c.rename(prefix+c.name, quiet)
 	}
-
-	// ipset renaming is always quiet since there won't be anything to rename
-	// if Cilium wasn't using iptables-based masquerading before the restart.
-	prefixIpsetName(ciliumNodeIpsetV4, strings.ToLower(prefix))
-	prefixIpsetName(ciliumNodeIpsetV6, strings.ToLower(prefix))
 }
 
 func (m *IptablesManager) ingressProxyRule(l4Match, markMatch, mark, port, name string) []string {
@@ -631,6 +621,8 @@ func (m *IptablesManager) installStaticProxyRules() error {
 	matchToProxy := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkIsToProxy, linux_defaults.MagicMarkHostMask)
 	// proxy return traffic has 0 ID in the mask
 	matchProxyReply := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkIsProxy, linux_defaults.MagicMarkProxyNoIDMask)
+	// L7 proxy upstream return traffic has Endpoint ID in the mask
+	matchL7ProxyUpstream := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkIsProxyEPID, linux_defaults.MagicMarkProxyMask)
 
 	var err error
 	if option.Config.EnableIPv4 {
@@ -672,6 +664,26 @@ func (m *IptablesManager) installStaticProxyRules() error {
 				"-j", "CT", "--notrack"}, false)
 		}
 		if err == nil {
+			// No conntrack for proxy upstream traffic that is heading to lxc+
+			err = ip4tables.runProg([]string{
+				"-t", "raw",
+				"-A", ciliumOutputRawChain,
+				"-o", "lxc+",
+				"-m", "mark", "--mark", matchL7ProxyUpstream,
+				"-m", "comment", "--comment", "cilium: NOTRACK for L7 proxy upstream traffic",
+				"-j", "CT", "--notrack"}, false)
+		}
+		if err == nil {
+			// No conntrack for proxy upstream traffic that is heading to cilium_host
+			err = ip4tables.runProg([]string{
+				"-t", "raw",
+				"-A", ciliumOutputRawChain,
+				"-o", "cilium_host",
+				"-m", "mark", "--mark", matchL7ProxyUpstream,
+				"-m", "comment", "--comment", "cilium: NOTRACK for L7 proxy upstream traffic",
+				"-j", "CT", "--notrack"}, false)
+		}
+		if err == nil {
 			// Explicit ACCEPT for the proxy return traffic. Needed when the OUTPUT defaults to DROP.
 			// Matching needs to be the same as for the NOTRACK rule above.
 			err = ip4tables.runProg([]string{
@@ -679,6 +691,16 @@ func (m *IptablesManager) installStaticProxyRules() error {
 				"-A", ciliumOutputChain,
 				"-m", "mark", "--mark", matchProxyReply,
 				"-m", "comment", "--comment", "cilium: ACCEPT for proxy return traffic",
+				"-j", "ACCEPT"}, false)
+		}
+		if err == nil {
+			// Explicit ACCEPT for the l7 proxy upstream traffic. Needed when the OUTPUT defaults to DROP.
+			// TODO: See if this is really needed. We do not have an ACCEPT for normal proxy upstream traffic.
+			err = ip4tables.runProg([]string{
+				"-t", "filter",
+				"-A", ciliumOutputChain,
+				"-m", "mark", "--mark", matchL7ProxyUpstream,
+				"-m", "comment", "--comment", "cilium: ACCEPT for l7 proxy upstream traffic",
 				"-j", "ACCEPT"}, false)
 		}
 		if err == nil && m.haveSocketMatch {
@@ -1115,16 +1137,9 @@ func RemoveFromNodeIpset(nodeIP net.IP) {
 	}
 }
 
-// useNodeIpset returns true if the ipset for node IP addresses should be
-// used to skip masquerading.
-func useNodeIpset() bool {
-	return option.Config.Tunnel == option.TunnelDisabled &&
-		option.Config.IptablesMasqueradingEnabled()
-}
-
 func (m *IptablesManager) installMasqueradeRules(prog iptablesInterface, ifName, localDeliveryInterface,
 	snatDstExclusionCIDR, allocRange, hostMasqueradeIP string) error {
-	if useNodeIpset() {
+	if option.Config.NodeIpsetNeeded() {
 		// Exclude traffic to nodes from masquerade.
 		if err := createIpset(prog.getIpset(), prog.getProg() == "ip6tables"); err != nil {
 			return err
@@ -1293,18 +1308,6 @@ func removeIpset(name string) {
 	}
 }
 
-func prefixIpsetName(name, prefix string) {
-	if !ipsetExists(name) {
-		return
-	}
-	newName := prefix + name
-	progArgs := []string{"rename", name, newName}
-	err := ipset.runProg(progArgs, true)
-	if err != nil {
-		log.WithError(err).Warnf("Unable to rename Cilium %s ipset to %s", name, newName)
-	}
-}
-
 func ipsetExists(name string) bool {
 	progArgs := []string{"list", name}
 	err := ipset.runProg(progArgs, true)
@@ -1331,6 +1334,7 @@ func (m *IptablesManager) installHostTrafficMarkRule(prog iptablesInterface) err
 	matchFromIPSecEncrypt := fmt.Sprintf("%#08x/%#08x", linux_defaults.RouteMarkDecrypt, linux_defaults.RouteMarkMask)
 	matchFromIPSecDecrypt := fmt.Sprintf("%#08x/%#08x", linux_defaults.RouteMarkEncrypt, linux_defaults.RouteMarkMask)
 	matchFromProxy := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkIsProxy, linux_defaults.MagicMarkProxyMask)
+	matchFromProxyEPID := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkIsProxyEPID, linux_defaults.MagicMarkProxyMask)
 	markAsFromHost := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkHost, linux_defaults.MagicMarkHostMask)
 
 	return prog.runProg([]string{
@@ -1339,6 +1343,7 @@ func (m *IptablesManager) installHostTrafficMarkRule(prog iptablesInterface) err
 		"-m", "mark", "!", "--mark", matchFromIPSecDecrypt, // Don't match ipsec traffic
 		"-m", "mark", "!", "--mark", matchFromIPSecEncrypt, // Don't match ipsec traffic
 		"-m", "mark", "!", "--mark", matchFromProxy, // Don't match proxy traffic
+		"-m", "mark", "!", "--mark", matchFromProxyEPID, // Don't match proxy traffic
 		"-m", "comment", "--comment", "cilium: host->any mark as from host",
 		"-j", "MARK", "--set-xmark", markAsFromHost}, false)
 }
@@ -1349,9 +1354,9 @@ func (m *IptablesManager) InstallRules(ifName string, firstInitialization, insta
 	quiet := firstInitialization
 
 	// Make sure we have no old "backups"
-	m.removeRulesAndIpsets(oldCiliumPrefix, true)
+	m.removeRules(oldCiliumPrefix, true)
 
-	m.renameChainsAndIpsets(oldCiliumPrefix, quiet)
+	m.renameChains(oldCiliumPrefix, quiet)
 
 	// install rules if needed
 	if install {
@@ -1368,8 +1373,12 @@ func (m *IptablesManager) InstallRules(ifName string, firstInitialization, insta
 		return err
 	}
 
-	// Create ipsets for node IP address only if needed.
-	if useNodeIpset() {
+	// Create ipsets for node IP address only if needed. If they already exist,
+	// we will simply ignore the error.
+	// Note we don't need a backup system as for iptables rules because the
+	// contents of ipsets doesn't depend on configuration. Whether they are
+	// needed depends on the configuration, but the content doesn't.
+	if option.Config.NodeIpsetNeeded() {
 		if option.Config.IptablesMasqueradingIPv4Enabled() {
 			if err = createIpset(ciliumNodeIpsetV4, false); err != nil {
 				return err
@@ -1380,11 +1389,16 @@ func (m *IptablesManager) InstallRules(ifName string, firstInitialization, insta
 				return err
 			}
 		}
+	} else {
+		// ipset removal is always quiet since there won't be anything to
+		// remove if Cilium wasn't using iptables-based masquerading before the restart.
+		removeIpset(ciliumNodeIpsetV4)
+		removeIpset(ciliumNodeIpsetV6)
 	}
 
 	// only remove old rules if new ones were successfully installed
 	if err == nil {
-		m.removeRulesAndIpsets(oldCiliumPrefix, quiet)
+		m.removeRules(oldCiliumPrefix, quiet)
 	}
 	return err
 }

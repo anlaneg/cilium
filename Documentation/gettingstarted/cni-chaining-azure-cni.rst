@@ -31,7 +31,7 @@ Create an AKS + Cilium CNI configuration
 ========================================
 
 Create a ``chaining.yaml`` file based on the following template to specify the
-desired CNI chaining configuration. This ConfigMap will be installed as the CNI
+desired CNI chaining configuration. This :term:`ConfigMap` will be installed as the CNI
 configuration file on all nodes and defines the chaining configuration. In the
 example below, the Azure CNI, portmap, and Cilium are chained together.
 
@@ -67,7 +67,7 @@ example below, the Azure CNI, portmap, and Cilium are chained together.
           ]
         }
 
-Deploy the `ConfigMap`:
+Deploy the :term:`ConfigMap`:
 
 .. code-block:: shell-session
 
@@ -90,7 +90,8 @@ Deploy Cilium release via Helm:
      --set nodeinit.enabled=true \\
      --set cni.configMap=cni-configuration \\
      --set tunnel=disabled \\
-     --set enableIPv4Masquerade=false
+     --set enableIPv4Masquerade=false \\
+     --set endpointRoutes.enabled=true
 
 This will create both the main cilium daemonset, as well as the cilium-node-init daemonset, which handles tasks like mounting the eBPF filesystem and updating the
 existing Azure CNI plugin to run in 'transparent' mode.

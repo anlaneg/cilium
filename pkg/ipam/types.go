@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package ipam
 
@@ -8,7 +8,8 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 
-	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/cidr"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/lock"
 )
 
@@ -82,7 +83,7 @@ type IPBlacklist struct {
 
 // IPAM is the configuration used for a particular IPAM type.
 type IPAM struct {
-	nodeAddressing datapath.NodeAddressing
+	nodeAddressing types.NodeAddressing
 	config         Configuration
 
 	IPv6Allocator Allocator
@@ -113,4 +114,20 @@ func (ipam *IPAM) DebugStatus() string {
 	str := spew.Sdump(ipam)
 	ipam.allocatorMutex.RUnlock()
 	return str
+}
+
+// GetVpcCIDRs returns all the CIDRs associated with the VPC this node belongs to.
+// This works only cloud provider IPAM modes and returns nil for other modes.
+// sharedNodeStore must be initialized before calling this method.
+func (ipam *IPAM) GetVpcCIDRs() (vpcCIDRs []*cidr.CIDR) {
+	sharedNodeStore.mutex.RLock()
+	defer sharedNodeStore.mutex.RUnlock()
+	primary, secondary := deriveVpcCIDRs(sharedNodeStore.ownNode)
+	if primary == nil {
+		return nil
+	}
+	if secondary == nil {
+		return []*cidr.CIDR{primary}
+	}
+	return append(secondary, primary)
 }

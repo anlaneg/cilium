@@ -18,7 +18,7 @@ jobs:
   preflight-clusterrole:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Check pre-flight clusterrole
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
 
@@ -59,8 +59,8 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
-          until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/cilium-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
-          until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/operator-generic-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
+          until docker manifest inspect quay.io/${{ github.repository_owner }}/cilium-ci:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
+          until docker manifest inspect quay.io/${{ github.repository_owner }}/operator-generic-ci:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
 
       - name: Create kind cluster
         uses: helm/kind-action@94729529f85113b88f4f819c17ce61382e6d8478
@@ -101,7 +101,7 @@ jobs:
           kubectl wait --for condition=Established crd/ciliumnetworkpolicies.cilium.io --timeout=5m
 
       - name: Run cyclonus network policy test
-        working-directory: test/k8sT/manifests/netpol-cyclonus
+        working-directory: test/k8s/manifests/netpol-cyclonus
         run: ./test-cyclonus.sh
 
       - name: Capture cilium-sysdump
@@ -120,7 +120,7 @@ jobs:
           cilium sysdump --output-filename cilium-sysdump-out
 
       - name: Upload cilium-sysdump
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535
         if: ${{ failure() }}
         with:
           name: cilium-sysdump-out.zip

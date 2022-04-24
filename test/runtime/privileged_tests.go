@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package RuntimeTest
 
@@ -18,7 +18,7 @@ import (
 const (
 	// The privileged unit tests can take more than 4 minutes, the default
 	// timeout for helper commands.
-	privilegedUnitTestTimeout = 16 * time.Minute
+	privilegedUnitTestTimeout = 30 * time.Minute
 )
 
 var _ = Describe("RuntimePrivilegedUnitTests", func() {
@@ -42,7 +42,7 @@ var _ = Describe("RuntimePrivilegedUnitTests", func() {
 		path, _ := filepath.Split(vm.BasePath())
 		ctx, cancel := context.WithTimeout(context.Background(), privilegedUnitTestTimeout)
 		defer cancel()
-		res := vm.ExecContext(ctx, fmt.Sprintf("sudo make -C %s tests-privileged", path))
+		res := vm.ExecContext(ctx, fmt.Sprintf("bash -c 'sudo make -C %s tests-privileged | ts \"[%%H:%%M:%%S]\"; exit \"${PIPESTATUS[0]}\"'", path))
 		res.ExpectSuccess("Failed to run privileged unit tests")
 	})
 })

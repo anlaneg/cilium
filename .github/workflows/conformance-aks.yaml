@@ -67,7 +67,7 @@ env:
   name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
   location: westeurope
   cost_reduction: --node-vm-size Standard_B2s --node-osdisk-size 30
-  cilium_cli_version: v0.10.1
+  cilium_cli_version: v0.11.1
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
@@ -88,7 +88,7 @@ jobs:
       # paths-filter to work.
       - name: Checkout code
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Retrieve pull request's base and head
@@ -121,7 +121,7 @@ jobs:
       github.event_name == 'schedule' ||
       github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Set up job variables
         id: vars
@@ -139,14 +139,24 @@ jobs:
           fi
 
           CILIUM_INSTALL_DEFAULTS="--cluster-name=${{ env.name }} \
-            --agent-image=quay.io/${{ github.repository_owner }}/cilium-ci \
-            --operator-image=quay.io/${{ github.repository_owner }}/operator-azure-ci \
-            --version=${SHA} \
+            --chart-directory=install/kubernetes/cilium \
+            --helm-set=image.repository=quay.io/${{ github.repository_owner }}/cilium-ci \
+            --helm-set=image.tag=${SHA} \
+            --helm-set=operator.image.repository=quay.io/${{ github.repository_owner }}/operator \
+            --helm-set=operator.image.suffix=-ci \
+            --helm-set=operator.image.tag=${SHA} \
+            --helm-set=clustermesh.apiserver.image.repository=quay.io/${{ github.repository_owner }}/clustermesh-apiserver-ci \
+            --helm-set=clustermesh.apiserver.image.tag=${SHA} \
+            --helm-set=hubble.relay.image.repository=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
+            --helm-set=hubble.relay.image.tag=${SHA} \
             --azure-resource-group ${{ env.name }} \
             --wait=false \
             --rollback=false \
-            --config monitor-aggregation=none"
-          HUBBLE_ENABLE_DEFAULTS="--relay-image=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
+            --config monitor-aggregation=none \
+            --base-version=v1.12 \
+            --version="
+          HUBBLE_ENABLE_DEFAULTS=" --chart-directory=install/kubernetes/cilium \
+            --relay-image=quay.io/${{ github.repository_owner }}/hubble-relay-ci \
             --relay-version=${SHA}"
           echo ::set-output name=cilium_install_defaults::${CILIUM_INSTALL_DEFAULTS}
           echo ::set-output name=hubble_enable_defaults::${HUBBLE_ENABLE_DEFAULTS}
@@ -215,23 +225,21 @@ jobs:
             ${{ env.cost_reduction }} \
             --no-wait
 
-          # Create user node pool tainted with `node.cilium.io/agent-not-ready=true:NoSchedule`
+          # Create user node pool tainted with `node.cilium.io/agent-not-ready=true:NoExecute`
           az aks nodepool add \
             --resource-group ${{ env.name }} \
             --cluster-name ${{ env.name }} \
             --name userpool \
             --mode user \
             --node-count 2 \
-            --node-taints "node.cilium.io/agent-not-ready=true:NoSchedule" \
-            ${{ env.cost_reduction }} \
-            --no-wait
+            --node-taints "node.cilium.io/agent-not-ready=true:NoExecute" \
+            ${{ env.cost_reduction }}
 
           # Delete the initial system node pool
           az aks nodepool delete \
             --resource-group ${{ env.name }} \
             --cluster-name ${{ env.name }} \
-            --name "${nodepool_to_delete}" \
-            --no-wait
+            --name "${nodepool_to_delete}"
 
       - name: Get cluster credentials
         run: |
@@ -244,8 +252,14 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-azure-ci hubble-relay-ci ; do
-            until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/$image/tag/${{ steps.vars.outputs.sha }}/images" &> /dev/null; do sleep 45s; done
+            until docker manifest inspect quay.io/${{ github.repository_owner }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
+
+      - name: Checkout code
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
+        with:
+          ref: ${{ steps.vars.outputs.sha }}
+          persist-credentials: false
 
       - name: Install Cilium
         run: |
@@ -265,39 +279,31 @@ jobs:
         run: |
           cilium connectivity test --flow-validation=disabled
 
-      # AKS testing with encryption is disabled due to https://github.com/cilium/cilium-cli/issues/342
-      # Re-enabling tracked in: https://github.com/cilium/cilium/issues/17644
       - name: Clean up Cilium
-        if: ${{ false }} # see comment above for details
         run: |
-          cilium uninstall --wait
           pkill -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay"
+          cilium uninstall --wait
 
       - name: Create custom IPsec secret
-        if: ${{ false }} # see comment above for details
         run: |
           kubectl create -n kube-system secret generic cilium-ipsec-keys --from-literal=keys="15 rfc4106(gcm(aes)) $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null | xxd -p -c 64)) 128"
 
       - name: Install Cilium with encryption
-        if: ${{ false }} # see comment above for details
         run: |
           cilium install ${{ steps.vars.outputs.cilium_install_defaults }} \
             --encryption=ipsec
 
       - name: Enable Relay
-        if: ${{ false }} # see comment above for details
         run: |
           cilium hubble enable ${{ steps.vars.outputs.hubble_enable_defaults }}
 
       - name: Port forward Relay
-        if: ${{ false }} # see comment above for details
         run: |
           cilium hubble port-forward&
           sleep 10s
           [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
 
       - name: Run connectivity test
-        if: ${{ false }} # see comment above for details
         run: |
           cilium connectivity test --force-deploy --flow-validation=disabled
 
@@ -317,7 +323,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ !success() }}
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535
         with:
           name: cilium-sysdump-out.zip
           path: cilium-sysdump-out.zip

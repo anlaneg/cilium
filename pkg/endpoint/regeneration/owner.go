@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package regeneration
 
@@ -54,7 +54,6 @@ type EndpointInfoSource interface {
 	HasSidecarProxy() bool
 	ConntrackName() string
 	ConntrackNameLocked() string
-	GetProxyInfoByFields() (uint64, string, string, []string, string, uint64, error)
 }
 
 // EndpointUpdater returns information about an endpoint being proxied and

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2019-2021 Authors of Cilium */
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/* Copyright Authors of Cilium */
 
 #include <bpf/ctx/unspec.h>
 #include <bpf/api.h>
@@ -15,6 +15,7 @@
 #include "lib/eps.h"
 #include "lib/identity.h"
 #include "lib/metrics.h"
+#include "lib/nat_46x64.h"
 
 #define SYS_REJECT	0
 #define SYS_PROCEED	1
@@ -35,30 +36,6 @@ static __always_inline __maybe_unused bool is_v6_loopback(union v6addr *daddr)
 	union v6addr loopback = { .addr[15] = 1, };
 
 	return ipv6_addrcmp(&loopback, daddr) == 0;
-}
-
-static __always_inline __maybe_unused bool is_v4_in_v6(const union v6addr *daddr)
-{
-	/* Check for ::FFFF:<IPv4 address>. */
-	union v6addr dprobe  = {
-		.addr[10] = 0xff,
-		.addr[11] = 0xff,
-	};
-	union v6addr dmasked = {
-		.d1 = daddr->d1,
-	};
-
-	dmasked.p3 = daddr->p3;
-	return ipv6_addrcmp(&dprobe, &dmasked) == 0;
-}
-
-static __always_inline __maybe_unused void build_v4_in_v6(union v6addr *daddr,
-							  __be32 v4)
-{
-	memset(daddr, 0, sizeof(*daddr));
-	daddr->addr[10] = 0xff;
-	daddr->addr[11] = 0xff;
-	daddr->p4 = v4;
 }
 
 /* Hack due to missing narrow ctx access. */
@@ -225,6 +202,8 @@ int sock4_update_revnat(struct bpf_sock_addr *ctx __maybe_unused,
 static __always_inline bool
 sock4_skip_xlate(struct lb4_service *svc, __be32 address)
 {
+	if (lb4_to_lb6_service(svc))
+		return true;
 	if (lb4_svc_is_external_ip(svc) ||
 	    (lb4_svc_is_hostport(svc) && !is_v4_loopback(address))) {
 		struct remote_endpoint_info *info;
@@ -356,6 +335,9 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	struct lb4_service *backend_slot;
 	bool backend_from_affinity = false;
 	__u32 backend_id = 0;
+#ifdef ENABLE_L7_LB
+	struct lb4_backend l7backend;
+#endif
 
 	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
 		return -ENXIO;
@@ -381,6 +363,35 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	 */
 	if (sock4_skip_xlate(svc, orig_key.address))
 		return -EPERM;
+
+#ifdef ENABLE_L7_LB
+	/* Do not perform service translation at socker layer for
+	 * services with L7 load balancing as we need to postpone
+	 * policy enforcement to take place after l7 load balancer and
+	 * we can't currently do that from the socket layer.
+	 */
+	if (lb4_svc_is_l7loadbalancer(svc)) {
+		/* TC level eBPF datapath does not handle node local traffic,
+		 * but we need to redirect for L7 LB also in that case.
+		 */
+		if (is_defined(BPF_HAVE_NETNS_COOKIE) && in_hostns) {
+			/* Use the L7 LB proxy port as a backend. Normally this
+			 * would cause policy enforcement to be done before the
+			 * L7 LB (which should not be done), but in this case
+			 * (node-local nodeport) there is no policy enforcement
+			 * anyway.
+			 */
+			l7backend.address = bpf_htonl(0x7f000001);
+			l7backend.port = (__be16)svc->l7_lb_proxy_port;
+			l7backend.proto = 0;
+			l7backend.flags = 0;
+			backend = &l7backend;
+			goto out;
+		}
+		/* Let the TC level eBPF datapath redirect to L7 LB. */
+		return 0;
+	}
+#endif /* ENABLE_L7_LB */
 
 	if (lb4_svc_is_affinity(svc)) {
 		/* Note, for newly created affinity entries there is a
@@ -431,7 +442,9 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 
 	if (lb4_svc_is_affinity(svc) && !backend_from_affinity)
 		lb4_update_affinity_by_netns(svc, &id, backend_id);
-
+#ifdef ENABLE_L7_LB
+out:
+#endif
 	if (sock4_update_revnat(ctx_full, backend, &orig_key,
 				svc->rev_nat_index) < 0) {
 		update_metrics(0, METRIC_EGRESS, REASON_LB_REVNAT_UPDATE);
@@ -710,6 +723,8 @@ static __always_inline void ctx_set_v6_address(struct bpf_sock_addr *ctx,
 static __always_inline __maybe_unused bool
 sock6_skip_xlate(struct lb6_service *svc, union v6addr *address)
 {
+	if (lb6_to_lb4_service(svc))
+		return true;
 	if (lb6_svc_is_external_ip(svc) ||
 	    (lb6_svc_is_hostport(svc) && !is_v6_loopback(address))) {
 		struct remote_endpoint_info *info;
@@ -957,6 +972,9 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 	struct lb6_service *backend_slot;
 	bool backend_from_affinity = false;
 	__u32 backend_id = 0;
+#ifdef ENABLE_L7_LB
+	struct lb6_backend l7backend;
+#endif
 
 	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
 		return -ENXIO;
@@ -975,6 +993,23 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 
 	if (sock6_skip_xlate(svc, &orig_key.address))
 		return -EPERM;
+
+#ifdef ENABLE_L7_LB
+	/* See __sock4_xlate_fwd for commentary. */
+	if (lb6_svc_is_l7loadbalancer(svc)) {
+		if (is_defined(BPF_HAVE_NETNS_COOKIE) && in_hostns) {
+			union v6addr loopback = { .addr[15] = 1, };
+
+			l7backend.address = loopback;
+			l7backend.port = (__be16)svc->l7_lb_proxy_port;
+			l7backend.proto = 0;
+			l7backend.flags = 0;
+			backend = &l7backend;
+			goto out;
+		}
+		return 0;
+	}
+#endif /* ENABLE_L7_LB */
 
 	if (lb6_svc_is_affinity(svc)) {
 		backend_id = lb6_affinity_backend_id_by_netns(svc, &id);
@@ -1008,7 +1043,9 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 
 	if (lb6_svc_is_affinity(svc) && !backend_from_affinity)
 		lb6_update_affinity_by_netns(svc, &id, backend_id);
-
+#ifdef ENABLE_L7_LB
+out:
+#endif
 	if (sock6_update_revnat(ctx, backend, &orig_key,
 				svc->rev_nat_index) < 0) {
 		update_metrics(0, METRIC_EGRESS, REASON_LB_REVNAT_UPDATE);
@@ -1152,4 +1189,4 @@ int sock6_getpeername(struct bpf_sock_addr *ctx)
 #endif /* ENABLE_HOST_SERVICES_UDP || ENABLE_HOST_SERVICES_PEER */
 #endif /* ENABLE_IPV6 || ENABLE_IPV4 */
 
-BPF_LICENSE("GPL");
+BPF_LICENSE("Dual BSD/GPL");

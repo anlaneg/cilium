@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 // This module contains the kube-proxy replacement initialization helpers.
 
@@ -581,6 +581,10 @@ func finishKubeProxyReplacementInit(isKubeProxyReplacementStrict bool) error {
 			return fmt.Errorf("Cannot set NodePort acceleration: %w", err)
 		}
 	}
+
+	option.Config.NodePortNat46X64 = option.Config.EnableIPv4 && option.Config.EnableIPv6 &&
+		option.Config.NodePortMode == option.NodePortModeSNAT &&
+		probes.NewProbeManager().GetMisc().HaveLargeInsnLimit
 
 	for _, iface := range option.Config.Devices {
 		link, err := netlink.LinkByName(iface)

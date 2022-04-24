@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package serviceoption
 
@@ -9,7 +9,7 @@ type Options struct {
 	WithoutTLSInfo    bool
 }
 
-// Option customizes then configuration of the peer service.
+// Option customizes the peer service's configuration.
 type Option func(o *Options)
 
 // WithMaxSendBufferSize sets the maximum size of the send buffer. When the

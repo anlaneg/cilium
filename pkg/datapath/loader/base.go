@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package loader
 
@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -28,6 +29,7 @@ import (
 	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/datapath/prefilter"
+	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -39,6 +41,8 @@ import (
 const (
 	initArgLib int = iota
 	initArgRundir
+	initArgProcSysNetDir
+	initArgSysDir
 	initArgIPv4NodeIP
 	initArgIPv6NodeIP
 	initArgMode
@@ -59,6 +63,7 @@ const (
 	initArgNrCPUs
 	initArgEndpointRoutes
 	initArgProxyRule
+	initTCFilterPriority
 	initArgMax
 )
 
@@ -110,7 +115,7 @@ func writePreFilterHeader(preFilter *prefilter.PreFilter, dir string) error {
 	return fw.Flush()
 }
 
-func addENIRules(sysSettings []sysctl.Setting, nodeAddressing datapath.NodeAddressing) ([]sysctl.Setting, error) {
+func addENIRules(sysSettings []sysctl.Setting, nodeAddressing types.NodeAddressing) ([]sysctl.Setting, error) {
 	// AWS ENI mode requires symmetric routing, see
 	// iptables.addCiliumENIRules().
 	// The default AWS daemonset installs the following rules that are used
@@ -260,6 +265,8 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		log.WithError(err).Warn("Unable to write netdev header")
 		return err
 	}
+	args[initArgProcSysNetDir] = filepath.Join(o.Datapath().Procfs(), "sys", "net")
+	args[initArgSysDir] = filepath.Join("/sys", "class", "net")
 
 	if option.Config.EnableXDPPrefilter {
 		scopedLog := log.WithField(logfields.Devices, option.Config.Devices)
@@ -414,6 +421,8 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	} else {
 		args[initArgProxyRule] = "false"
 	}
+
+	args[initTCFilterPriority] = strconv.Itoa(option.Config.TCFilterPriority)
 
 	// "Legacy" datapath inizialization with the init.sh script
 	// TODO(mrostecki): Rewrite the whole init.sh in Go, step by step.

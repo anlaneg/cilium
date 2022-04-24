@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2018-2020 Authors of Cilium */
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/* Copyright Authors of Cilium */
 
 #include <bpf/ctx/unspec.h>
 #include <bpf/api.h>
@@ -153,5 +153,5 @@ int bpf_sockmap(struct bpf_sock_ops *skops)
 	return 0;
 }
 
-BPF_LICENSE("GPL");
+BPF_LICENSE("Dual BSD/GPL");
 int _version __section("version") = 1;

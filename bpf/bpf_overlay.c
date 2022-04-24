@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2016-2022 Authors of Cilium */
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/* Copyright Authors of Cilium */
 
 #include <bpf/ctx/skb.h>
 #include <bpf/api.h>
@@ -31,6 +31,12 @@
 #include "lib/drop.h"
 #include "lib/identity.h"
 #include "lib/nodeport.h"
+
+#ifdef ENABLE_VTEP
+#include "lib/arp.h"
+#include "lib/encap.h"
+#include "lib/eps.h"
+#endif /* ENABLE_VTEP */
 
 #ifdef ENABLE_IPV6
 static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
@@ -116,6 +122,11 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 		 * packet.
 		 */
 		ctx_change_type(ctx, PACKET_HOST);
+
+		send_trace_notify(ctx, TRACE_TO_STACK, 0, 0, 0,
+				  ctx->ingress_ifindex, TRACE_REASON_ENCRYPTED,
+				  TRACE_PAYLOAD_LEN);
+
 		return CTX_ACT_OK;
 	}
 	ctx->mark = 0;
@@ -134,7 +145,7 @@ not_esp:
 			goto to_host;
 
 		nexthdr = ip6->nexthdr;
-		hdrlen = ipv6_hdrlen(ctx, l3_off, &nexthdr);
+		hdrlen = ipv6_hdrlen(ctx, &nexthdr);
 		if (hdrlen < 0)
 			return hdrlen;
 
@@ -221,7 +232,22 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 
 		if (*identity == HOST_ID)
 			return DROP_INVALID_IDENTITY;
+#ifdef ENABLE_VTEP
+		{
+			struct vtep_key vkey = {};
+			struct vtep_value *info;
 
+			vkey.vtep_ip = ip4->saddr & VTEP_MASK;
+			info = map_lookup_elem(&VTEP_MAP, &vkey);
+			if (!info)
+				goto skip_vtep;
+			if (info->tunnel_endpoint) {
+				if (*identity != WORLD_ID)
+					return DROP_INVALID_VNI;
+			}
+		}
+skip_vtep:
+#endif
 		/* See comment at equivalent code in handle_ipv6() */
 		if (identity_is_remote_node(*identity)) {
 			struct remote_endpoint_info *info;
@@ -255,6 +281,11 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 		 * packet.
 		 */
 		ctx_change_type(ctx, PACKET_HOST);
+
+		send_trace_notify(ctx, TRACE_TO_STACK, 0, 0, 0,
+				  ctx->ingress_ifindex, TRACE_REASON_ENCRYPTED,
+				  TRACE_PAYLOAD_LEN);
+
 		return CTX_ACT_OK;
 	}
 	ctx->mark = 0;
@@ -308,7 +339,89 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 					      CTX_ACT_DROP, METRIC_INGRESS);
 	return ret;
 }
+
+#ifdef ENABLE_VTEP
+/*
+ * ARP responder for ARP requests from VTEP
+ * Respond to remote VTEP endpoint with cilium_vxlan MAC
+ */
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_ARP)
+int tail_handle_arp(struct __ctx_buff *ctx)
+{
+	union macaddr mac = NODE_MAC;
+	union macaddr smac;
+	struct trace_ctx trace = {
+		.reason = TRACE_REASON_CT_REPLY,
+		.monitor = TRACE_PAYLOAD_LEN,
+	};
+	__be32 sip;
+	__be32 tip;
+	int ret;
+	struct bpf_tunnel_key key = {};
+	struct vtep_key vkey = {};
+	struct vtep_value *info;
+
+	if (unlikely(ctx_get_tunnel_key(ctx, &key, sizeof(key), 0) < 0))
+		return send_drop_notify_error(ctx, 0, DROP_NO_TUNNEL_KEY, CTX_ACT_DROP,
+										METRIC_INGRESS);
+
+	if (!arp_validate(ctx, &mac, &smac, &sip, &tip) || !__lookup_ip4_endpoint(tip))
+		goto pass_to_stack;
+	vkey.vtep_ip = sip & VTEP_MASK;
+	info = map_lookup_elem(&VTEP_MAP, &vkey);
+	if (!info)
+		goto pass_to_stack;
+
+	ret = arp_prepare_response(ctx, &mac, tip, &smac, sip);
+	if (unlikely(ret != 0))
+		return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP, METRIC_EGRESS);
+	if (info->tunnel_endpoint)
+		return __encap_and_redirect_with_nodeid(ctx,
+							info->tunnel_endpoint,
+							WORLD_ID,
+							&trace);
+
+	return send_drop_notify_error(ctx, 0, DROP_UNKNOWN_L3, CTX_ACT_DROP, METRIC_EGRESS);
+
+pass_to_stack:
+	send_trace_notify(ctx, TRACE_TO_STACK, 0, 0, 0, ctx->ingress_ifindex,
+			  trace.reason, trace.monitor);
+	return CTX_ACT_OK;
+}
+#endif /* ENABLE_VTEP */
+
 #endif /* ENABLE_IPV4 */
+
+#ifdef ENABLE_IPSEC
+static __always_inline bool is_esp(struct __ctx_buff *ctx, __u16 proto)
+{
+	void *data, *data_end;
+	__u8 protocol = 0;
+	struct ipv6hdr *ip6 __maybe_unused;
+	struct iphdr *ip4 __maybe_unused;
+
+	switch (proto) {
+#ifdef ENABLE_IPV6
+	case bpf_htons(ETH_P_IPV6):
+		if (!revalidate_data_pull(ctx, &data, &data_end, &ip6))
+			return false;
+		protocol = ip6->nexthdr;
+		break;
+#endif
+#ifdef ENABLE_IPV4
+	case bpf_htons(ETH_P_IP):
+		if (!revalidate_data_pull(ctx, &data, &data_end, &ip4))
+			return false;
+		protocol = ip4->protocol;
+		break;
+#endif
+	default:
+		return false;
+	}
+
+	return protocol == IPPROTO_ESP;
+}
+#endif /* ENABLE_IPSEC */
 
 /* Attached to the ingress of cilium_vxlan/cilium_geneve to execute on packets
  * entering the node via the tunnel.
@@ -330,16 +443,48 @@ int from_overlay(struct __ctx_buff *ctx/*此点传入的类型即为sk_buff,见�
 		goto out;
 	}
 
+/* We need to handle following possible packets come to this program
+ *
+ * 1. ESP packets coming from overlay (encrypted and not marked)
+ * 2. Non-ESP packets coming from overlay (plain and not marked)
+ * 3. Non-ESP packets coming from stack re-inserted by xfrm (plain
+ *    and marked with MARK_MAGIC_DECRYPT and has an identity as
+ *    well, IPSec mode only)
+ *
+ * 1. will be traced with TRACE_REASON_ENCRYPTED
+ * 2. will be traced without TRACE_REASON_ENCRYPTED
+ * 3. will be traced without TRACE_REASON_ENCRYPTED, and with identity
+ *
+ * Note that 1. contains the ESP packets someone else generated.
+ * In that case, we trace it as "encrypted", but it doesn't mean
+ * "encrypted by Cilium".
+ *
+ * When IPSec is disabled, we won't use TRACE_REASON_ENCRYPTED even
+ * if the packets are ESP, because it doesn't matter for the
+ * non-IPSec mode.
+ */
 #ifdef ENABLE_IPSEC
-	if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT) {
-		send_trace_notify(ctx, TRACE_FROM_OVERLAY, get_identity(ctx), 0, 0,
-				  ctx->ingress_ifindex,
-				  TRACE_REASON_ENCRYPTED, TRACE_PAYLOAD_LEN);
-	} else
+	if (is_esp(ctx, proto))
+		send_trace_notify(ctx, TRACE_FROM_OVERLAY, 0, 0, 0,
+				  ctx->ingress_ifindex, TRACE_REASON_ENCRYPTED,
+				  TRACE_PAYLOAD_LEN);
+	else
 #endif
 	{
-		send_trace_notify(ctx, TRACE_FROM_OVERLAY, 0, 0, 0,
-				  ctx->ingress_ifindex, 0, TRACE_PAYLOAD_LEN);
+		__u32 identity = 0;
+		enum trace_point obs_point = TRACE_FROM_OVERLAY;
+
+		/* Non-ESP packet marked with MARK_MAGIC_DECRYPT is a packet
+		 * re-inserted from the stack.
+		 */
+		if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_DECRYPT) {
+			identity = get_identity(ctx);
+			obs_point = TRACE_FROM_STACK;
+		}
+
+		send_trace_notify(ctx, obs_point, identity, 0, 0,
+				  ctx->ingress_ifindex,
+				  TRACE_REASON_UNKNOWN, TRACE_PAYLOAD_LEN);
 	}
 
 	switch (proto) {
@@ -360,6 +505,13 @@ int from_overlay(struct __ctx_buff *ctx/*此点传入的类型即为sk_buff,见�
 		ret = DROP_UNKNOWN_L3;
 #endif
 		break;
+
+#ifdef ENABLE_VTEP
+	case bpf_htons(ETH_P_ARP):
+		ep_tail_call(ctx, CILIUM_CALL_ARP);
+		ret = DROP_MISSED_TAIL_CALL;
+		break;
+#endif
 
 	default:
 	    //放通其它报文
@@ -414,4 +566,4 @@ out:
 	return ret;
 }
 
-BPF_LICENSE("GPL");
+BPF_LICENSE("Dual BSD/GPL");

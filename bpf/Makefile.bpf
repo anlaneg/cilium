@@ -1,5 +1,5 @@
-# Copyright 2017-2020 Authors of Cilium
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Authors of Cilium
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 
 FLAGS := -I$(ROOT_DIR)/bpf/include -I$(ROOT_DIR)/bpf -D__NR_CPUS__=$(shell nproc --all) -O2 -g
 
@@ -35,9 +35,12 @@ LLC   ?= llc
 HOST_CC    ?= gcc
 HOST_STRIP ?= strip
 
-ifeq ($(IMAGE_CROSS_TARGET_PLATFORM),linux/arm64)
+ifeq ($(CROSS_ARCH),arm64)
   HOST_CC = aarch64-linux-gnu-gcc
   HOST_STRIP = aarch64-linux-gnu-strip
+else ifeq ($(CROSS_ARCH),amd64)
+  HOST_CC = x86_64-linux-gnu-gcc
+  HOST_STRIP = x86_64-linux-gnu-strip
 endif
 
 # Define all at the top here so that Makefiles which include this one will hit

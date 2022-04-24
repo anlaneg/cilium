@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2017-2021 Authors of Cilium */
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/* Copyright Authors of Cilium */
 
 #include <bpf/ctx/xdp.h>
 #include <bpf/api.h>
@@ -121,9 +121,15 @@ int tail_lb_ipv4(struct __ctx_buff *ctx)
 
 	if (!bpf_skip_nodeport(ctx)) {
 		ret = nodeport_lb4(ctx, 0);
-		if (IS_ERR(ret))
+		if (ret == NAT_46X64_RECIRC) {
+			ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_LXC);
+			return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL,
+						      CTX_ACT_DROP,
+						      METRIC_INGRESS);
+		} else if (IS_ERR(ret)) {
 			return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP,
 						      METRIC_INGRESS);
+		}
 	}
 
 	return bpf_xdp_exit(ctx, ret);
@@ -273,4 +279,4 @@ int bpf_xdp_entry(struct __ctx_buff *ctx)
 	return check_filters(ctx);
 }
 
-BPF_LICENSE("GPL");
+BPF_LICENSE("Dual BSD/GPL");

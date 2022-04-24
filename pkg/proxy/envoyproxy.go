@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2018 Authors of Cilium
+// Copyright Authors of Cilium
 
 package proxy
 
@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/revert"
 )
 
@@ -26,9 +27,7 @@ type envoyRedirect struct {
 
 var envoyOnce sync.Once
 
-// createEnvoyRedirect creates a redirect with corresponding proxy
-// configuration. This will launch a proxy instance.
-func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServer, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup) (RedirectImplementation, error) {
+func startEnvoy(stateDir string, xdsServer *envoy.XDSServer, wg *completion.WaitGroup) {
 	envoyOnce.Do(func() {
 		// Start Envoy on first invocation
 		envoyProxy = envoy.StartEnvoy(stateDir, option.Config.EnvoyLogPath, 0)
@@ -40,24 +39,30 @@ func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServe
 			xdsServer.AddMetricsListener(uint16(option.Config.ProxyPrometheusPort), wg)
 		}
 	})
+}
+
+// createEnvoyRedirect creates a redirect with corresponding proxy
+// configuration. This will launch a proxy instance.
+func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServer, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup) (RedirectImplementation, error) {
+	startEnvoy(stateDir, xdsServer, wg)
 
 	l := r.listener
 	if envoyProxy != nil {
 		redir := &envoyRedirect{
-			listenerName: net.JoinHostPort(l.name, fmt.Sprintf("%d", l.proxyPort)),
+			listenerName: net.JoinHostPort(r.name, fmt.Sprintf("%d", l.proxyPort)),
 			xdsServer:    xdsServer,
 		}
 		// Only use original source address for egress
 		if l.ingress {
 			mayUseOriginalSourceAddr = false
 		}
-		xdsServer.AddListener(redir.listenerName, l.parserType, l.proxyPort, l.ingress,
+		xdsServer.AddListener(redir.listenerName, policy.L7ParserType(l.proxyType), l.proxyPort, l.ingress,
 			mayUseOriginalSourceAddr, wg)
 
 		return redir, nil
 	}
 
-	return nil, fmt.Errorf("%s: Envoy proxy process failed to start, cannot add redirect", l.name)
+	return nil, fmt.Errorf("%s: Envoy proxy process failed to start, cannot add redirect", r.name)
 }
 
 // UpdateRules is a no-op for envoy, as redirect data is synchronized via the

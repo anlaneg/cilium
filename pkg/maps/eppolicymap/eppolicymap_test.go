@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package eppolicymap
 
@@ -14,6 +13,8 @@ import (
 	"unsafe"
 
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
@@ -33,7 +34,7 @@ var _ = Suite(&EPPolicyMapTestSuite{})
 func (e *EPPolicyMapTestSuite) SetUpTest(c *C) {
 	MapName = "unit_test_ep_to_policy"
 	innerMapName = "unit_test_ep_policy_inner_map"
-	err := bpf.ConfigureResourceLimits()
+	err := rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
 }
 

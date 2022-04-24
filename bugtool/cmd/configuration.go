@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (C) 2017-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -336,6 +336,9 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		"cilium bpf bandwidth list",
 		"cilium bpf tunnel list",
 		"cilium bpf lb list",
+		"cilium bpf lb list --revnat",
+		"cilium bpf lb list --frontends",
+		"cilium bpf lb list --backends",
 		"cilium bpf egress list",
 		"cilium bpf endpoint list",
 		"cilium bpf ct list global",
@@ -349,12 +352,14 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		"cilium ip list -n -o json",
 		"cilium map list --verbose",
 		"cilium service list",
+		"cilium service list -o json",
 		"cilium recorder list",
 		"cilium status --verbose",
 		"cilium identity list",
 		"cilium-health status --verbose",
 		"cilium policy selectors -o json",
 		"cilium node list",
+		"cilium lrp list",
 	}
 	var commands []string
 

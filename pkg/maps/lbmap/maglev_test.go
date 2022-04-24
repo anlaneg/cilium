@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build privileged_tests
-// +build privileged_tests
 
 package lbmap
 
@@ -10,8 +9,9 @@ import (
 	"net"
 	"testing"
 
-	"golang.org/x/sys/unix"
 	. "gopkg.in/check.v1"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/option"
@@ -25,7 +25,6 @@ func Test(t *testing.T) {
 
 type MaglevSuite struct {
 	prevMaglevTableSize int
-	oldLim              unix.Rlimit
 }
 
 var _ = Suite(&MaglevSuite{})
@@ -44,28 +43,24 @@ func (s *MaglevSuite) SetUpSuite(c *C) {
 
 	s.prevMaglevTableSize = option.Config.MaglevTableSize
 
-	tmpLim := unix.Rlimit{
-		Cur: unix.RLIM_INFINITY,
-		Max: unix.RLIM_INFINITY,
-	}
-	err = unix.Getrlimit(unix.RLIMIT_MEMLOCK, &s.oldLim)
-	c.Assert(err, IsNil)
 	// Otherwise opening the map might fail with EPERM
-	err = unix.Setrlimit(unix.RLIMIT_MEMLOCK, &tmpLim)
+	err = rlimit.RemoveMemlock()
 	c.Assert(err, IsNil)
+
+	option.Config.LBMapEntries = DefaultMaxEntries
 
 	Init(InitParams{
 		IPv4: option.Config.EnableIPv4,
 		IPv6: option.Config.EnableIPv6,
 
-		MaxSockRevNatMapEntries: option.Config.SockRevNatEntries,
-		MaxEntries:              option.Config.LBMapEntries,
+		ServiceMapMaxEntries: option.Config.LBMapEntries,
+		RevNatMapMaxEntries:  option.Config.LBMapEntries,
+		MaglevMapMaxEntries:  option.Config.LBMapEntries,
 	})
 }
 
 func (s *MaglevSuite) TeadDownTest(c *C) {
 	option.Config.MaglevTableSize = s.prevMaglevTableSize
-	unix.Setrlimit(unix.RLIMIT_MEMLOCK, &s.oldLim)
 }
 
 func (s *MaglevSuite) TestInitMaps(c *C) {
@@ -91,12 +86,12 @@ func (s *MaglevSuite) TestInitMaps(c *C) {
 	c.Assert(err, IsNil)
 	lbm := New(true, option.Config.MaglevTableSize)
 	params := &UpsertServiceParams{
-		ID:        1,
-		IP:        net.ParseIP("1.1.1.1"),
-		Port:      8080,
-		Backends:  map[string]loadbalancer.BackendID{"backend-1": 1},
-		Type:      loadbalancer.SVCTypeNodePort,
-		UseMaglev: true,
+		ID:             1,
+		IP:             net.ParseIP("1.1.1.1"),
+		Port:           8080,
+		ActiveBackends: map[string]loadbalancer.BackendID{"backend-1": 1},
+		Type:           loadbalancer.SVCTypeNodePort,
+		UseMaglev:      true,
 	}
 	err = lbm.UpsertService(params)
 	c.Assert(err, IsNil)

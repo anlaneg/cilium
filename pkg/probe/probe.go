@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package probe
 
@@ -10,6 +10,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/bpf"
 )
@@ -42,20 +44,9 @@ func (p *probeValue) DeepCopyMapValue() bpf.MapValue { return &probeValue{p.Valu
 func HaveFullLPM() bool {
 	haveFullLPMOnce.Do(func() {
 
-		var oldLim unix.Rlimit
-
-		tmpLim := unix.Rlimit{
-			Cur: unix.RLIM_INFINITY,
-			Max: unix.RLIM_INFINITY,
-		}
-		if err := unix.Getrlimit(unix.RLIMIT_MEMLOCK, &oldLim); err != nil {
+		if err := rlimit.RemoveMemlock(); err != nil {
 			return
 		}
-		// Otherwise opening the map might fail with EPERM
-		if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &tmpLim); err != nil {
-			return
-		}
-		defer unix.Setrlimit(unix.RLIMIT_MEMLOCK, &oldLim)
 
 		m := bpf.NewMap("cilium_test", bpf.MapTypeLPMTrie,
 			&probeKey{}, int(unsafe.Sizeof(probeKey{})),

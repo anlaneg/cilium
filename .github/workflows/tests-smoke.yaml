@@ -20,6 +20,7 @@ env:
   CONFORMANCE_TEMPLATE: examples/kubernetes/connectivity-check/connectivity-check.yaml
   TIMEOUT: 2m
   LOG_TIME: 30m
+  PROM_VERSION: 2.34.0
 
 jobs:
   check_changes:
@@ -30,7 +31,7 @@ jobs:
     steps:
       - name: Checkout code
         if: ${{ !github.event.pull_request }}
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
       - name: Check code changes
@@ -44,7 +45,7 @@ jobs:
   preflight-clusterrole:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
 
@@ -63,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
 
@@ -75,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
 
@@ -88,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
 
@@ -103,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+        uses: actions/checkout@dcd71f646680f2efd8db4afa5ad64fdcba30e748
         with:
           persist-credentials: false
 
@@ -133,7 +134,7 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/${image}/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
+            until docker manifest inspect quay.io/${{ github.repository_owner }}/$image:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Install cilium chart
@@ -187,8 +188,16 @@ jobs:
           cilium_pod=$(kubectl -n kube-system get po -o name --field-selector=status.phase==Running -l 'k8s-app=cilium' -o jsonpath='{.items[0].metadata.name}' )
           kubectl -n kube-system exec $cilium_pod -- sh -c "apt update && apt install curl -y"
           kubectl -n kube-system exec $cilium_pod -- curl http://localhost:9090/metrics > metrics.prom
-          GO111MODULE=on go get github.com/prometheus/prometheus/cmd/promtool@e4487274853c587717006eeda8804e597d120340 # This is commit hash for v2.24.1
-          cat metrics.prom | $HOME/go/bin/promtool check metrics
+          # Install promtool binary release. `go install` doesn't work due to
+          # https://github.com/prometheus/prometheus/issues/8852 and related issues.
+          curl -sSL --remote-name-all https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/{prometheus-${PROM_VERSION}.linux-amd64.tar.gz,sha256sums.txt}
+          sha256sum --check --ignore-missing sha256sums.txt
+          tar xzvf prometheus-${PROM_VERSION}.linux-amd64.tar.gz prometheus-${PROM_VERSION}.linux-amd64/promtool
+          rm -f prometheus-${PROM_VERSION}.linux-amd64.tar.gz
+          sudo mv prometheus-${PROM_VERSION}.linux-amd64/promtool /usr/bin
+          # filter go_ metrics which do not conform to the _total convention with gauges
+          # See https://github.com/prometheus/prometheus/issues/10574
+          cat metrics.prom | grep -v 'go_' | promtool check metrics
 
       - name: Capture cilium-sysdump
         if: ${{ failure() }}
@@ -209,7 +218,7 @@ jobs:
           cilium sysdump --output-filename cilium-sysdump-out
 
       - name: Upload cilium-sysdump
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535
         if: ${{ failure() }}
         with:
           name: cilium-sysdump-out.zip

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -25,6 +25,8 @@ import (
 	"github.com/cilium/cilium/api/v1/server"
 	"github.com/cilium/cilium/api/v1/server/restapi"
 	"github.com/cilium/cilium/pkg/aws/eni"
+	bgpv1 "github.com/cilium/cilium/pkg/bgpv1/agent"
+	"github.com/cilium/cilium/pkg/bgpv1/gobgp"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/cgroups"
 	"github.com/cilium/cilium/pkg/common"
@@ -72,6 +74,7 @@ import (
 	"github.com/cilium/cilium/pkg/pidfile"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/pprof"
+	"github.com/cilium/cilium/pkg/sysctl"
 	"github.com/cilium/cilium/pkg/version"
 	wireguard "github.com/cilium/cilium/pkg/wireguard/agent"
 	wireguardTypes "github.com/cilium/cilium/pkg/wireguard/types"
@@ -284,7 +287,7 @@ func initializeFlags() {
 	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'")
 	option.BindEnv(option.Devices)
 
-	flags.String(option.DirectRoutingDevice, "", "Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF fast redirect; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)")
+	flags.String(option.DirectRoutingDevice, "", "Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF host routing; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)")
 	option.BindEnv(option.DirectRoutingDevice)
 
 	flags.String(option.LBDevInheritIPAddr, "", fmt.Sprintf("Device name which IP addr is inherited by devices running LB BPF program (--%s)", option.Devices))
@@ -349,7 +352,6 @@ func initializeFlags() {
 
 	flags.String(option.EndpointInterfaceNamePrefix, "", "Prefix of interface name shared by all endpoints")
 	option.BindEnv(option.EndpointInterfaceNamePrefix)
-	flags.MarkHidden(option.EndpointInterfaceNamePrefix)
 	flags.MarkDeprecated(option.EndpointInterfaceNamePrefix, "This option no longer has any effect and will be removed in v1.13.")
 
 	flags.StringSlice(option.ExcludeLocalAddress, []string{}, "Exclude CIDR from being recognized as local address")
@@ -369,6 +371,7 @@ func initializeFlags() {
 
 	flags.StringSlice(option.HostReachableServicesProtos, []string{option.HostServicesTCP, option.HostServicesUDP}, "Only enable reachability of services for host applications for specific protocols")
 	option.BindEnv(option.HostReachableServicesProtos)
+	flags.MarkDeprecated(option.HostReachableServicesProtos, "This option will be removed in v1.13")
 
 	flags.Bool(option.EnableAutoDirectRoutingName, defaults.EnableAutoDirectRouting, "Enable automatic L2 routing between nodes")
 	option.BindEnv(option.EnableAutoDirectRoutingName)
@@ -399,6 +402,9 @@ func initializeFlags() {
 
 	flags.Bool(option.EnableTracing, false, "Enable tracing while determining policy (debugging)")
 	option.BindEnv(option.EnableTracing)
+
+	flags.Bool(option.EnableUnreachableRoutes, false, "Add unreachable routes on pod deletion")
+	option.BindEnv(option.EnableUnreachableRoutes)
 
 	flags.Bool(option.EnableWellKnownIdentities, defaults.EnableWellKnownIdentities, "Enable well-known identities for known Kubernetes components")
 	option.BindEnv(option.EnableWellKnownIdentities)
@@ -446,8 +452,17 @@ func initializeFlags() {
 	flags.Uint(option.ProxyConnectTimeout, 1, "Time after which a TCP connect attempt is considered failed unless completed (in seconds)")
 	option.BindEnv(option.ProxyConnectTimeout)
 
+	flags.Uint(option.ProxyGID, 1337, "Group ID for proxy control plane sockets.")
+	option.BindEnv(option.ProxyGID)
+
 	flags.Int(option.ProxyPrometheusPort, 0, "Port to serve Envoy metrics on. Default 0 (disabled).")
 	option.BindEnv(option.ProxyPrometheusPort)
+
+	flags.Int(option.ProxyMaxRequestsPerConnection, 0, "Set Envoy HTTP option max_requests_per_connection. Default 0 (disable)")
+	option.BindEnv(option.ProxyMaxRequestsPerConnection)
+
+	flags.Int64(option.ProxyMaxConnectionDuration, 0, "Set Envoy HTTP option max_connection_duration seconds. Default 0 (disable)")
+	option.BindEnv(option.ProxyMaxConnectionDuration)
 
 	flags.Bool(option.DisableEnvoyVersionCheck, false, "Do not perform Envoy binary version check on startup")
 	flags.MarkHidden(option.DisableEnvoyVersionCheck)
@@ -455,11 +470,14 @@ func initializeFlags() {
 	option.BindEnvWithLegacyEnvFallback(option.DisableEnvoyVersionCheck, "CILIUM_DISABLE_ENVOY_BUILD")
 
 	flags.Var(option.NewNamedMapOptions(option.FixedIdentityMapping, &option.Config.FixedIdentityMapping, option.Config.FixedIdentityMappingValidator),
-		option.FixedIdentityMapping, "Key-value for the fixed identity mapping which allows to use reserved label for fixed identities")
+		option.FixedIdentityMapping, "Key-value for the fixed identity mapping which allows to use reserved label for fixed identities, e.g. 128=kv-store,129=kube-dns")
 	option.BindEnv(option.FixedIdentityMapping)
 
 	flags.Duration(option.IdentityChangeGracePeriod, defaults.IdentityChangeGracePeriod, "Time to wait before using new identity on endpoint identity change")
 	option.BindEnv(option.IdentityChangeGracePeriod)
+
+	flags.Duration(option.IdentityRestoreGracePeriod, defaults.IdentityRestoreGracePeriod, "Time to wait before releasing unused restored CIDR identities during agent restart")
+	option.BindEnv(option.IdentityRestoreGracePeriod)
 
 	flags.String(option.IdentityAllocationMode, option.IdentityAllocationModeKVstore, "Method to use for identity allocation")
 	option.BindEnv(option.IdentityAllocationMode)
@@ -533,7 +551,7 @@ func initializeFlags() {
 	option.BindEnv(option.IPAllocationTimeout)
 
 	flags.Var(option.NewNamedMapOptions(option.KVStoreOpt, &option.Config.KVStoreOpt, nil),
-		option.KVStoreOpt, "Key-value store options")
+		option.KVStoreOpt, "Key-value store options e.g. etcd.address=127.0.0.1:4001")
 	option.BindEnv(option.KVStoreOpt)
 
 	flags.Duration(option.K8sSyncTimeoutName, defaults.K8sSyncTimeout, "Timeout for synchronizing k8s resources before exiting")
@@ -570,8 +588,15 @@ func initializeFlags() {
 	flags.Bool(option.EnableSVCSourceRangeCheck, true, "Enable check of service source ranges (currently, only for LoadBalancer)")
 	option.BindEnv(option.EnableSVCSourceRangeCheck)
 
+	flags.String(option.AddressScopeMax, fmt.Sprintf("%d", defaults.AddressScopeMax), "Maximum local address scope for ipcache to consider host addresses")
+	flags.MarkHidden(option.AddressScopeMax)
+	option.BindEnv(option.AddressScopeMax)
+
 	flags.Bool(option.EnableBandwidthManager, false, "Enable BPF bandwidth manager")
 	option.BindEnv(option.EnableBandwidthManager)
+
+	flags.Bool(option.EnableBBR, false, "Enable BBR for the bandwidth manager")
+	option.BindEnv(option.EnableBBR)
 
 	flags.Bool(option.EnableRecorder, false, "Enable BPF datapath pcap recorder")
 	option.BindEnv(option.EnableRecorder)
@@ -654,15 +679,24 @@ func initializeFlags() {
 	option.BindEnv(option.EnableHostFirewall)
 
 	flags.String(option.NativeRoutingCIDR, "",
-		fmt.Sprintf("Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr. Deprecated in favor of --%s", option.IPv4NativeRoutingCIDR))
+		fmt.Sprintf("Allows to explicitly specify the IPv4 CIDR for native routing. "+
+			"When specified, Cilium assumes networking for this CIDR is preconfigured and hands traffic destined for that range to the Linux network stack without applying any SNAT. "+
+			"Generally speaking, specifying a native routing CIDR implies that Cilium can depend on the underlying networking stack to route packets to their destination. "+
+			"To offer a concrete example, if Cilium is configured to use direct routing and the Kubernetes CIDR is included in the native routing CIDR, the user must configure the routes to reach pods, either manually or by setting the auto-direct-node-routes flag. "+
+			"Deprecated in favor of --%s", option.IPv4NativeRoutingCIDR))
 	option.BindEnv(option.NativeRoutingCIDR)
-	flags.MarkHidden(option.NativeRoutingCIDR)
 	flags.MarkDeprecated(option.NativeRoutingCIDR, "This option will be removed in v1.12")
 
-	flags.String(option.IPv4NativeRoutingCIDR, "", "Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr.")
+	flags.String(option.IPv4NativeRoutingCIDR, "", "Allows to explicitly specify the IPv4 CIDR for native routing. "+
+		"When specified, Cilium assumes networking for this CIDR is preconfigured and hands traffic destined for that range to the Linux network stack without applying any SNAT. "+
+		"Generally speaking, specifying a native routing CIDR implies that Cilium can depend on the underlying networking stack to route packets to their destination. "+
+		"To offer a concrete example, if Cilium is configured to use direct routing and the Kubernetes CIDR is included in the native routing CIDR, the user must configure the routes to reach pods, either manually or by setting the auto-direct-node-routes flag.")
 	option.BindEnv(option.IPv4NativeRoutingCIDR)
 
-	flags.String(option.IPv6NativeRoutingCIDR, "", "Allows to explicitly specify the IPv6 CIDR for native routing. This value corresponds to the configured cluster-cidr.")
+	flags.String(option.IPv6NativeRoutingCIDR, "", "Allows to explicitly specify the IPv6 CIDR for native routing. "+
+		"When specified, Cilium assumes networking for this CIDR is preconfigured and hands traffic destined for that range to the Linux network stack without applying any SNAT. "+
+		"Generally speaking, specifying a native routing CIDR implies that Cilium can depend on the underlying networking stack to route packets to their destination. "+
+		"To offer a concrete example, if Cilium is configured to use direct routing and the Kubernetes CIDR is included in the native routing CIDR, the user must configure the routes to reach pods, either manually or by setting the auto-direct-node-routes flag.")
 	option.BindEnv(option.IPv6NativeRoutingCIDR)
 
 	flags.String(option.LibDir, defaults.LibraryPath, "Directory path to store runtime build environment")
@@ -682,9 +716,6 @@ func initializeFlags() {
 	flags.String(option.LoopbackIPv4, defaults.LoopbackIPv4, "IPv4 address for service loopback SNAT")
 	option.BindEnv(option.LoopbackIPv4)
 
-	flags.String(option.NAT46Range, defaults.DefaultNAT46Prefix, "IPv6 prefix to map IPv4 addresses to")
-	option.BindEnv(option.NAT46Range)
-
 	flags.Bool(option.EnableIPv4Masquerade, true, "Masquerade IPv4 traffic from endpoints leaving the host")
 	option.BindEnv(option.EnableIPv4Masquerade)
 
@@ -703,6 +734,12 @@ func initializeFlags() {
 
 	flags.Bool(option.EnableIPv4EgressGateway, false, "Enable egress gateway for IPv4")
 	option.BindEnv(option.EnableIPv4EgressGateway)
+
+	flags.Bool(option.EnableEnvoyConfig, false, "Enable Envoy Config CRDs")
+	option.BindEnv(option.EnableEnvoyConfig)
+
+	flags.Duration(option.EnvoyConfigTimeout, defaults.EnvoyConfigTimeout, "Timeout duration for Envoy Config acknowledgements")
+	option.BindEnv(option.EnvoyConfigTimeout)
 
 	flags.String(option.IPMasqAgentConfigPath, "/etc/config/ip-masq-agent", "ip-masq-agent configuration file path")
 	option.BindEnv(option.IPMasqAgentConfigPath)
@@ -735,6 +772,9 @@ func initializeFlags() {
 
 	flags.Int(option.MTUName, 0, "Overwrite auto-detected MTU of underlying network")
 	option.BindEnv(option.MTUName)
+
+	flags.String(option.ProcFs, "/proc", "Root's proc filesystem path")
+	option.BindEnv(option.ProcFs)
 
 	flags.Int(option.RouteMetric, 0, "Overwrite the metric used by cilium when adding routes to its 'cilium_host' device")
 	option.BindEnv(option.RouteMetric)
@@ -791,14 +831,12 @@ func initializeFlags() {
 
 	flags.String(option.PrefilterDevice, "undefined", "Device facing external network for XDP prefiltering")
 	option.BindEnv(option.PrefilterDevice)
-	flags.MarkHidden(option.PrefilterDevice)
 	flags.MarkDeprecated(option.PrefilterDevice,
 		fmt.Sprintf("This option will be removed in v1.12. Use --%s and --%s instead.",
 			option.EnableXDPPrefilter, option.Devices))
 
 	flags.String(option.PrefilterMode, option.ModePreFilterNative, "Prefilter mode via XDP (\"native\", \"generic\")")
 	option.BindEnv(option.PrefilterMode)
-	flags.MarkHidden(option.PrefilterMode)
 	flags.MarkDeprecated(option.PrefilterMode,
 		fmt.Sprintf("This option will be removed in v1.12. Use --%s instead.", option.LoadBalancerAcceleration))
 
@@ -882,6 +920,9 @@ func initializeFlags() {
 
 	flags.Int(option.DNSMaxIPsPerRestoredRule, defaults.DNSMaxIPsPerRestoredRule, "Maximum number of IPs to maintain for each restored DNS rule")
 	option.BindEnv(option.DNSMaxIPsPerRestoredRule)
+
+	flags.Bool(option.DNSPolicyUnloadOnShutdown, false, "Unload DNS policy rules on graceful shutdown")
+	option.BindEnv(option.DNSPolicyUnloadOnShutdown)
 
 	flags.Int(option.ToFQDNsMaxDeferredConnectionDeletes, defaults.ToFQDNsMaxDeferredConnectionDeletes, "Maximum number of IPs to retain for expired DNS lookups with still-active connections")
 	option.BindEnv(option.ToFQDNsMaxDeferredConnectionDeletes)
@@ -991,8 +1032,32 @@ func initializeFlags() {
 	flags.Int(option.FragmentsMapEntriesName, defaults.FragmentsMapEntries, "Maximum number of entries in fragments tracking map")
 	option.BindEnv(option.FragmentsMapEntriesName)
 
-	flags.Int(option.LBMapEntriesName, lbmap.MaxEntries, "Maximum number of entries in Cilium BPF lbmap")
+	flags.Int(option.LBMapEntriesName, lbmap.DefaultMaxEntries, "Maximum number of entries in Cilium BPF lbmap")
 	option.BindEnv(option.LBMapEntriesName)
+
+	flags.Int(option.LBServiceMapMaxEntries, 0, fmt.Sprintf("Maximum number of entries in Cilium BPF lbmap for services (if this isn't set, the value of --%s will be used.)", option.LBMapEntriesName))
+	flags.MarkHidden(option.LBServiceMapMaxEntries)
+	option.BindEnv(option.LBServiceMapMaxEntries)
+
+	flags.Int(option.LBBackendMapMaxEntries, 0, fmt.Sprintf("Maximum number of entries in Cilium BPF lbmap for service backends (if this isn't set, the value of --%s will be used.)", option.LBMapEntriesName))
+	flags.MarkHidden(option.LBBackendMapMaxEntries)
+	option.BindEnv(option.LBBackendMapMaxEntries)
+
+	flags.Int(option.LBRevNatMapMaxEntries, 0, fmt.Sprintf("Maximum number of entries in Cilium BPF lbmap for reverse NAT (if this isn't set, the value of --%s will be used.)", option.LBMapEntriesName))
+	flags.MarkHidden(option.LBRevNatMapMaxEntries)
+	option.BindEnv(option.LBRevNatMapMaxEntries)
+
+	flags.Int(option.LBAffinityMapMaxEntries, 0, fmt.Sprintf("Maximum number of entries in Cilium BPF lbmap for session affinities (if this isn't set, the value of --%s will be used.)", option.LBMapEntriesName))
+	flags.MarkHidden(option.LBAffinityMapMaxEntries)
+	option.BindEnv(option.LBAffinityMapMaxEntries)
+
+	flags.Int(option.LBSourceRangeMapMaxEntries, 0, fmt.Sprintf("Maximum number of entries in Cilium BPF lbmap for source ranges (if this isn't set, the value of --%s will be used.)", option.LBMapEntriesName))
+	flags.MarkHidden(option.LBSourceRangeMapMaxEntries)
+	option.BindEnv(option.LBSourceRangeMapMaxEntries)
+
+	flags.Int(option.LBMaglevMapMaxEntries, 0, fmt.Sprintf("Maximum number of entries in Cilium BPF lbmap for maglev (if this isn't set, the value of --%s will be used.)", option.LBMapEntriesName))
+	flags.MarkHidden(option.LBMaglevMapMaxEntries)
+	option.BindEnv(option.LBMaglevMapMaxEntries)
 
 	flags.String(option.LocalRouterIPv4, "", "Link-local IPv4 used for Cilium's router devices")
 	option.BindEnv(option.LocalRouterIPv4)
@@ -1015,7 +1080,6 @@ func initializeFlags() {
 
 	flags.Bool(option.EnableBPFBypassFIBLookup, false, "Enable FIB lookup bypass optimization for nodeport reverse NAT handling")
 	option.BindEnv(option.EnableBPFBypassFIBLookup)
-	flags.MarkHidden(option.EnableBPFBypassFIBLookup)
 	flags.MarkDeprecated(option.EnableBPFBypassFIBLookup, fmt.Sprintf("This option will be removed in v1.12."))
 
 	flags.Bool(option.InstallNoConntrackIptRules, defaults.InstallNoConntrackIptRules, "Install Iptables rules to skip netfilter connection tracking on all pod traffic. This option is only effective when Cilium is running in direct routing and full KPR mode. Moreover, this option cannot be enabled when Cilium is running in a managed Kubernetes environment or in a chained CNI setup.")
@@ -1052,6 +1116,28 @@ func initializeFlags() {
 
 	flags.Bool(option.EnableK8sTerminatingEndpoint, true, "Enable auto-detect of terminating endpoint condition")
 	option.BindEnv(option.EnableK8sTerminatingEndpoint)
+
+	flags.Bool(option.EnableVTEP, defaults.EnableVTEP, "Enable  VXLAN Tunnel Endpoint (VTEP) Integration (beta)")
+	option.BindEnv(option.EnableVTEP)
+
+	flags.StringSlice(option.VtepEndpoint, []string{}, "List of VTEP IP addresses")
+	option.BindEnv(option.VtepEndpoint)
+
+	flags.StringSlice(option.VtepCIDR, []string{}, "List of VTEP CIDRs that will be routed towards VTEPs for traffic cluster egress")
+	option.BindEnv(option.VtepCIDR)
+
+	flags.String(option.VtepMask, "255.255.255.0", "VTEP CIDR Mask for all VTEP CIDRs")
+	option.BindEnv(option.VtepMask)
+
+	flags.StringSlice(option.VtepMAC, []string{}, "List of VTEP MAC addresses for forwarding traffic outside the cluster")
+	option.BindEnv(option.VtepMAC)
+
+	flags.Int(option.TCFilterPriority, 1, "Priority of TC BPF filter")
+	flags.MarkHidden(option.TCFilterPriority)
+	option.BindEnv(option.TCFilterPriority)
+
+	flags.Bool(option.EnableBGPControlPlane, false, "Enable the BGP control plane.")
+	option.BindEnv(option.EnableBGPControlPlane)
 
 	viper.BindPFlags(flags)
 }
@@ -1103,6 +1189,8 @@ func initEnv(cmd *cobra.Command) {
 	}
 
 	option.LogRegisteredOptions(log)
+
+	sysctl.SetProcfs(option.Config.ProcFs)
 
 	// Configure k8s as soon as possible so that k8s.IsEnabled() has the right
 	// behavior.
@@ -1304,13 +1392,6 @@ func initEnv(cmd *cobra.Command) {
 		log.WithError(err).Fatal("Unable to parse Label prefix configuration")
 	}
 
-	_, r, err := net.ParseCIDR(option.Config.NAT46Range)
-	if err != nil {
-		log.WithError(err).WithField(logfields.V6Prefix, option.Config.NAT46Range).Fatal("Invalid NAT46 prefix")
-	}
-
-	option.Config.NAT46Prefix = r
-
 	switch option.Config.DatapathMode {
 	case datapathOption.DatapathModeVeth:
 		if name := option.Config.IpvlanMasterDevice; name != "undefined" {
@@ -1506,6 +1587,15 @@ func initEnv(cmd *cobra.Command) {
 		)
 	}
 
+	if option.Config.IPAM == ipamOption.IPAMClusterPoolV2 {
+		if option.Config.TunnelingEnabled() {
+			log.Fatalf("Cannot specify IPAM mode %s in tunnel mode.", ipamOption.IPAMClusterPoolV2)
+		}
+		if option.Config.EnableIPSec {
+			log.Fatalf("Cannot specify IPAM mode %s with %s.", ipamOption.IPAMClusterPoolV2, option.EnableIPSecName)
+		}
+	}
+
 	if option.Config.InstallNoConntrackIptRules {
 		// InstallNoConntrackIptRules can only be enabled in direct
 		// routing mode as in tunneling mode the encapsulated traffic is
@@ -1586,7 +1676,7 @@ func (d *Daemon) initKVStore() {
 		)
 		log := log.WithField(logfields.LogSubsys, "etcd")
 		goopts.DialOption = []grpc.DialOption{
-			grpc.WithDialer(k8s.CreateCustomDialer(&d.k8sWatcher.K8sSvcCache, log)),
+			grpc.WithContextDialer(k8s.CreateCustomDialer(&d.k8sWatcher.K8sSvcCache, log)),
 		}
 	}
 
@@ -1604,6 +1694,7 @@ func (d *Daemon) initKVStore() {
 func runDaemon() {
 	datapathConfig := linuxdatapath.DatapathConfiguration{
 		HostDevice: defaults.HostDevice,
+		ProcFs:     option.Config.ProcFs,
 	}
 
 	log.Info("Initializing daemon")
@@ -1699,7 +1790,7 @@ func runDaemon() {
 	} else {
 		log.Info("Creating host endpoint")
 		if err := d.endpointManager.AddHostEndpoint(
-			d.ctx, d, d, d.l7Proxy, d.identityAllocator,
+			d.ctx, d, d, d.ipcache, d.l7Proxy, d.identityAllocator,
 			"Create host endpoint", nodeTypes.GetName(),
 		); err != nil {
 			log.WithError(err).Fatal("Unable to create host endpoint")
@@ -1726,6 +1817,23 @@ func runDaemon() {
 			})
 			ms.CollectStaleMapGarbage()
 			ms.RemoveDisabledMaps()
+
+			if len(d.restoredCIDRs) > 0 {
+				// Release restored CIDR identities after a grace period (default 10
+				// minutes).  Any identities actually in use will still exist after
+				// this.
+				//
+				// This grace period is needed when running on an external workload
+				// where policy synchronization is not done via k8s. Also in k8s
+				// case it is prudent to allow concurrent endpoint regenerations to
+				// (re-)allocate the restored identities before we release them.
+				time.Sleep(option.Config.IdentityRestoreGracePeriod)
+				log.Debugf("Releasing reference counts for %d restored CIDR identities", len(d.restoredCIDRs))
+
+				d.ipcache.ReleaseCIDRIdentitiesByCIDR(d.restoredCIDRs)
+				// release the memory held by restored CIDRs
+				d.restoredCIDRs = nil
+			}
 		}()
 		d.endpointManager.Subscribe(d)
 		defer d.endpointManager.Unsubscribe(d)
@@ -1802,6 +1910,13 @@ func runDaemon() {
 		}
 	}
 
+	if option.Config.BGPControlPlaneEnabled() {
+		log.Info("Initializing BGP Control Plane")
+		if err := d.instantiateBGPControlPlane(d.ctx); err != nil {
+			log.WithError(err).Fatal("Error returned when instantiating BGP control plane")
+		}
+	}
+
 	log.WithField("bootstrapTime", time.Since(bootstrapTimestamp)).
 		Info("Daemon initialization completed")
 
@@ -1823,12 +1938,6 @@ func runDaemon() {
 	go func() {
 		errs <- srv.Serve()
 	}()
-
-	if k8s.IsEnabled() {
-		bootstrapStats.k8sInit.Start()
-		k8s.Client().MarkNodeReady(d.k8sWatcher, nodeTypes.GetName())
-		bootstrapStats.k8sInit.End(true)
-	}
 
 	bootstrapStats.overall.End(true)
 	bootstrapStats.updateMetrics()
@@ -1854,6 +1963,18 @@ func runDaemon() {
 			log.WithError(err).Fatal("Error returned from non-returning Serve() call")
 		}
 	}
+}
+
+func (d *Daemon) instantiateBGPControlPlane(ctx context.Context) error {
+	// goBGP is currently the only supported RouterManager, if more are
+	// implemented replace this hard-coding with a construction switch.
+	rm := gobgp.NewBGPRouterManager()
+	ctrl, err := bgpv1.NewController(d.ctx, rm)
+	if err != nil {
+		return fmt.Errorf("failed to instantiate BGP Control Plane: %v", err)
+	}
+	d.bgpControlPlaneController = ctrl
+	return nil
 }
 
 func (d *Daemon) instantiateAPI() *restapi.CiliumAPIAPI {
@@ -1971,7 +2092,7 @@ func (d *Daemon) instantiateAPI() *restapi.CiliumAPIAPI {
 	}
 
 	// /ip/
-	restAPI.PolicyGetIPHandler = NewGetIPHandler()
+	restAPI.PolicyGetIPHandler = NewGetIPHandler(d)
 
 	return restAPI
 }

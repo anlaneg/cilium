@@ -9,9 +9,7 @@ chmod a+x "$dir/restart.sh"
 # Master's IPv4 address. Workers' IPv4 address will have their IP incremented by
 # 1. The netmask used will be /24
 export 'MASTER_IPV4'=${MASTER_IPV4:-"192.168.60.11"}
-# NFS address is only set if NFS option is active. This will create a new
-# network interface for each VM with starting on this IP. This IP will be
-# available to reach from the host.
+# This /24 node CIDR is available from the host (for eg. NFS):
 export 'MASTER_IPV4_NFS'=${MASTER_IPV4_NFS:-"192.168.61.11"}
 # Enable IPv4 mode. It's enabled by default since it's required for several
 # runtime tests.
@@ -332,7 +330,7 @@ function write_cilium_cfg() {
         cilium_options+=" --identity-allocation-mode=crd --enable-k8s-event-handover=false"
         cilium_operator_options+=" --k8s-kubeconfig-path /var/lib/cilium/cilium.kubeconfig"
         cilium_operator_options+=" --cluster-pool-ipv4-cidr=10.${master_ipv4_suffix}.0.0/16"
-        cilium_operator_options+=" --cluster-pool-ipv6-cidr=fd00::/104"
+        cilium_operator_options+=" --cluster-pool-ipv6-cidr=fd04::/104"
         cilium_operator_options_with_kvstore="${cilium_operator_options} ${cilium_kvstore_options}"
         cilium_operator_options+=" --identity-allocation-mode=crd"
     else

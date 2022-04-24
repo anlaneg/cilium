@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2016-2021 Authors of Cilium */
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/* Copyright Authors of Cilium */
 
 #include <bpf/ctx/skb.h>
 #include <bpf/api.h>
@@ -8,10 +8,6 @@
 #define ENDPOINTS_MAP test_cilium_lxc
 #define POLICY_PROG_MAP_SIZE ENDPOINTS_MAP_SIZE
 #define METRICS_MAP test_cilium_metrics
-#define NAT46_PREFIX {.addr = {                   \
-	0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, \
-	0x0, 0x0, 0xa, 0x0, 0x0, 0x0, 0x0, 0x0    \
-} }
 
 #define ENDPOINTS_MAP_SIZE 65536
 #define IPCACHE_MAP_SIZE 512000
@@ -108,7 +104,7 @@ int test_ct4_rst1(struct __ctx_buff *ctx)
 		ct_state_new.node_port = ct_state.node_port;
 		ct_state_new.ifindex = ct_state.ifindex;
 		ret = ct_create4(get_ct_map4(&tuple), &CT_MAP_ANY4, &tuple, ctx,
-				 CT_EGRESS, &ct_state_new, 0);
+				 CT_EGRESS, &ct_state_new, false, false);
 		break;
 
 	default:
@@ -163,4 +159,4 @@ out:
 	return CTX_ACT_OK;
 }
 
-BPF_LICENSE("GPL");
+BPF_LICENSE("Dual BSD/GPL");

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package fake
 
@@ -9,11 +9,12 @@ import (
 
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
+	"github.com/cilium/cilium/pkg/datapath/types"
 )
 
 type fakeDatapath struct {
 	node           datapath.NodeHandler
-	nodeAddressing datapath.NodeAddressing
+	nodeAddressing types.NodeAddressing
 	loader         datapath.Loader
 }
 
@@ -33,7 +34,7 @@ func (f *fakeDatapath) Node() datapath.NodeHandler {
 
 // LocalNodeAddressing returns a fake node addressing implementation of the
 // local node
-func (f *fakeDatapath) LocalNodeAddressing() datapath.NodeAddressing {
+func (f *fakeDatapath) LocalNodeAddressing() types.NodeAddressing {
 	return f.nodeAddressing
 }
 
@@ -87,6 +88,10 @@ func (f *fakeDatapath) Loader() datapath.Loader {
 
 func (f *fakeDatapath) WireguardAgent() datapath.WireguardAgent {
 	return nil
+}
+
+func (f *fakeDatapath) Procfs() string {
+	return "/proc"
 }
 
 // Loader is an interface to abstract out loading of datapath programs.

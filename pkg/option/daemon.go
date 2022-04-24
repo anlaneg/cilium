@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2018 Authors of Cilium
+// Copyright Authors of Cilium
 
 package option
 
@@ -25,7 +25,6 @@ var (
 		PolicyVerdictNotify: &specPolicyVerdictNotify,
 		PolicyAuditMode:     &specPolicyAuditMode,
 		MonitorAggregation:  &specMonitorAggregation,
-		NAT46:               &specNAT46,
 	}
 )
 

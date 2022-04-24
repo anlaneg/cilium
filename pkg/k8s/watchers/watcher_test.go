@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package watchers
 
@@ -19,6 +18,7 @@ import (
 	"github.com/cilium/cilium/pkg/checker"
 	fakeDatapath "github.com/cilium/cilium/pkg/datapath/fake"
 	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
@@ -29,6 +29,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
+	"github.com/cilium/cilium/pkg/service"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -168,6 +169,18 @@ func (f *fakeSvcManager) UpsertService(p *loadbalancer.SVC) (bool, loadbalancer.
 	panic("OnUpsertService() was called and is not set!")
 }
 
+func (f *fakeSvcManager) RegisterL7LBService(serviceName, resourceName service.Name, proxyPort uint16) error {
+	return nil
+}
+
+func (f *fakeSvcManager) RegisterL7LBServiceBackendSync(serviceName, resourceName service.Name) error {
+	return nil
+}
+
+func (f *fakeSvcManager) RemoveL7LBService(serviceName, resourceName service.Name) error {
+	return nil
+}
+
 func (s *K8sWatcherSuite) TestUpdateToServiceEndpointsGH9525(c *C) {
 
 	ep1stApply := &slim_corev1.Endpoints{
@@ -232,7 +245,9 @@ func (s *K8sWatcherSuite) TestUpdateToServiceEndpointsGH9525(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -538,7 +553,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ClusterIP(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -681,7 +698,9 @@ func (s *K8sWatcherSuite) TestChangeSVCPort(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -1130,7 +1149,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_NodePort(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -1426,7 +1447,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_1(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -1715,7 +1738,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_GH9576_2(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()
@@ -2569,7 +2594,9 @@ func (s *K8sWatcherSuite) Test_addK8sSVCs_ExternalIPs(c *C) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&fakeWatcherConfiguration{},
+		ipcache.NewIPCache(nil),
 	)
 	go w.k8sServiceHandler()
 	swg := lock.NewStoppableWaitGroup()

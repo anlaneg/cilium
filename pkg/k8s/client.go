@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 // Package k8s abstracts all Kubernetes specific behaviour
 package k8s
@@ -25,7 +25,6 @@ import (
 	"k8s.io/client-go/util/connrotation"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/controller"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_apiextclientsetscheme "github.com/cilium/cilium/pkg/k8s/slim/k8s/apiextensions-client/clientset/versioned/scheme"
@@ -40,9 +39,7 @@ import (
 
 var (
 	// k8sCLI is the default client.
-	k8sCLI = &K8sClient{
-		ctrlMgr: controller.NewManager(),
-	}
+	k8sCLI = &K8sClient{}
 
 	// k8sWatcherCLI is the client dedicated k8s structure watchers.
 	k8sWatcherCLI = &K8sClient{}
@@ -121,74 +118,56 @@ func createClient(config *rest.Config, cs kubernetes.Interface) error {
 	return err
 }
 
-func createDefaultClient() (rest.Interface, func(), error) {
-	restConfig, err := CreateConfig()
-	if err != nil {
-		return nil, nil, fmt.Errorf("unable to create k8s client rest configuration: %s", err)
-	}
+func createDefaultClient(c *rest.Config, httpClient *http.Client) (rest.Interface, error) {
+	restConfig := *c
 	restConfig.ContentConfig.ContentType = `application/vnd.kubernetes.protobuf`
 
-	closeAllConns := setDialer(restConfig)
-
-	createdK8sClient, err := kubernetes.NewForConfig(restConfig)
+	createdK8sClient, err := kubernetes.NewForConfigAndClient(&restConfig, httpClient)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	err = createClient(restConfig, createdK8sClient)
-	if err != nil {
-		return nil, nil, fmt.Errorf("unable to create k8s client: %s", err)
-	}
-
-	k8sCLI.Interface = createdK8sClient
-
-	createK8sWatcherCli, err := watcher_client.NewForConfig(restConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	k8sWatcherCLI.Interface = createK8sWatcherCli
-
-	return createdK8sClient.RESTClient(), closeAllConns, nil
-}
-
-func createDefaultCiliumClient() (func(), error) {
-	restConfig, err := CreateConfig()
-	if err != nil {
-		return nil, fmt.Errorf("unable to create k8s client rest configuration: %s", err)
-	}
-
-	closeAllConns := setDialer(restConfig)
-	createdCiliumK8sClient, err := clientset.NewForConfig(restConfig)
+	err = createClient(&restConfig, createdK8sClient)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create k8s client: %s", err)
 	}
 
-	k8sCiliumCLI.Interface = createdCiliumK8sClient
+	k8sCLI.Interface = createdK8sClient
 
-	return closeAllConns, nil
-}
-
-func createAPIExtensionsClient() error {
-	restConfig, err := CreateConfig()
+	createK8sWatcherCli, err := watcher_client.NewForConfigAndClient(&restConfig, httpClient)
 	if err != nil {
-		return fmt.Errorf("unable to create rest configuration: %w", err)
+		return nil, err
 	}
 
-	c, err := apiextclientset.NewForConfig(restConfig)
+	k8sWatcherCLI.Interface = createK8sWatcherCli
+
+	return createdK8sClient.RESTClient(), nil
+}
+
+func createDefaultCiliumClient(c *rest.Config, httpClient *http.Client) error {
+	createdCiliumK8sClient, err := clientset.NewForConfigAndClient(c, httpClient)
+	if err != nil {
+		return fmt.Errorf("unable to create k8s client: %s", err)
+	}
+
+	k8sCiliumCLI.Interface = createdCiliumK8sClient
+
+	return nil
+}
+
+func createAPIExtensionsClient(restConfig *rest.Config, httpClient *http.Client) error {
+	c, err := apiextclientset.NewForConfigAndClient(restConfig, httpClient)
 	if err != nil {
 		return fmt.Errorf("unable to create rest configuration for k8s CRD: %w", err)
 	}
 
 	k8sAPIExtCLI.Interface = c
 
-	createK8sWatcherAPIExtCli, err := watcher_apiextclientset.NewForConfig(restConfig)
+	createK8sWatcherAPIExtCli, err := watcher_apiextclientset.NewForConfigAndClient(restConfig, httpClient)
 	if err != nil {
 		return err
 	}
 
 	k8sAPIExtWatcherCLI.Interface = createK8sWatcherAPIExtCli
-
-	createK8sWatcherAPIExtCli.RESTClient()
 
 	return nil
 }

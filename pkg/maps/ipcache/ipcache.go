@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package ipcache
 
@@ -82,6 +82,20 @@ func (k Key) String() string {
 	return "<unknown>"
 }
 
+func (k Key) IPNet() *net.IPNet {
+	cidr := &net.IPNet{}
+	prefixLen := k.Prefixlen - getStaticPrefixBits()
+	switch k.Family {
+	case bpf.EndpointKeyIPv4:
+		cidr.IP = net.IP(k.IP[:net.IPv4len])
+		cidr.Mask = net.CIDRMask(int(prefixLen), 32)
+	case bpf.EndpointKeyIPv6:
+		cidr.IP = net.IP(k.IP[:net.IPv6len])
+		cidr.Mask = net.CIDRMask(int(prefixLen), 128)
+	}
+	return cidr
+}
+
 // getPrefixLen determines the length that should be set inside the Key so that
 // the lookup prefix is correct in the BPF map key. The specified 'prefixBits'
 // indicates the number of bits in the IP that must match to match the entry in
@@ -126,7 +140,8 @@ type RemoteEndpointInfo struct {
 }
 
 func (v *RemoteEndpointInfo) String() string {
-	return fmt.Sprintf("%d %d %s", v.SecurityIdentity, v.Key, v.TunnelEndpoint)
+	return fmt.Sprintf("identity=%d encryptkey=%d tunnelendpoint=%s",
+		v.SecurityIdentity, v.Key, v.TunnelEndpoint)
 }
 
 // GetValuePtr returns the unsafe pointer to the BPF value.
@@ -144,6 +159,11 @@ type Map struct {
 	// whether the underlying kernel supports delete operations on the map
 	// the first time that supportsDelete() is called.
 	deleteSupport bool
+
+	// dumpSupport is set to 'true' initially, then is updated to set
+	// whether the underlying kernel supports dump operations on the map
+	// the first time that supportsDelete() or supportsDump() is called.
+	dumpSupport bool
 }
 
 // NewMap instantiates a Map.
@@ -161,6 +181,7 @@ func NewMap(name string) *Map {
 			bpf.ConvertKeyValue,
 		).WithCache().WithPressureMetric(),
 		deleteSupport: true,
+		dumpSupport:   true,
 	}
 }
 
@@ -208,13 +229,16 @@ func (m *Map) supportsDelete() bool {
 		m.deleteSupport, _ = m.delete(invalidEntry, false)
 		log.Debugf("Detected IPCache delete operation support: %t", m.deleteSupport)
 
+		// Detect dump support
+		err := m.Dump(map[string][]string{})
+		m.dumpSupport = err == nil
+		log.Debugf("Detected IPCache dump operation support: %t", m.dumpSupport)
+
 		// In addition to delete support, ability to dump the map is
 		// also required in order to run the garbage collector which
 		// will iterate over the map and delete entries.
 		if m.deleteSupport {
-			err := m.Dump(map[string][]string{})
-			m.deleteSupport = err == nil
-			log.Debugf("Detected IPCache dump operation support: %t", m.deleteSupport)
+			m.deleteSupport = m.dumpSupport
 		}
 
 		if !m.deleteSupport {
@@ -224,10 +248,21 @@ func (m *Map) supportsDelete() bool {
 	return m.deleteSupport
 }
 
+func (m *Map) supportsDump() bool {
+	m.supportsDelete()
+	return m.dumpSupport
+}
+
 // SupportsDelete determines whether the underlying kernel map type supports
 // the delete operation.
 func SupportsDelete() bool {
 	return IPCache.supportsDelete()
+}
+
+// SupportsDump determines whether the underlying kernel map type supports
+// the dump operation.
+func SupportsDump() bool {
+	return IPCache.supportsDump()
 }
 
 // BackedByLPM returns true if the IPCache is backed by a proper LPM

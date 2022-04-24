@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package mock
 
@@ -156,7 +156,8 @@ func GenTestServicePairs() (slim_corev1.Service, v1.Service, metallbspr.Service,
 			LoadBalancer: v1.LoadBalancerStatus{
 				Ingress: []v1.LoadBalancerIngress{
 					{
-						IP: IP,
+						IP:    IP,
+						Ports: []v1.PortStatus{},
 					},
 				},
 			},

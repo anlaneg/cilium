@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build ipam_provider_operator
-// +build ipam_provider_operator
 
 package main
 
@@ -14,4 +13,5 @@ import (
 
 func init() {
 	allocatorProviders[ipamOption.IPAMClusterPool] = &clusterpool.AllocatorOperator{}
+	allocatorProviders[ipamOption.IPAMClusterPoolV2] = &clusterpool.AllocatorOperator{}
 }

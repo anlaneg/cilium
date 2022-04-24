@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2017-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package RuntimeTest
 
@@ -23,8 +23,10 @@ var _ = Describe("RuntimeChaos", func() {
 		vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
 		ExpectCiliumReady(vm)
 
-		vm.ContainerCreate(helpers.Client, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.client")
-		vm.ContainerCreate(helpers.Server, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.server")
+		res := vm.ContainerCreate(helpers.Client, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.client")
+		res.ExpectSuccess("failed to create client container")
+		res = vm.ContainerCreate(helpers.Server, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.server")
+		res.ExpectSuccess("failed to create server container")
 	})
 
 	BeforeEach(func() {

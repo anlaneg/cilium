@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2018-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package RuntimeTest
 
@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/checker"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 	"github.com/cilium/cilium/test/helpers/constants"
@@ -175,8 +176,10 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 		}
 
 		for name, image := range ciliumTestImages {
-			vm.ContainerCreate(name, image, helpers.WorldDockerNetwork, fmt.Sprintf("-l id.%s", name))
-			res := vm.ContainerInspect(name)
+			res := vm.ContainerCreate(name, image, helpers.WorldDockerNetwork, fmt.Sprintf("-l id.%s", name))
+			res.ExpectSuccess("failed to create container %s", name)
+
+			res = vm.ContainerInspect(name)
 			res.ExpectSuccess("Container is not ready after create it")
 			ip, err := res.Filter(fmt.Sprintf(`{[0].NetworkSettings.Networks.%s.IPAddress}`, helpers.WorldDockerNetwork))
 			Expect(err).To(BeNil(), "Cannot retrieve network info for %q", name)
@@ -193,8 +196,10 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 		Expect(err).To(BeNil(), "bind file can't be created")
 
 		for name, image := range ciliumOutsideImages {
-			vm.ContainerCreate(name, image, helpers.WorldDockerNetwork, fmt.Sprintf("-l id.%s", name))
-			res := vm.ContainerInspect(name)
+			res := vm.ContainerCreate(name, image, helpers.WorldDockerNetwork, fmt.Sprintf("-l id.%s", name))
+			res.ExpectSuccess("failed to create container %s", name)
+
+			res = vm.ContainerInspect(name)
 			res.ExpectSuccess("Container is not ready after create it")
 			ip, err := res.Filter(fmt.Sprintf(`{[0].NetworkSettings.Networks.%s.IPAddress}`, helpers.WorldDockerNetwork))
 			Expect(err).To(BeNil(), "Cannot retrieve network info for %q", name)
@@ -857,13 +862,8 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 	})
 
 	Context("toFQDNs populates toCIDRSet (data from proxy)", func() {
-		var config = `
-PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
-CILIUM_OPTS=--kvstore consul --kvstore-opt consul.address=127.0.0.1:8500 --debug --pprof=true --log-system-load
-INITSYSTEM=SYSTEMD`
 		BeforeAll(func() {
-			vm.SetUpCiliumWithOptions(config)
-
+			vm.SetUpCilium()
 			ExpectCiliumReady(vm)
 			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
 		})
@@ -1014,6 +1014,29 @@ INITSYSTEM=SYSTEMD`
 		invalidURL := "http://world1.outside.test"
 		invalidIP := outsideIps[OutsideHttpd1]
 
+		// Apply a CIDR policy with some link local IPs first so that the DNS identities
+		// will not allocate from the beginning of the local identity range.  This would
+		// cause different identities to be allocated after restart (where we do not import
+		// this CIDR policy) if the identity restoration did not work.
+		cidrPolicy := `
+[
+	{
+		"labels": [{
+			"key": "cidr"
+		}],
+		"endpointSelector": {
+			"matchLabels": {
+				"container:id.app1": ""
+			}
+		},
+		"egress": [{
+			"toCIDR": [ "fe80::/10", "fe80::1/128", "fe80::2/128", "192.168.1.42/32" ]
+		}]
+	}
+]`
+		_, err := vm.PolicyRenderAndImport(cidrPolicy)
+		Expect(err).To(BeNil(), "CIDR policy cannot be imported")
+
 		policy := `
 [
 	{
@@ -1044,7 +1067,7 @@ INITSYSTEM=SYSTEMD`
 		]
 	}
 ]`
-		_, err := vm.PolicyRenderAndImport(policy)
+		_, err = vm.PolicyRenderAndImport(policy)
 		Expect(err).To(BeNil(), "Policy cannot be imported")
 
 		expectFQDNSareApplied("cilium.test", 0)
@@ -1057,6 +1080,12 @@ INITSYSTEM=SYSTEMD`
 		res = vm.ContainerExec(helpers.App1, helpers.CurlFail(invalidURL))
 		res.ExpectFail("Can connect from app1 when it should not work")
 
+		By("Dumping IP cache before Cilium is stopped")
+		ipcacheBefore, err := vm.BpfIPCacheList(true)
+		Expect(err).To(BeNil(), "ipcache can not be dumped")
+		Expect(ipcacheBefore).NotTo(HaveLen(0), "ipcache does not have any local entries")
+		GinkgoPrint(fmt.Sprintf("Local scope identities in IP cache before Cilium restart: %v", ipcacheBefore))
+
 		By("Stopping Cilium")
 
 		defer func() {
@@ -1064,6 +1093,10 @@ INITSYSTEM=SYSTEMD`
 			_ = vm.ExecWithSudo("systemctl start cilium")
 			vm.WaitEndpointsReady()
 		}()
+
+		idsBefore := vm.SelectedIdentities("cilium.test")
+		Expect(idsBefore).NotTo(HaveLen(0))
+		GinkgoPrint("cilium.test selectors before restart: " + idsBefore)
 
 		res = vm.ExecWithSudo("systemctl stop cilium")
 		res.ExpectSuccess("Failed trying to stop cilium via systemctl")
@@ -1088,7 +1121,30 @@ INITSYSTEM=SYSTEMD`
 		By("Starting Cilium again")
 		Expect(vm.RestartCilium()).To(BeNil(), "Cilium cannot be started correctly")
 
-		// Policies on docker are not persistent, so the restart connectivity is not tested at all
+		By("Dumping IP cache after Cilium is restarted")
+		ipcacheAfter, err := vm.BpfIPCacheList(true)
+		Expect(err).To(BeNil(), "ipcache can not be dumped")
+		equal, diff := checker.DeepEqual(ipcacheBefore, ipcacheAfter)
+		Expect(equal).To(BeTrue(), "CIDR identities were not restored correctly: %s", diff)
+		GinkgoPrint(fmt.Sprintf("Local scope identities in IP cache after Cilium restart: %v", ipcacheAfter))
+
+		// Reapply FQDN policy and check that selectors still have same ids
+		_, err = vm.PolicyRenderAndImport(policy)
+		Expect(err).To(BeNil(), "Policy cannot be imported")
+
+		expectFQDNSareApplied("cilium.test", 0)
+
+		idsAfter := vm.SelectedIdentities("cilium.test")
+		GinkgoPrint("cilium.test selectors after restart: " + idsAfter)
+		Expect(idsAfter).To(Equal(idsBefore))
+
+		By("Dumping IP cache after the DNS policy is imported after restart")
+		ipcacheAfterDNSPolicy, err := vm.BpfIPCacheList(true)
+		Expect(err).To(BeNil(), "ipcache can not be dumped")
+		equal, diff = checker.DeepEqual(ipcacheBefore, ipcacheAfterDNSPolicy)
+		Expect(equal).To(BeTrue(), "CIDR identities changed after policy import: %s", diff)
+		GinkgoPrint(fmt.Sprintf("Local scope identities in IP cache after re-import of DNS policy: %v", ipcacheAfterDNSPolicy))
+
 	})
 })
 

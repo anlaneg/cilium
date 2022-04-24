@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package cmd
 
@@ -16,9 +15,9 @@ import (
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/datapath/fake"
-	fakeIPCache "github.com/cilium/cilium/pkg/ipcache/fake"
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node/manager"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/nodediscovery"
 	"github.com/cilium/cilium/pkg/option"
 	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
@@ -39,7 +38,7 @@ func (g *GetNodesSuite) SetUpTest(c *C) {
 
 func (g *GetNodesSuite) SetUpSuite(c *C) {
 	var err error
-	nm, err = manager.NewManager("", fake.NewNodeHandler(), fakeIPCache.NewIPCache(false), &fakeConfig.Config{}, nil, nil)
+	nm, err = manager.NewManager("", fake.NewNodeHandler(), &fakeConfig.Config{}, nil, nil)
 	c.Assert(err, IsNil)
 }
 
@@ -73,7 +72,6 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			name: "create a client ID and store it locally",
 			setupArgs: func() args {
 				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
-				nodeDiscovery.LocalNode.Name = "foo"
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &zero,
@@ -87,7 +85,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			setupWanted: func() want {
 				m := &models.ClusterNodeStatus{
 					ClientID: clientIDs[0],
-					Self:     "foo",
+					Self:     nodeTypes.GetAbsoluteNodeName(),
 				}
 				return want{
 					clients: map[int64]*clusterNodesClient{
@@ -105,7 +103,6 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			name: "retrieve nodes diff from a client that was already present",
 			setupArgs: func() args {
 				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
-				nodeDiscovery.LocalNode.Name = "foo"
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &clientIDs[0],
@@ -117,7 +114,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -137,14 +134,14 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 							},
 						},
 					},
 					responder: &GetClusterNodesOK{
 						Payload: &models.ClusterNodeStatus{
 							ClientID: clientIDs[0],
-							Self:     "foo",
+							Self:     nodeTypes.GetAbsoluteNodeName(),
 							NodesAdded: []*models.NodeElement{
 								{
 									Name: "random-node-added",
@@ -159,7 +156,6 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			name: "retrieve nodes from an expired client, it should be ok because the clean up only happens when on insertion",
 			setupArgs: func() args {
 				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
-				nodeDiscovery.LocalNode.Name = "foo"
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &clientIDs[0],
@@ -172,7 +168,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 							lastSync: time.Now().Add(-clientGCTimeout),
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -192,14 +188,14 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 							},
 						},
 					},
 					responder: &GetClusterNodesOK{
 						Payload: &models.ClusterNodeStatus{
 							ClientID: clientIDs[0],
-							Self:     "foo",
+							Self:     nodeTypes.GetAbsoluteNodeName(),
 							NodesAdded: []*models.NodeElement{
 								{
 									Name: "random-node-added",
@@ -214,7 +210,6 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			name: "retrieve nodes for a new client, the expired client should be deleted",
 			setupArgs: func() args {
 				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
-				nodeDiscovery.LocalNode.Name = "foo"
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &zero,
@@ -227,7 +222,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 							lastSync: time.Now().Add(-clientGCTimeout),
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[numberOfClients-1],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -247,14 +242,14 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 							},
 						},
 					},
 					responder: &GetClusterNodesOK{
 						Payload: &models.ClusterNodeStatus{
 							ClientID: clientIDs[0],
-							Self:     "foo",
+							Self:     nodeTypes.GetAbsoluteNodeName(),
 						},
 					},
 				}
@@ -264,7 +259,6 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			name: "retrieve nodes for a new client, however the randomizer allocated an existing clientID, so we should return a empty clientID",
 			setupArgs: func() args {
 				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
-				nodeDiscovery.LocalNode.Name = "foo"
 				return args{
 					params: GetClusterNodesParams{
 						ClientID: &zero,
@@ -276,7 +270,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -293,7 +287,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -304,7 +298,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 					},
 					responder: &GetClusterNodesOK{
 						Payload: &models.ClusterNodeStatus{
-							Self: "foo",
+							Self: nodeTypes.GetAbsoluteNodeName(),
 						},
 					},
 				}
@@ -314,7 +308,6 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 			name: "retrieve nodes for a client that does not want to have diffs, leave all other stored clients alone",
 			setupArgs: func() args {
 				nodeDiscovery := nodediscovery.NewNodeDiscovery(nm, mtu.NewConfiguration(0, false, false, false, 0, nil), &cnitypes.NetConf{})
-				nodeDiscovery.LocalNode.Name = "foo"
 				return args{
 					params: GetClusterNodesParams{},
 					daemon: &Daemon{
@@ -324,7 +317,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -341,7 +334,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 						clientIDs[0]: {
 							ClusterNodeStatus: &models.ClusterNodeStatus{
 								ClientID: clientIDs[0],
-								Self:     "foo",
+								Self:     nodeTypes.GetAbsoluteNodeName(),
 								NodesAdded: []*models.NodeElement{
 									{
 										Name: "random-node-added",
@@ -352,7 +345,7 @@ func (g *GetNodesSuite) Test_getNodesHandle(c *C) {
 					},
 					responder: &GetClusterNodesOK{
 						Payload: &models.ClusterNodeStatus{
-							Self: "foo",
+							Self: nodeTypes.GetAbsoluteNodeName(),
 						},
 					},
 				}

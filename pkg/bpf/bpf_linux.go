@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build linux
-// +build linux
 
 package bpf
 
@@ -17,6 +16,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
+
+	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
@@ -645,7 +646,6 @@ type bpfAttachProg struct {
 // whether it succeeds in doing so. This can be used to bail out early
 // in the daemon when a given type is not supported.
 func TestDummyProg(progType ProgType, attachType uint32) error {
-	var oldLim unix.Rlimit
 	insns := []byte{
 		// R0 = 1; EXIT
 		0xb7, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
@@ -659,22 +659,13 @@ func TestDummyProg(progType ProgType, attachType uint32) error {
 		Insns:      uintptr(unsafe.Pointer(&insns[0])),
 		License:    uintptr(unsafe.Pointer(&license[0])),
 	}
-	tmpLim := unix.Rlimit{
-		Cur: unix.RLIM_INFINITY,
-		Max: unix.RLIM_INFINITY,
-	}
-	err := unix.Getrlimit(unix.RLIMIT_MEMLOCK, &oldLim)
-	if err != nil {
-		return err
-	}
-	err = unix.Setrlimit(unix.RLIMIT_MEMLOCK, &tmpLim)
-	if err != nil {
+	if err := rlimit.RemoveMemlock(); err != nil {
 		return err
 	}
 	fd, _, errno := unix.Syscall(unix.SYS_BPF, BPF_PROG_LOAD,
 		uintptr(unsafe.Pointer(&bpfAttr)),
 		unsafe.Sizeof(bpfAttr))
-	unix.Setrlimit(unix.RLIMIT_MEMLOCK, &oldLim)
+
 	if errno == 0 {
 		defer unix.Close(int(fd))
 		bpfAttr := bpfAttachProg{

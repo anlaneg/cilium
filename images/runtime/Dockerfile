@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1.2
 
-# Copyright 2020-2021 Authors of Cilium
+# Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
 ARG TESTER_IMAGE=quay.io/cilium/image-tester:c37f768323abfba87c90cd9c82d37136183457bc@sha256:4c9d640b6379eb4964b8590acc95ca2dfaa71df70f4467fb7d8ac076acf6a8e1
-ARG GOLANG_IMAGE=docker.io/library/golang:1.17.6@sha256:d36ec9839e6ebac63a53f3e15758ffa339b81dc5df6c9d41a18a3f9302bd0d90
+ARG GOLANG_IMAGE=docker.io/library/golang:1.18.1@sha256:3f0168c019343d7cc07bf2481e7b6555fbf2ebadfb01f9e77875da66439ba041
 ARG UBUNTU_IMAGE=docker.io/library/ubuntu:20.04@sha256:626ffe58f6e7566e00254b638eb7e0f3b11d4da9675088f4781a50ae288f3322
 
 ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:547db7ec9a750b8f888a506709adb41f135b952e@sha256:4d6fa0aede3556c5fb5a9c71bc6b9585475ac9b1064f516d4c45c8fb691c9d9e
-ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:04c0710893e30be2b96c86b148f65d9e97610377@sha256:bcd5132d971f9e7a0d271bdc284d06b72eb7b555fce2d19c2b34d8e7620fabe3
-ARG CILIUM_IPROUTE2_IMAGE=quay.io/cilium/cilium-iproute2:158454716257587cfb9f8236b327304b972ea7d7@sha256:7cfbbc66ab5746aa9cb4da4cb5e6ff14cbfaa1000d3e255714cf06ab59f79f85
+ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:dd29c55c5ecad0ead395cb44c8a5c8ac67918909@sha256:2e566c175428ada5bac115b5ada42fedad6291250c5c963c6743922621659f34
+ARG CILIUM_IPROUTE2_IMAGE=quay.io/cilium/cilium-iproute2:02c29c971c01f0b9a7b916327f0caedd83820c18@sha256:eeb019043163891b91b731bed237d1edfaac036993b75f839b7d8fe6dd82b866
 
 FROM ${CILIUM_LLVM_IMAGE} as llvm-dist
 FROM ${CILIUM_BPFTOOL_IMAGE} as bpftool-dist
@@ -35,7 +35,8 @@ ENV FORCE_BUILD=1
 
 # Update ubuntu packages to the most recent versions
 RUN apt-get update && \
-    apt-get upgrade -y
+    apt-get upgrade -y && \
+    apt-get install -y jq
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime \

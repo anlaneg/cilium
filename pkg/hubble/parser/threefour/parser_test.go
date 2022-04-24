@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019 Authors of Hubble
+// Copyright Authors of Hubble
 
 //go:build !privileged_tests
-// +build !privileged_tests
 
 package threefour
 
@@ -23,7 +22,6 @@ import (
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/byteorder"
-	"github.com/cilium/cilium/pkg/datapath/link"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
 	"github.com/cilium/cilium/pkg/hubble/parser/errors"
 	"github.com/cilium/cilium/pkg/hubble/testutils"
@@ -48,7 +46,8 @@ func init() {
 
 func TestL34DecodeEmpty(t *testing.T) {
 	parser, err := New(log, &testutils.NoopEndpointGetter, &testutils.NoopIdentityGetter,
-		&testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+		&testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter,
+		&testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	var d []byte
@@ -149,7 +148,7 @@ func TestL34Decode(t *testing.T) {
 		},
 	}
 	identityCache := &testutils.NoopIdentityGetter
-	parser, err := New(log, endpointGetter, identityCache, dnsGetter, ipGetter, serviceGetter)
+	parser, err := New(log, endpointGetter, identityCache, dnsGetter, ipGetter, serviceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	f := &flowpb.Flow{}
@@ -218,7 +217,7 @@ func TestL34Decode(t *testing.T) {
 	}
 	ipGetter = &testutils.NoopIPGetter
 	serviceGetter = &testutils.NoopServiceGetter
-	parser, err = New(log, endpointGetter, identityCache, dnsGetter, ipGetter, serviceGetter)
+	parser, err = New(log, endpointGetter, identityCache, dnsGetter, ipGetter, serviceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	err = parser.Decode(d2, f)
@@ -257,7 +256,7 @@ func BenchmarkL34Decode(b *testing.B) {
 	ipGetter := &testutils.NoopIPGetter
 	serviceGetter := &testutils.NoopServiceGetter
 	identityCache := &testutils.NoopIdentityGetter
-	parser, err := New(log, endpointGetter, identityCache, dnsGetter, ipGetter, serviceGetter)
+	parser, err := New(log, endpointGetter, identityCache, dnsGetter, ipGetter, serviceGetter, &testutils.NoopLinkGetter)
 	require.NoError(b, err)
 
 	f := &flowpb.Flow{}
@@ -301,7 +300,7 @@ func TestDecodeTraceNotify(t *testing.T) {
 		return nil, fmt.Errorf("identity not found for %d", securityIdentity)
 	}}
 
-	parser, err := New(log, &testutils.NoopEndpointGetter, identityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, &testutils.NoopEndpointGetter, identityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	f := &flowpb.Flow{}
@@ -346,7 +345,7 @@ func TestDecodeDropNotify(t *testing.T) {
 		},
 	}
 
-	parser, err := New(log, &testutils.NoopEndpointGetter, identityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, &testutils.NoopEndpointGetter, identityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	f := &flowpb.Flow{}
@@ -367,7 +366,7 @@ func TestDecodePolicyVerdictNotify(t *testing.T) {
 		},
 	}
 
-	parser, err := New(log, &testutils.NoopEndpointGetter, identityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, &testutils.NoopEndpointGetter, identityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	// PolicyVerdictNotify for forwarded flow
@@ -427,7 +426,7 @@ func TestDecodeDropReason(t *testing.T) {
 	data, err := testutils.CreateL3L4Payload(dn)
 	require.NoError(t, err)
 
-	parser, err := New(log, nil, nil, nil, nil, nil)
+	parser, err := New(log, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	f := &flowpb.Flow{}
@@ -452,7 +451,7 @@ func TestDecodeLocalIdentity(t *testing.T) {
 		},
 	}
 
-	parser, err := New(log, nil, identityGetter, nil, nil, nil)
+	parser, err := New(log, nil, identityGetter, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	f := &flowpb.Flow{}
@@ -509,7 +508,7 @@ func TestDecodeTrafficDirection(t *testing.T) {
 		},
 	}
 
-	parser, err := New(log, endpointGetter, nil, nil, nil, nil)
+	parser, err := New(log, endpointGetter, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	parseFlow := func(event interface{}, srcIPv4, dstIPv4 net.IP) *flowpb.Flow {
 		data, err := testutils.CreateL3L4Payload(event,
@@ -603,11 +602,12 @@ func TestDecodeTrafficDirection(t *testing.T) {
 	assert.Equal(t, flowpb.TrafficDirection_EGRESS, f.GetTrafficDirection())
 	assert.Equal(t, uint32(localEP), f.GetDestination().GetID())
 
-	// TRACE_FROM_LXC (traffic direction not supported)
+	// TRACE_FROM_LXC unknown
 	tn = monitor.TraceNotifyV0{
 		Type:     byte(api.MessageTypeTrace),
 		Source:   localEP,
 		ObsPoint: api.TraceFromLxc,
+		Reason:   monitor.TraceReasonUnknown,
 	}
 	f = parseFlow(tn, localIP, remoteIP)
 	assert.Equal(t, flowpb.TrafficDirection_TRAFFIC_DIRECTION_UNKNOWN, f.GetTrafficDirection())
@@ -649,7 +649,7 @@ func TestDecodeIsReply(t *testing.T) {
 	localIP := net.ParseIP("1.2.3.4")
 	remoteIP := net.ParseIP("5.6.7.8")
 
-	parser, err := New(log, nil, nil, nil, nil, nil)
+	parser, err := New(log, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	parseFlow := func(event interface{}, srcIPv4, dstIPv4 net.IP) *flowpb.Flow {
 		data, err := testutils.CreateL3L4Payload(event,
@@ -677,20 +677,11 @@ func TestDecodeIsReply(t *testing.T) {
 	assert.Equal(t, true, f.GetIsReply().GetValue())
 	assert.Equal(t, true, f.GetReply())
 
-	// TRACE_FROM_LXC (connection tracking not supported)
+	// TRACE_FROM_LXC
 	tn = monitor.TraceNotifyV0{
 		Type:     byte(api.MessageTypeTrace),
 		ObsPoint: api.TraceFromLxc,
-		Reason:   monitor.TraceReasonCtReply,
-	}
-	f = parseFlow(tn, localIP, remoteIP)
-	assert.Nil(t, f.GetIsReply())
-	assert.Equal(t, false, f.GetReply())
-
-	tn = monitor.TraceNotifyV0{
-		Type:     byte(api.MessageTypeTrace),
-		ObsPoint: api.TraceFromLxc,
-		Reason:   0,
+		Reason:   monitor.TraceReasonUnknown,
 	}
 	f = parseFlow(tn, localIP, remoteIP)
 	assert.Nil(t, f.GetIsReply())
@@ -801,7 +792,7 @@ func Test_filterCIDRLabels(t *testing.T) {
 
 func TestTraceNotifyOriginalIP(t *testing.T) {
 	f := &flowpb.Flow{}
-	parser, err := New(log, &testutils.NoopEndpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, &testutils.NoopEndpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	v0 := monitor.TraceNotifyV0{
@@ -839,7 +830,7 @@ func TestTraceNotifyOriginalIP(t *testing.T) {
 }
 
 func TestICMP(t *testing.T) {
-	parser, err := New(log, &testutils.NoopEndpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, &testutils.NoopEndpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 	message := monitor.TraceNotifyV1{
 		TraceNotifyV0: monitor.TraceNotifyV0{
@@ -911,7 +902,7 @@ func TestTraceNotifyLocalEndpoint(t *testing.T) {
 		},
 	}
 
-	parser, err := New(log, endpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, endpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
 	v0 := monitor.TraceNotifyV0{
@@ -946,18 +937,14 @@ func TestTraceNotifyLocalEndpoint(t *testing.T) {
 func TestDebugCapture(t *testing.T) {
 	f := &flowpb.Flow{}
 
-	parser, err := New(log, &testutils.NoopEndpointGetter, &testutils.NoopIdentityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	parser, err := New(log, &testutils.NoopEndpointGetter, &testutils.NoopIdentityGetter, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
 	require.NoError(t, err)
 
-	// Obtaining the index for the loopback device might not succeed depending
-	// on the system on which the test is running, therefore we just skip that
-	// part of the test with a warning if it fails.
+	// The testutils.NoopLinkGetter above will mock out the device name
+	// lookup to always return 'lo', so we can just hardcode it here and
+	// check that the events below get decoded with this link name.
 	loIfName := "lo"
-	loIfIndex, err := link.GetIfIndex(loIfName)
-	if err != nil {
-		t.Logf("warning: failed to get ifIndex for %q: %s", loIfName, err)
-		loIfIndex = 0
-	}
+	loIfIndex := uint32(1)
 
 	dbg := monitor.DebugCapture{
 		Type:    api.MessageTypeCapture,
@@ -988,13 +975,10 @@ func TestDebugCapture(t *testing.T) {
 	assert.Equal(t, ip.DstIP.String(), f.IP.Destination)
 	assert.NotNil(t, f.L4.GetTCP())
 
-	// Only checked if loIfIndex was populated by the test code above
-	if loIfIndex != 0 {
-		assert.Equal(t, &flowpb.NetworkInterface{
-			Index: loIfIndex,
-			Name:  loIfName,
-		}, f.Interface)
-	}
+	assert.Equal(t, &flowpb.NetworkInterface{
+		Index: loIfIndex,
+		Name:  loIfName,
+	}, f.Interface)
 
 	dbg = monitor.DebugCapture{
 		Type:    api.MessageTypeCapture,
@@ -1011,4 +995,47 @@ func TestDebugCapture(t *testing.T) {
 	assert.Equal(t, int32(dbg.SubType), f.EventType.SubType)
 	assert.Equal(t, flowpb.DebugCapturePoint_DBG_CAPTURE_PROXY_POST, f.DebugCapturePoint)
 	assert.Equal(t, uint32(1234), f.ProxyPort)
+}
+
+func TestTraceNotifyProxyPort(t *testing.T) {
+	f := &flowpb.Flow{}
+	parser, err := New(log, &testutils.NoopEndpointGetter, nil, &testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter, &testutils.NoopLinkGetter)
+	require.NoError(t, err)
+
+	v0 := monitor.TraceNotifyV0{
+		Type:     byte(api.MessageTypeTrace),
+		Version:  monitor.TraceNotifyVersion0,
+		ObsPoint: api.TraceToProxy,
+		DstID:    uint16(1234),
+	}
+	eth := layers.Ethernet{
+		EthernetType: layers.EthernetTypeIPv4,
+		SrcMAC:       net.HardwareAddr{1, 2, 3, 4, 5, 6},
+		DstMAC:       net.HardwareAddr{1, 2, 3, 4, 5, 6},
+	}
+	ip := layers.IPv4{
+		SrcIP: net.ParseIP("10.0.0.2"),
+		DstIP: net.ParseIP("10.0.0.3"),
+	}
+	data, err := testutils.CreateL3L4Payload(v0, &eth, &ip, &layers.TCP{})
+	require.NoError(t, err)
+
+	err = parser.Decode(data, f)
+	require.NoError(t, err)
+	assert.Equal(t, f.ProxyPort, uint32(1234))
+
+	v1 := monitor.TraceNotifyV1{
+		TraceNotifyV0: monitor.TraceNotifyV0{
+			Type:     byte(api.MessageTypeTrace),
+			Version:  monitor.TraceNotifyVersion1,
+			ObsPoint: api.TraceToProxy,
+			DstID:    uint16(4321),
+		},
+		OrigIP: [16]byte{1, 1, 1, 1},
+	}
+	data, err = testutils.CreateL3L4Payload(v1, &eth, &ip, &layers.TCP{})
+	require.NoError(t, err)
+	err = parser.Decode(data, f)
+	require.NoError(t, err)
+	assert.Equal(t, f.ProxyPort, uint32(4321))
 }

@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
-# Copyright (C) 2021 Authors of Cilium
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+# Copyright Authors of Cilium
 
 include ../../Makefile.defs
 

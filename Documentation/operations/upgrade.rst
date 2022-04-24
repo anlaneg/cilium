@@ -13,7 +13,7 @@ Upgrade Guide
 .. _upgrade_general:
 
 This upgrade guide is intended for Cilium running on Kubernetes. If you have
-questions, feel free to ping us on the `Slack channel`.
+questions, feel free to ping us on the :term:`Slack channel`.
 
 .. include:: upgrade-warning.rst
 
@@ -106,7 +106,7 @@ continuing with the upgrade.
 Clean up pre-flight check
 -------------------------
 
-Once the number of READY for the preflight `DaemonSet` is the same as the number
+Once the number of READY for the preflight :term:`DaemonSet` is the same as the number
 of cilium pods running and the preflight ``Deployment`` is marked as READY ``1/1``
 you can delete the cilium-preflight and proceed with the upgrade.
 
@@ -151,7 +151,7 @@ corner.
 Step 2: Use Helm to Upgrade your Cilium deployment
 --------------------------------------------------------------------------------------
 
-`Helm` can be used to either upgrade Cilium directly or to generate a new set of
+:term:`Helm` can be used to either upgrade Cilium directly or to generate a new set of
 YAML files that can be used to upgrade an existing deployment via ``kubectl``.
 By default, Helm will generate the new templates using the default values files
 packaged with each new release. You still need to ensure that you are
@@ -198,7 +198,7 @@ version which was installed in this cluster. Valid options are:
    Instead of using ``--set``, you can also save the values relative to your
    deployment in a YAML file and use it to regenerate the YAML for the latest
    Cilium version. Running any of the previous commands will overwrite
-   the existing cluster's `ConfigMap` so it is critical to preserve any existing
+   the existing cluster's :term:`ConfigMap` so it is critical to preserve any existing
    options, either by setting them at the command line or storing them in a
    YAML file, similar to:
 
@@ -268,7 +268,7 @@ Cilium to the state it was in prior to the upgrade.
     incompatible feature use before downgrading/rolling back. This step is only
     required after new functionality introduced in the new minor version has
     already been explicitly used by creating new resources or by opting into
-    new features via the `ConfigMap`.
+    new features via the :term:`ConfigMap`.
 
 .. _version_notes:
 .. _upgrade_version_specifics:
@@ -312,12 +312,20 @@ Annotations:
 1.12 Upgrade Notes
 ------------------
 
+* The Cilium agent does not support the legacy ``nat46-range`` option as well
+  as the per-endpoint ``NAT46`` configuration anymore. Both are replaced in
+  favor of NAT46/64 handling for services.
+
 New Options
 ~~~~~~~~~~~
 
 * ``ipv6-native-routing-cidr``: This option specifies the IPv6 CIDR for native
   routing. It must be set whenever running in direct routing mode with IPv6
   masquerading enabled.
+* ``instance-tags-filter``: This option specifies a list of tags used to search
+  for EC2 instances (and existing ENIs). EC2 Instances tags is in the form of k1=v1,k2=v2
+  (multiple k/v pairs can also be passed by repeating the CLI flag")
+  Use ``instanceTagsFilter`` in Helm chart.
 
 Removed Options
 ~~~~~~~~~~~~~~~
@@ -328,6 +336,27 @@ Removed Options
   connection tracking was removed. In addition, we deprecated the
   ``disable-conntrack`` option and made it non-operational. It will be removed
   in version 1.13.
+* The ``host-reachable-services-protos`` option (``.hostServices.protocols`` in
+  Helm) was deprecated, and it will be removed in version 1.13.
+
+Helm Options
+~~~~~~~~~~~~
+
+* ``bandwidthManager`` has been deprecated in favor of ``bandwidthManager.enabled``,
+  and will be removed in 1.13.
+* ``bpf.hostRouting`` has been deprecated in favor of ``bpf.hostLegacyRouting``, and
+  will be removed in 1.13.
+* ``hubble.tls.ca.cert`` has been deprecated in favor of ``tls.ca.cert``, and
+  will be removed in 1.13.
+* ``hubble.tls.ca.key`` has been deprecated in favor of ``tls.ca.key``, and will be
+  removed in 1.13.
+* ``clustermesh.apiserver.tls.ca.cert`` has been deprecated in favor of ``tls.ca.key``,
+  and will be removed in 1.13.
+* ``clustermesh.apiserver.tls.ca.key`` has been deprecated in favor of ``tls.ca.key``,
+  and will be removed in 1.13.
+* ``tls.enabled`` has been removed as this attribute is not used at all.
+* Only one CA will be generated with either the helm or CronJob auto method, there will
+  be a short disruption while the new CA is propagated to all nodes.
 
 .. _1.11_upgrade_notes:
 
@@ -464,7 +493,7 @@ available during the upgrade:
 Rebasing a ConfigMap
 --------------------
 
-This section describes the procedure to rebase an existing `ConfigMap` to the
+This section describes the procedure to rebase an existing :term:`ConfigMap` to the
 template of another version.
 
 Export the current ConfigMap
@@ -500,7 +529,7 @@ Export the current ConfigMap
           selfLink: /api/v1/namespaces/kube-system/configmaps/cilium-config
 
 
-In the `ConfigMap` above, we can verify that Cilium is using ``debug`` with
+In the :term:`ConfigMap` above, we can verify that Cilium is using ``debug`` with
 ``true``, it has a etcd endpoint running with `TLS <https://etcd.io/docs/latest/op-guide/security/>`_,
 and the etcd is set up to have `client to server authentication <https://etcd.io/docs/latest/op-guide/security/#example-2-client-to-server-authentication-with-https-client-certificates>`_.
 
@@ -519,7 +548,7 @@ Generate the latest ConfigMap
 Add new options
 ~~~~~~~~~~~~~~~
 
-Add the new options manually to your old `ConfigMap`, and make the necessary
+Add the new options manually to your old :term:`ConfigMap`, and make the necessary
 changes.
 
 In this example, the ``debug`` option is meant to be kept with ``true``, the
@@ -527,7 +556,7 @@ In this example, the ``debug`` option is meant to be kept with ``true``, the
 option, but after reading the :ref:`version_notes` the value was kept unchanged
 from the default value.
 
-After making the necessary changes, the old `ConfigMap` was migrated with the
+After making the necessary changes, the old :term:`ConfigMap` was migrated with the
 new options while keeping the configuration that we wanted:
 
 ::
@@ -564,15 +593,15 @@ Apply new ConfigMap
 ~~~~~~~~~~~~~~~~~~~
 
 After adding the options, manually save the file with your changes and install
-the `ConfigMap` in the ``kube-system`` namespace of your cluster.
+the :term:`ConfigMap` in the ``kube-system`` namespace of your cluster.
 
 .. code-block:: shell-session
 
         $ kubectl apply -n kube-system -f ./cilium-cm-old.yaml
 
-As the `ConfigMap` is successfully upgraded we can start upgrading Cilium
+As the :term:`ConfigMap` is successfully upgraded we can start upgrading Cilium
 ``DaemonSet`` and ``RBAC`` which will pick up the latest configuration from the
-`ConfigMap`.
+:term:`ConfigMap`.
 
 
 .. _cidr_limitations:

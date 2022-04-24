@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 package main
 
@@ -11,6 +11,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/cilium/cilium/operator/metrics"
 	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/watchers"
 	"github.com/cilium/cilium/pkg/controller"
@@ -151,9 +152,22 @@ func doCiliumEndpointSyncGC(ctx context.Context, once bool, stopCh chan struct{}
 		err := ciliumClient.CiliumEndpoints(cep.Namespace).Delete(
 			ctx,
 			cep.Name,
-			meta_v1.DeleteOptions{PropagationPolicy: &PropagationPolicy})
-		if err != nil && !k8serrors.IsNotFound(err) {
+			meta_v1.DeleteOptions{
+				PropagationPolicy: &PropagationPolicy,
+				// Set precondition to ensure we are only deleting CEPs owned by
+				// this agent.
+				Preconditions: &meta_v1.Preconditions{
+					UID: &cep.UID,
+				},
+			})
+		switch {
+		case err == nil:
+			successfulEndpointObjectGC()
+		case k8serrors.IsNotFound(err), k8serrors.IsConflict(err):
+			// No-op.
+		default:
 			scopedLog.WithError(err).Warning("Unable to delete orphaned CEP")
+			failedEndpointObjectGC()
 			return err
 		}
 	}
@@ -163,4 +177,16 @@ func doCiliumEndpointSyncGC(ctx context.Context, once bool, stopCh chan struct{}
 		close(stopCh)
 	}
 	return nil
+}
+
+func successfulEndpointObjectGC() {
+	if operatorOption.Config.EnableMetrics {
+		metrics.EndpointGCObjects.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
+	}
+}
+
+func failedEndpointObjectGC() {
+	if operatorOption.Config.EnableMetrics {
+		metrics.EndpointGCObjects.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
+	}
 }

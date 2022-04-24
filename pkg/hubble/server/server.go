@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Authors of Hubble
+// Copyright Authors of Hubble
 
 package server
 
@@ -56,7 +56,7 @@ func (s *Server) newGRPCServer() (*grpc.Server, error) {
 		return grpc.NewServer(), nil
 	case s.opts.ServerTLSConfig != nil:
 		tlsConfig := s.opts.ServerTLSConfig.ServerConfig(&tls.Config{
-			MinVersion: tls.VersionTLS13,
+			MinVersion: serveroption.MinTLSVersion,
 		})
 		creds := credentials.NewTLS(tlsConfig)
 		return grpc.NewServer(grpc.Creds(creds)), nil

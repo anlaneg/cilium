@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2022 Authors of Cilium
+// Copyright Authors of Cilium
 
 package hooks
 
 import (
+	"github.com/cilium/lumberjack/v2"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // FileRotationOption provides all parameters for file rotation

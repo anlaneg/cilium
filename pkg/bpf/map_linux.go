@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2020 Authors of Cilium
+// Copyright Authors of Cilium
 
 //go:build linux
-// +build linux
 
 package bpf
 
@@ -455,8 +454,8 @@ func (m *Map) OpenParallel() (bool, error) {
 	defer m.lock.Unlock()
 
 	if m.fd != 0 {
-	    /*map 已打开*/
-		return false, fmt.Errorf("OpenParallel() called on already open map")
+		/*map 已打开*/
+		return false, fmt.Errorf("OpenParallel() called on already open map: %s", m.name)
 	}
 
 	/*设置此map对应的path,如果未设置的话*/
@@ -465,7 +464,7 @@ func (m *Map) OpenParallel() (bool, error) {
 	}
 
 	if _, err := os.Stat(m.path); err == nil {
-	    /*如果m.path存在，则执行remove*/
+		/*如果m.path存在，则执行remove*/
 		err := os.Remove(m.path)
 		if err != nil {
 			log.WithError(err).Warning("Unable to remove BPF map for parallel operation")

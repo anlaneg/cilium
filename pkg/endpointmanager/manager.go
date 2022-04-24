@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2016-2019 Authors of Cilium
+// Copyright Authors of Cilium
 
 package endpointmanager
 
@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/endpointmanager/idallocator"
 	"github.com/cilium/cilium/pkg/identity/cache"
+	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -139,6 +140,8 @@ func waitForProxyCompletions(proxyWaitGroup *completion.WaitGroup) error {
 
 // UpdatePolicyMaps returns a WaitGroup which is signaled upon once all endpoints
 // have had their PolicyMaps updated against the Endpoint's desired policy state.
+//
+// Endpoints will wait on the 'notifyWg' parameter before updating policy maps.
 func (mgr *EndpointManager) UpdatePolicyMaps(ctx context.Context, notifyWg *sync.WaitGroup) *sync.WaitGroup {
 	var epWG sync.WaitGroup
 	var wg sync.WaitGroup
@@ -617,11 +620,12 @@ func (mgr *EndpointManager) AddHostEndpoint(
 	ctx context.Context,
 	owner regeneration.Owner,
 	policyGetter policyRepoGetter,
+	ipcache *ipcache.IPCache,
 	proxy endpoint.EndpointProxy,
 	allocator cache.IdentityAllocator,
 	reason, nodeName string,
 ) error {
-	ep, err := endpoint.CreateHostEndpoint(owner, policyGetter, proxy, allocator)
+	ep, err := endpoint.CreateHostEndpoint(owner, policyGetter, ipcache, proxy, allocator)
 	if err != nil {
 		return err
 	}

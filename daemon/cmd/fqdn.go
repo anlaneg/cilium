@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2019-2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package cmd
 
@@ -30,11 +30,9 @@ import (
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/identity"
 	secIDCache "github.com/cilium/cilium/pkg/identity/cache"
-	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/policy"
 	policyApi "github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/proxy"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
@@ -317,12 +315,12 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 
 	// Once we stop returning errors from StartDNSProxy this should live in
 	// StartProxySupport
-	port, listenerName, err := proxy.GetProxyPort(policy.ParserTypeDNS, false)
+	port, err := proxy.GetProxyPort(proxy.DNSProxyName)
 	if option.Config.ToFQDNsProxyPort != 0 {
 		port = uint16(option.Config.ToFQDNsProxyPort)
 	} else if port == 0 {
 		// Try locate old DNS proxy port number from the datapath
-		port = d.datapath.GetProxyPort(listenerName)
+		port = d.datapath.GetProxyPort(proxy.DNSProxyName)
 	}
 	if err != nil {
 		return err
@@ -332,7 +330,7 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 		d.notifyOnDNSMsg)
 	if err == nil {
 		// Increase the ProxyPort reference count so that it will never get released.
-		err = d.l7Proxy.SetProxyPort(listenerName, proxy.DefaultDNSProxy.GetBindPort())
+		err = d.l7Proxy.SetProxyPort(proxy.DNSProxyName, proxy.ProxyTypeDNS, proxy.DefaultDNSProxy.GetBindPort(), false)
 		if err == nil && port == proxy.DefaultDNSProxy.GetBindPort() {
 			log.Infof("Reusing previous DNS proxy port: %d", port)
 		}
@@ -352,7 +350,7 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 // called after iptables has been initailized, and only after
 // successful bootstrapFQDN().
 func (d *Daemon) updateDNSDatapathRules() error {
-	return d.l7Proxy.AckProxyPort(policy.ParserTypeDNS, false)
+	return d.l7Proxy.AckProxyPort(proxy.DNSProxyName)
 }
 
 // updateSelectors propagates the mapping of FQDNSelector to identity, as well
@@ -381,7 +379,7 @@ func (d *Daemon) lookupEPByIP(endpointIP net.IP) (endpoint *endpoint.Endpoint, e
 }
 
 func (d *Daemon) lookupIPsBySecID(nid identity.NumericIdentity) []string {
-	return ipcache.IPIdentityCache.LookupByIdentity(nid)
+	return d.ipcache.LookupByIdentity(nid)
 }
 
 // NotifyOnDNSMsg handles DNS data in the daemon by emitting monitor
@@ -395,7 +393,8 @@ func (d *Daemon) lookupIPsBySecID(nid identity.NumericIdentity) []string {
 //   can lookup the endpoint related to it
 // epIPPort and serverAddr should match the original request, where epAddr is
 // the source for egress (the only case current).
-func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epIPPort string, serverAddr string, msg *dns.Msg, protocol string, allowed bool, stat *dnsproxy.ProxyRequestContext) error {
+// serverID is the destination server security identity at the time of the DNS event.
+func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epIPPort string, serverID identity.NumericIdentity, serverAddr string, msg *dns.Msg, protocol string, allowed bool, stat *dnsproxy.ProxyRequestContext) error {
 	var protoID = u8proto.ProtoIDs[strings.ToLower(protocol)]
 	var verdict accesslog.FlowVerdict
 	var reason string
@@ -428,37 +427,6 @@ func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epI
 		reason = "Denied by policy"
 	}
 
-	// We determine the direction based on the DNS packet. The observation
-	// point is always Egress, however.
-	var flowType accesslog.FlowType
-	if msg.Response {
-		flowType = accesslog.TypeResponse
-	} else {
-		flowType = accesslog.TypeRequest
-	}
-
-	var epPort, serverPort uint16
-	_, epPortStr, err := net.SplitHostPort(epIPPort)
-	if err != nil {
-		log.WithError(err).Error("cannot extract source IP from DNS request")
-	} else {
-		if epPortUint64, err := strconv.ParseUint(epPortStr, 10, 16); err != nil {
-			log.WithError(err).WithField(logfields.Port, epPortStr).Error("cannot parse source port")
-		} else {
-			epPort = uint16(epPortUint64)
-		}
-	}
-
-	serverIP, serverPortStr, err := net.SplitHostPort(serverAddr)
-	if err != nil {
-		log.WithError(err).Error("cannot extract destination IP from DNS request")
-	} else {
-		if serverPortUint64, err := strconv.ParseUint(serverPortStr, 10, 16); err != nil {
-			log.WithError(err).WithField(logfields.Port, serverPortStr).Error("cannot parse destination port")
-		} else {
-			serverPort = uint16(serverPortUint64)
-		}
-	}
 	if ep == nil {
 		// This is a hard fail. We cannot proceed because record.Log requires a
 		// non-nil ep, and we also don't want to insert this data into the
@@ -470,58 +438,48 @@ func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epI
 		endMetric()
 		return err
 	}
+
+	// We determine the direction based on the DNS packet. The observation
+	// point is always Egress, however.
+	var flowType accesslog.FlowType
+	var addrInfo logger.AddressingInfo
+	if msg.Response {
+		flowType = accesslog.TypeResponse
+		addrInfo.DstIPPort = epIPPort
+		addrInfo.DstIdentity = ep.GetIdentity()
+		addrInfo.SrcIPPort = serverAddr
+		addrInfo.SrcIdentity = serverID
+	} else {
+		flowType = accesslog.TypeRequest
+		addrInfo.SrcIPPort = epIPPort
+		addrInfo.SrcIdentity = ep.GetIdentity()
+		addrInfo.DstIPPort = serverAddr
+		addrInfo.DstIdentity = serverID
+	}
+
 	qname, responseIPs, TTL, CNAMEs, rcode, recordTypes, qTypes, err := dnsproxy.ExtractMsgDetails(msg)
 	if err != nil {
 		// This error is ok because all these values are used for reporting, or filling in the cache.
 		log.WithError(err).Error("cannot extract DNS message details")
 	}
 
+	var serverPort uint16
+	_, serverPortStr, err := net.SplitHostPort(serverAddr)
+	if err != nil {
+		log.WithError(err).Error("cannot extract destination IP from DNS request")
+	} else {
+		if serverPortUint64, err := strconv.ParseUint(serverPortStr, 10, 16); err != nil {
+			log.WithError(err).WithField(logfields.Port, serverPortStr).Error("cannot parse destination port")
+		} else {
+			serverPort = uint16(serverPortUint64)
+		}
+	}
 	ep.UpdateProxyStatistics(strings.ToUpper(protocol), serverPort, false, !msg.Response, verdict)
-	record := logger.NewLogRecord(proxy.DefaultEndpointInfoRegistry, ep, flowType, false,
+
+	record := logger.NewLogRecord(flowType, false,
 		func(lr *logger.LogRecord) { lr.LogRecord.TransportProtocol = accesslog.TransportProtocol(protoID) },
 		logger.LogTags.Verdict(verdict, reason),
-		logger.LogTags.Addressing(logger.AddressingInfo{
-			SrcIPPort:   epIPPort,
-			DstIPPort:   serverAddr,
-			SrcIdentity: ep.GetIdentity().Uint32(),
-		}),
-		func(lr *logger.LogRecord) {
-			lr.LogRecord.SourceEndpoint = accesslog.EndpointInfo{
-				ID:           ep.GetID(),
-				IPv4:         ep.GetIPv4Address(),
-				IPv6:         ep.GetIPv6Address(),
-				Labels:       ep.GetLabels(),
-				LabelsSHA256: ep.GetLabelsSHA(),
-				Identity:     uint64(ep.GetIdentity()),
-				Port:         epPort,
-			}
-
-			// When the server is an endpoint, get all the data for it.
-			// When external, use the ipcache to fill in the SecID
-			if serverEP := d.endpointManager.LookupIPv4(serverIP); serverEP != nil {
-				lr.LogRecord.DestinationEndpoint = accesslog.EndpointInfo{
-					ID:           serverEP.GetID(),
-					IPv4:         serverEP.GetIPv4Address(),
-					IPv6:         serverEP.GetIPv6Address(),
-					Labels:       serverEP.GetLabels(),
-					LabelsSHA256: serverEP.GetLabelsSHA(),
-					Identity:     uint64(serverEP.GetIdentity()),
-					Port:         serverPort,
-				}
-			} else if serverSecID, exists := ipcache.IPIdentityCache.LookupByIP(serverIP); exists {
-				// TODO: handle IPv6
-				lr.LogRecord.DestinationEndpoint = accesslog.EndpointInfo{
-					IPv4: serverIP,
-					// IPv6:         serverEP.GetIPv6Address(),
-					Identity: uint64(serverSecID.ID.Uint32()),
-					Port:     serverPort,
-				}
-				if secID := d.identityAllocator.LookupIdentityByID(d.ctx, serverSecID.ID); secID != nil {
-					lr.LogRecord.DestinationEndpoint.Labels = secID.Labels.GetModel()
-					lr.LogRecord.DestinationEndpoint.LabelsSHA256 = secID.GetLabelsSHA256()
-				}
-			}
-		},
+		logger.LogTags.Addressing(addrInfo),
 		logger.LogTags.DNS(&accesslog.LogRecordDNS{
 			Query:             qname,
 			IPs:               responseIPs,
@@ -586,7 +544,7 @@ func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epI
 		}).Debug("Waited for endpoints to regenerate due to a DNS response")
 
 		// Add new identities to the ipcache after the wait for the policy updates above
-		ipcache.UpsertGeneratedIdentities(newlyAllocatedIdentities)
+		d.ipcache.UpsertGeneratedIdentities(newlyAllocatedIdentities)
 
 		endMetric()
 	}

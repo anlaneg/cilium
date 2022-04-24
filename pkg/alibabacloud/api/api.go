@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2021 Authors of Cilium
+// Copyright Authors of Cilium
 
 package api
 
@@ -95,7 +95,6 @@ func (c *Client) GetVSwitches(ctx context.Context) (ipamTypes.SubnetMap, error) 
 		req := vpc.CreateDescribeVSwitchesRequest()
 		req.PageNumber = requests.NewInteger(i)
 		req.PageSize = requests.NewInteger(50)
-		req.VpcId = c.filters[VPCID]
 		c.limiter.Limit(ctx, "DescribeVSwitches")
 		resp, err := c.vpcClient.DescribeVSwitches(req)
 		if err != nil {

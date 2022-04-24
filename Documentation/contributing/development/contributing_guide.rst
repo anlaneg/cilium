@@ -283,10 +283,8 @@ Pull requests review process for committers
 #. Once a PR is open, GitHub will automatically pick which `teams <https://github.com/orgs/cilium/teams/team/teams>`_
    should review the PR using the ``CODEOWNERS`` file. Each committer can see
    the PRs they need to review by filtering by reviews requested.
-   A good filter is provided in this `link <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+assignee%3A%40me+sort%3Aupdated-asc>`_
-   so make sure to bookmark it. If a PR review is assigned to one or more
-   committers, they are expected to review that PR. Once they have performed
-   their review, they should remove themselves from the list of assignees.
+   A good filter is provided in this `link <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+user-review-requested%3A%40me+sort%3Aupdated-asc>`_
+   so make sure to bookmark it.
 
 #. Belonging to a team does not mean that a committer should know every single
    line of code the team is maintaining. For this reason it is recommended
@@ -338,7 +336,7 @@ Pull request review process for Janitors team
 Dedicated expectation time for each member of Janitors team: Follow the next
 steps 1 to 2 times per day. Works best if done first thing in the working day.
 
-#. Review all PRs requesting for review in `for you <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+team-review-requested%3Acilium%2Ftophat+sort%3Aupdated-asc>`_;
+#. Review all PRs needing a review `from you <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+team-review-requested%3Acilium%2Ftophat+sort%3Aupdated-asc>`_;
 
 #. If this PR was opened by a non-committer (e.g. external contributor) please
    assign yourself to that PR and make sure to keep track the PR gets reviewed
@@ -567,3 +565,5 @@ then you just add a line saying:
    Signed-off-by: Random J Developer <random@developer.example.org>
 
 Use your real name (sorry, no pseudonyms or anonymous contributions.)
+
+If you need to add your sign off to a commit you have already made, please see `this article <https://docs.github.com/en/desktop/contributing-and-collaborating-using-github-desktop/managing-commits/amending-a-commit>`_.
