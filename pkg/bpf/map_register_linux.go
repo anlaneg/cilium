@@ -15,9 +15,11 @@ import (
 
 var (
 	mutex       lock.RWMutex
+	/*记录map与路径的映射关系*/
 	mapRegister = map[string]*Map{}
 )
 
+/*记录bpf object路径与map的映射关系*/
 func registerMap(path string, m *Map) {
 	mutex.Lock()
 	mapRegister[path] = m
@@ -26,6 +28,7 @@ func registerMap(path string, m *Map) {
 	log.WithField("path", path).Debug("Registered BPF map")
 }
 
+/*移除bpf map与路径的映射关系*/
 func unregisterMap(path string, m *Map) {
 	mutex.Lock()
 	delete(mapRegister, path)
@@ -43,6 +46,7 @@ func GetMap(name string) *Map {
 		name = MapPath(name)
 	}
 
+    /*通过路径名称获取bpf map*/
 	return mapRegister[name]
 }
 
@@ -54,12 +58,15 @@ func GetOpenMaps() []*models.BPFMap {
 	mutex.RLock()
 	maps := []*Map{}
 	for _, m := range mapRegister {
+	    /*收集注册的所有map*/
 		maps = append(maps, m)
 	}
 	mutex.RUnlock()
 
+	/*申请map数组*/
 	mapList := make([]*models.BPFMap, len(maps))
 
+    /*填充mapList*/
 	i := 0
 	for _, m := range maps {
 		mapList[i] = m.GetModel()

@@ -14,5 +14,6 @@ var bpfLBCmd = &cobra.Command{
 }
 
 func init() {
+	/*注册bpf lb命令*/
 	bpfCmd.AddCommand(bpfLBCmd)
 }

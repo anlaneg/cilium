@@ -17,7 +17,9 @@ import (
 )
 
 var (
+    //配置文件
 	cfgFile string
+	/*到对端的client*/
 	client  *clientPkg.Client
 	log     = logrus.New()
 	verbose = false
@@ -41,15 +43,22 @@ func Execute() {
 
 func init() {
 	if components.IsCiliumAgent() {
+		/*当前进程为cilium agent,不执行初始化*/
 		return
 	}
 
+	/*注册初始化函数，Execute执行时调用*/
 	cobra.OnInitialize(initConfig)
+	/*定义要分配合所有cmd的选项*/
 	flags := rootCmd.PersistentFlags()
+	/*配置文件名称*/
 	flags.StringVar(&cfgFile, "config", "", "config file (default is $HOME/.cilium.yaml)")
+	/*开启debug*/
 	flags.BoolP("debug", "D", false, "Enable debug messages")
+	/*指明host*/
 	flags.StringP("host", "H", "", "URI to server-side API")
 	viper.BindPFlags(flags)
+	/*添加completion命令*/
 	rootCmd.AddCommand(newCmdCompletion(os.Stdout))
 	rootCmd.SetOut(os.Stdout)
 	rootCmd.SetErr(os.Stderr)
@@ -71,12 +80,14 @@ func initConfig() {
 		fmt.Println("Using config file:", viper.ConfigFileUsed())
 	}
 
+	/*设置log级别*/
 	if viper.GetBool("debug") {
 		log.Level = logrus.DebugLevel
 	} else {
 		log.Level = logrus.InfoLevel
 	}
 
+	/*设置host,准备http client*/
 	if cl, err := clientPkg.NewClient(viper.GetString("host")); err != nil {
 		Fatalf("Error while creating client: %s\n", err)
 	} else {

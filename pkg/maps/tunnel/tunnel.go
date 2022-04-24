@@ -21,6 +21,7 @@ const (
 
 var (
 	// TunnelMap represents the BPF map for tunnels
+	/*初始化名称为cilium_tunnel_map的tunnelMap，后面操作均针对此map进行操作*/
 	TunnelMap = NewTunnelMap(MapName)
 )
 
@@ -30,7 +31,8 @@ type Map struct {
 }
 
 // NewTunnelMap returns a new tunnel map with the specified name.
-func NewTunnelMap(name string) *Map {
+func NewTunnelMap(name string/*map名称*/) *Map {
+	/*通过bpf.NewMap构造Map*/
 	return &Map{Map: bpf.NewMap(MapName,
 		bpf.MapTypeHash,
 		&TunnelEndpoint{},
@@ -69,11 +71,13 @@ func (m *Map) SetTunnelEndpoint(encryptKey uint8, prefix, endpoint net.IP) error
 		fieldKey:      encryptKey,
 	}).Debug("Updating tunnel map entry")
 
+	/*更新tunnelMap内容*/
 	return TunnelMap.Update(key, val)
 }
 
 // GetTunnelEndpoint removes a prefix => tunnel-endpoint mapping
 func (m *Map) GetTunnelEndpoint(prefix net.IP) (net.IP, error) {
+	/*查询tunnelMap内容*/
 	val, err := TunnelMap.Lookup(newTunnelEndpoint(prefix))
 	if err != nil {
 		return net.IP{}, err
@@ -84,6 +88,7 @@ func (m *Map) GetTunnelEndpoint(prefix net.IP) (net.IP, error) {
 
 // DeleteTunnelEndpoint removes a prefix => tunnel-endpoint mapping
 func (m *Map) DeleteTunnelEndpoint(prefix net.IP) error {
+	/*删除tunnel Map内容*/
 	log.WithField(fieldPrefix, prefix).Debug("Deleting tunnel map entry")
 	return TunnelMap.Delete(newTunnelEndpoint(prefix))
 }

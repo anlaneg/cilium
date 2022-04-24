@@ -12,6 +12,7 @@ debug: all
 
 include Makefile.defs
 
+#定义所有子目录，这个目录均将被编译
 SUBDIRS_CILIUM_CONTAINER := proxylib envoy bpf cilium daemon cilium-health bugtool tools/mount
 SUBDIRS := $(SUBDIRS_CILIUM_CONTAINER) operator plugins tools hubble-relay
 

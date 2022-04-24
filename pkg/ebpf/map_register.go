@@ -18,6 +18,7 @@ var (
 
 func registerMap(m *Map) {
 	mutex.Lock()
+	/*设置map路径与map之间的映射关系*/
 	mapRegister[m.path] = m
 	mutex.Unlock()
 

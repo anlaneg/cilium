@@ -20,6 +20,7 @@ const (
 // IsCiliumAgent checks whether the current process is cilium-agent (daemon).
 func IsCiliumAgent() bool {
 	binaryName := os.Args[0]
+	/*如果有以上前缀，则此进程为cilium agent*/
 	return strings.HasSuffix(binaryName, CiliumAgentName) ||
 		strings.HasSuffix(binaryName, CiliumDaemonTestName)
 }

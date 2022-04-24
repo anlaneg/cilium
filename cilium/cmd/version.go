@@ -32,6 +32,7 @@ func init() {
 func getVersion(cmd *cobra.Command, args []string) {
 	// -o argument is set
 	if command.OutputJSON() {
+	    //按json格式进行输出
 		data := struct {
 			Client version.CiliumVersion
 			Daemon version.CiliumVersion
@@ -49,10 +50,12 @@ func getVersion(cmd *cobra.Command, args []string) {
 	fmt.Printf("Daemon: %s\n", getDaemonVersionAsString())
 }
 
+/*client版本*/
 func getClientVersionAsString() string {
 	return version.Version
 }
 
+/*daemon版本*/
 func getDaemonVersionAsString() string {
 	resp, err := client.Daemon.GetDebuginfo(nil)
 	if err != nil {

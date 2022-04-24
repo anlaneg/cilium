@@ -34,6 +34,7 @@ var ipListCmd = &cobra.Command{
 var numeric bool
 
 func init() {
+	/*注册ip list命令*/
 	ipCmd.AddCommand(ipListCmd)
 	command.AddJSONOutput(ipListCmd)
 	flags := ipListCmd.Flags()

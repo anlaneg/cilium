@@ -14,5 +14,6 @@ import (
 )
 
 func main() {
+	/*此函数定义在root.go中*/
 	cmd.Execute()
 }

@@ -84,9 +84,9 @@ type cacheEntry struct {
 
 type Map struct {
 	MapInfo
-	fd   int
-	name string
-	path string
+	fd   int /*打开后，map对应的fd信息*/
+	name string /*map名称*/
+	path string /*此map对应的路径，例如/sys/fs/bpf/tc/globals/abc */
 	lock lock.RWMutex
 
 	// inParallelMode is true when the Map is currently being run in
@@ -106,14 +106,14 @@ type Map struct {
 	NonPersistent bool
 
 	// DumpParser is a function for parsing keys and values from BPF maps
-	DumpParser DumpParser
+	DumpParser DumpParser /*通过此函数完成key,value的解析*/
 
 	// withValueCache is true when map cache has been enabled
 	withValueCache bool
 
 	// cache as key/value entries when map cache is enabled or as key-only when
 	// pressure metric is enabled
-	cache map[string]*cacheEntry
+	cache map[string]*cacheEntry /*map对应的cache*/
 
 	// errorResolverLastScheduled is the timestamp when the error resolver
 	// was last scheduled
@@ -128,8 +128,8 @@ type Map struct {
 }
 
 // NewMap creates a new Map instance - object representing a BPF map
-func NewMap(name string, mapType MapType, mapKey MapKey, keySize int,
-	mapValue MapValue, valueSize, maxEntries int, flags uint32, innerID uint32,
+func NewMap(name string/*map名称*/, mapType MapType/*map类型*/, mapKey MapKey, keySize int/*key的大小*/,
+	mapValue MapValue, valueSize/*value的大小*/, maxEntries int/*map实体的数目*/, flags uint32, innerID uint32,
 	dumpParser DumpParser) *Map {
 
 	if size := reflect.TypeOf(mapKey).Elem().Size(); size != uintptr(keySize) {
@@ -140,6 +140,7 @@ func NewMap(name string, mapType MapType, mapKey MapKey, keySize int,
 		panic(fmt.Sprintf("Invalid %s map value size (%d != %d)", name, size, valueSize))
 	}
 
+	/*构造map*/
 	return &Map{
 		MapInfo: MapInfo{
 			MapType:       mapType,
@@ -232,6 +233,7 @@ func (m *Map) scheduleErrorResolver() {
 // individual entry.
 func (m *Map) WithCache() *Map {
 	if m.cache == nil {
+		/*初始化cache map*/
 		m.cache = map[string]*cacheEntry{}
 	}
 	m.withValueCache = true
@@ -324,10 +326,14 @@ func (m *Map) controllerName() string {
 	return fmt.Sprintf("bpf-map-sync-%s", m.name)
 }
 
+
+/*取进程$pid对应的bpf map(fd)对应的元数据信息*/
 func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 
+    /*进程$pid对应的fdinfo位置*/
 	fdinfoFile := fmt.Sprintf("/proc/%d/fdinfo/%d", pid, fd)
 
+    /*打开此文件*/
 	file, err := os.Open(fdinfoFile)
 	if err != nil {
 		return nil, err
@@ -336,6 +342,7 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 
 	info := &MapInfo{}
 
+    /*遍历此文件，并解析其内容行对应的参数*/
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
@@ -362,6 +369,7 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 		return nil, scanner.Err()
 	}
 
+    /*返回读取到的info*/
 	return info, nil
 }
 
@@ -371,17 +379,20 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 // the MapInfo.MapKey and MapInfo.MapValues fields as those structures are not
 // stored in the bpf map.
 func OpenMap(name string) (*Map, error) {
+    /*通过给定的名称找到对应的bpf map,并进行初始化*/
 	// Expand path if needed
 	if !path.IsAbs(name) {
 		name = MapPath(name)
 	}
 
+    /*取bpf map对应的fd*/
 	fd, err := ObjGet(name)
 	if err != nil {
 		return nil, err
 	}
 
-	info, err := GetMapInfo(os.Getpid(), fd)
+    /*取bpf map对应的info信息*/
+	info, err := GetMapInfo(os.Getpid()/*当前进程id*/, fd)
 	if err != nil {
 		return nil, err
 	}
@@ -395,12 +406,13 @@ func OpenMap(name string) (*Map, error) {
 	}
 
 	m := &Map{
-		MapInfo: *info,
-		fd:      fd,
-		name:    path.Base(name),
+		MapInfo: *info,/*bpf map元数据相关信息*/
+		fd:      fd,/*bpf map对应的fd*/
+		name:    path.Base(name),/*bpf map pin对应的名称*/
 		path:    name,
 	}
 
+    /*注册bpf map*/
 	registerMap(name, m)
 
 	return m, nil
@@ -409,9 +421,11 @@ func OpenMap(name string) (*Map, error) {
 func (m *Map) setPathIfUnset() error {
 	if m.path == "" {
 		if m.name == "" {
+			/*path与name必须至少设置一个，报错*/
 			return fmt.Errorf("either path or name must be set")
 		}
 
+		/*设置path为此map对应的路径*/
 		m.path = MapPath(m.name)
 	}
 
@@ -441,14 +455,17 @@ func (m *Map) OpenParallel() (bool, error) {
 	defer m.lock.Unlock()
 
 	if m.fd != 0 {
+	    /*map 已打开*/
 		return false, fmt.Errorf("OpenParallel() called on already open map")
 	}
 
+	/*设置此map对应的path,如果未设置的话*/
 	if err := m.setPathIfUnset(); err != nil {
 		return false, err
 	}
 
 	if _, err := os.Stat(m.path); err == nil {
+	    /*如果m.path存在，则执行remove*/
 		err := os.Remove(m.path)
 		if err != nil {
 			log.WithError(err).Warning("Unable to remove BPF map for parallel operation")
@@ -459,6 +476,7 @@ func (m *Map) OpenParallel() (bool, error) {
 		}
 	}
 
+    /*打开或创建bpf map，需要pin住*/
 	return m.openOrCreate(true)
 }
 
@@ -480,6 +498,7 @@ func (m *Map) OpenParallel() (bool, error) {
 //
 // Returns whether the map was deleted and recreated, or an optional error.
 func (m *Map) OpenOrCreate() (bool, error) {
+    /*创建bpf map,且需要pin*/
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -488,6 +507,7 @@ func (m *Map) OpenOrCreate() (bool, error) {
 
 // CreateUnpinned creates the map without pinning it to the file system.
 func (m *Map) CreateUnpinned() error {
+    /*创建bpf map，但不进行pin*/
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -498,6 +518,7 @@ func (m *Map) CreateUnpinned() error {
 // Create is similar to OpenOrCreate, but closes the map after creating or
 // opening it.
 func (m *Map) Create() (bool, error) {
+    /*创建bpf map*/
 	isNew, err := m.OpenOrCreate()
 	if err != nil {
 		return isNew, err
@@ -505,12 +526,14 @@ func (m *Map) Create() (bool, error) {
 	return isNew, m.Close()
 }
 
-/*创建指定的map*/
-func (m *Map) openOrCreate(pin bool) (bool, error) {
+/*打开或者创建指定的map，返回 "是否新创建“，”错误信息“*/
+func (m *Map) openOrCreate(pin/*是否需要pin住obj*/ bool) (bool, error) {
 	if m.fd != 0 {
+		/*map已打开*/
 		return false, nil
 	}
 
+	/*如果未设置path,则设置path*/
 	if err := m.setPathIfUnset(); err != nil {
 		return false, err
 	}
@@ -521,13 +544,16 @@ func (m *Map) openOrCreate(pin bool) (bool, error) {
 		os.Remove(m.path)
 	}
 
+    /*取bpf map类型*/
 	mapType := GetMapType(m.MapType)
 	flags := m.Flags | GetPreAllocateMapFlags(mapType)
+	/*创建或打开bpf map*/
 	fd, isNew, err := OpenOrCreateMap(m.path, mapType, m.KeySize, m.ValueSize, m.MaxEntries, flags, m.InnerID, pin)
 	if err != nil {
 		return false, err
 	}
 
+	/*创建或打开成功，注册此map与path的映射关系*/
 	registerMap(m.path, m)
 
 	m.fd = fd
@@ -542,6 +568,7 @@ func (m *Map) Open() error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
+	/*通过私有函数完成不加锁的open，不进行创建*/
 	return m.open()
 }
 
@@ -550,18 +577,23 @@ func (m *Map) Open() error {
 // writing.
 func (m *Map) open() error {
 	if m.fd != 0 {
+		/*map已打开，直接返回NULL*/
 		return nil
 	}
 
+	/*如有必要，设置map对应的path*/
 	if err := m.setPathIfUnset(); err != nil {
 		return err
 	}
 
+	/*选尝试通过path获取此map*/
 	fd, err := ObjGet(m.path)
 	if err != nil {
+		/*如果get失败，则返回错误*/
 		return err
 	}
 
+	/*否则注册此map与path的映射关系*/
 	registerMap(m.path, m)
 
 	m.fd = fd
@@ -603,6 +635,7 @@ type MapValidator func(path string) (bool, error)
 // deepcopy of the key and value on between each iterations to avoid memory
 // corruption.
 func (m *Map) DumpWithCallback(cb DumpCallback) error {
+	/*执行map的Open操作，不进行创建*/
 	if err := m.Open(); err != nil {
 		return err
 	}
@@ -614,6 +647,7 @@ func (m *Map) DumpWithCallback(cb DumpCallback) error {
 	nextKey := make([]byte, m.KeySize)
 	value := make([]byte, m.ReadValueSize)
 
+	/*自map中读取首个key*/
 	if err := GetFirstKey(m.fd, unsafe.Pointer(&nextKey[0])); err != nil {
 		if err == io.EOF {
 			return nil
@@ -642,22 +676,27 @@ func (m *Map) DumpWithCallback(cb DumpCallback) error {
 	bpfNextKeySize := unsafe.Sizeof(bpfNextKey)
 
 	for {
+		/*通过nextkeys查询value*/
 		err := LookupElementFromPointers(m.fd, bpfNextKeyPtr, bpfNextKeySize)
 		if err != nil {
 			return err
 		}
 
+		/*解析获得key,value*/
 		mk, mv, err = m.DumpParser(nextKey, value, mk, mv)
 		if err != nil {
 			return err
 		}
 
+		/*如果有cb,针对key,value进行回调调用*/
 		if cb != nil {
 			cb(mk, mv)
 		}
 
+		/*nextKey已使用完，复制到key,准备进行新的nextKey查询*/
 		copy(key, nextKey)
 
+		/*通过key查询nextKey*/
 		if err := GetNextKeyFromPointers(m.fd, bpfCurrentKeyPtr, bpfCurrentKeySize); err != nil {
 			if err == io.EOF { // end of map, we're done iterating
 				return nil
@@ -806,11 +845,13 @@ func (m *Map) DumpReliablyWithCallback(cb DumpCallback, stats *DumpStats) error 
 // Dump returns the map (type map[string][]string) which contains all
 // data stored in BPF map.
 func (m *Map) Dump(hash map[string][]string) error {
+	/*定义callback将对应的key下的value全加入到hash对应的数组中*/
 	callback := func(key MapKey, value MapValue) {
 		// No need to deep copy since we are creating strings.
 		hash[key.String()] = append(hash[key.String()], value.String())
 	}
 
+	/*通过callback收集hash*/
 	if err := m.DumpWithCallback(callback); err != nil {
 		return err
 	}
@@ -850,6 +891,7 @@ func (m *Map) Lookup(key MapKey) (MapValue, error) {
 	return value, nil
 }
 
+/*更新map的内容*/
 func (m *Map) Update(key MapKey, value MapValue) error {
 	var err error
 
@@ -881,10 +923,12 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 		}
 	}()
 
+	/*打开此map*/
 	if err = m.open(); err != nil {
 		return err
 	}
 
+	/*更新此map内容*/
 	err = UpdateElement(m.fd, m.name, key.GetKeyPtr(), value.GetValuePtr(), 0)
 	if option.Config.MetricsConfig.BPFMapOps {
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()

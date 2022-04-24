@@ -127,6 +127,7 @@ var bpfLBListCmd = &cobra.Command{
 }
 
 func init() {
+	/*添加bpf lb list命令*/
 	bpfLBCmd.AddCommand(bpfLBListCmd)
 	bpfLBListCmd.Flags().BoolVarP(&listRevNAT, "revnat", "", false, "List reverse NAT entries")
 	command.AddJSONOutput(bpfLBListCmd)

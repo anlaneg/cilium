@@ -34,7 +34,9 @@
  */
 #define DECLARE(datatype, x, iter)		\
 {						\
+    /*定义并初始化结构体*/\
 	datatype x s ## iter = {};		\
+	/*显示此结构体起始地址*/\
 	trace_printk("%p", 1, &s ## iter);	\
 	iter++;					\
 }

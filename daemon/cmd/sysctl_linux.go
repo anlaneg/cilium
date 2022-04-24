@@ -8,6 +8,7 @@ import (
 	"github.com/cilium/cilium/pkg/sysctl"
 )
 
+/*开启kernel的网络转发*/
 func enableIPForwarding() error {
 	if err := sysctl.Enable("net.ipv4.ip_forward"); err != nil {
 		return err

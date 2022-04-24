@@ -26,6 +26,8 @@ var bpfCtFlushCmd = &cobra.Command{
 }
 
 func init() {
+    //在bpf ct 命令行下添加flush命令,例如
+    //./cilium bpf ct flush
 	bpfCtCmd.AddCommand(bpfCtFlushCmd)
 }
 

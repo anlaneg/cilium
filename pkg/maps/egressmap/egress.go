@@ -15,6 +15,7 @@ var (
 
 // InitEgressMaps initializes the egress policy map.
 func InitEgressMaps() error {
+	/*初始化并打开policy map*/
 	return initEgressPolicyMap(PolicyMapName, true)
 }
 

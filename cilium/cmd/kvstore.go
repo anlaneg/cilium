@@ -53,6 +53,7 @@ func setupKvstore(ctx context.Context) {
 }
 
 func init() {
+	/*注册kvstore命令*/
 	rootCmd.AddCommand(kvstoreCmd)
 	flags := kvstoreCmd.PersistentFlags()
 	flags.StringVar(&kvStore, "kvstore", "", "kvstore type")

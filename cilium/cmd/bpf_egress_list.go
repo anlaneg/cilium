@@ -59,6 +59,7 @@ var bpfEgressListCmd = &cobra.Command{
 			Fatalf("Error dumping contents of egress policy map: %s\n", err)
 		}
 
+		/*显示bpf egress list*/
 		if command.OutputJSON() {
 			if err := command.PrintOutput(bpfEgressList); err != nil {
 				Fatalf("error getting output of map in JSON: %s\n", err)
@@ -86,6 +87,7 @@ func printEgressList(egressList []egressPolicy) {
 }
 
 func init() {
+	/*添加bpf egress list命令*/
 	bpfEgressCmd.AddCommand(bpfEgressListCmd)
 	command.AddJSONOutput(bpfEgressListCmd)
 }

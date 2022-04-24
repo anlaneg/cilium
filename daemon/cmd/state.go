@@ -35,6 +35,7 @@ type endpointRestoreState struct {
 
 // checkLink returns an error if a link with linkName does not exist.
 func checkLink(linkName string) error {
+	/*检查linkName是否存在*/
 	_, err := netlink.LinkByName(linkName)
 	return err
 }

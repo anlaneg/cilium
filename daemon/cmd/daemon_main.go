@@ -103,6 +103,7 @@ var (
 		Use:   "cilium-agent",
 		Short: "Run the cilium agent",
 		Run: func(cmd *cobra.Command, args []string) {
+			/*运行cilium agent*/
 			cmdRefDir := viper.GetString(option.CMDRef)
 			if cmdRefDir != "" {
 				genMarkdown(cmd, cmdRefDir)
@@ -112,6 +113,7 @@ var (
 			// Open socket for using gops to get stacktraces of the agent.
 			addr := fmt.Sprintf("127.0.0.1:%d", viper.GetInt(option.GopsPort))
 			addrField := logrus.Fields{"address": addr}
+			/*监听127.0.0.1指定端口*/
 			if err := gops.Listen(gops.Options{
 				Addr:                   addr,
 				ReuseSocketAddrAndPort: true,
@@ -137,6 +139,7 @@ func Execute() {
 	bootstrapStats.overall.Start()
 
 	interruptCh := cleaner.registerSigHandler()
+	/*执行命令行*/
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -1607,10 +1610,12 @@ func runDaemon() {
 
 	option.Config.RunMonitorAgent = true
 
+	/*开启ip forwarding*/
 	if err := enableIPForwarding(); err != nil {
 		log.WithError(err).Fatal("Error when enabling sysctl parameters")
 	}
 
+	/*初始化iptables*/
 	iptablesManager := &iptables.IptablesManager{}
 	iptablesManager.Init()
 

@@ -279,6 +279,7 @@ bpf_lxc.ll: bpf_lxc.c $(LIB)
 	@$(ECHO_CC)
 	$(QUIET) ${CLANG} ${MAX_LXC_OPTIONS} ${CLANG_FLAGS} -c $< -o $@
 
+#bpf_lxc.o依赖于bpf_lxc.ll,通过LLC生成obj
 bpf_lxc.o: bpf_lxc.ll
 	@$(ECHO_CC)
 	$(QUIET) ${LLC} ${LLC_FLAGS} -filetype=obj -o $@ $(patsubst %.o,%.ll,$@)

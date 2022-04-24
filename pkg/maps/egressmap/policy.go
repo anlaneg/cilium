@@ -43,6 +43,7 @@ func initEgressPolicyMap(policyMapName string, create bool) error {
 	var m *ebpf.Map
 
 	if create {
+		/*执行map初始化及创建*/
 		m = ebpf.NewMap(&ebpf.MapSpec{
 			Name:       policyMapName,
 			Type:       ebpf.LPMTrie,
@@ -52,10 +53,12 @@ func initEgressPolicyMap(policyMapName string, create bool) error {
 			Pinning:    ebpf.PinByName,
 		})
 
+		/*创建此map*/
 		if err := m.OpenOrCreate(); err != nil {
 			return err
 		}
 	} else {
+		/*仅打开policy map*/
 		var err error
 
 		if m, err = ebpf.LoadRegisterMap(policyMapName); err != nil {

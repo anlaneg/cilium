@@ -11,6 +11,7 @@ all: $(TARGET)
 
 $(TARGET):
 	@$(ECHO_GO)
+	#构造cilium程序
 	$(QUIET)$(GO_BUILD) -o $@
 
 clean:

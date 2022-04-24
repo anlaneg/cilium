@@ -55,6 +55,7 @@ func NewMap(spec *MapSpec) *Map {
 // LoadRegisterMap loads the specified map from a bpffs pin path and registers
 // its handle in the package-global map register.
 func LoadRegisterMap(mapName string) (*Map, error) {
+	/*取此map对应的path*/
 	path := bpf.MapPath(mapName)
 
 	m, err := LoadPinnedMap(path)
@@ -62,6 +63,7 @@ func LoadRegisterMap(mapName string) (*Map, error) {
 		return nil, err
 	}
 
+	/*注册此map*/
 	registerMap(m)
 
 	return m, nil
@@ -172,6 +174,7 @@ func (m *Map) OpenOrCreate() error {
 // each key/value pair to the cb callback.
 func (m *Map) IterateWithCallback(key, value interface{}, cb IterateCallback) error {
 	if m.Map == nil {
+		/*创建map*/
 		if err := m.OpenOrCreate(); err != nil {
 			return err
 		}
@@ -180,6 +183,7 @@ func (m *Map) IterateWithCallback(key, value interface{}, cb IterateCallback) er
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
+	/*枚举map项，针对cb进行控制*/
 	entries := m.Iterate()
 	for entries.Next(key, value) {
 		cb(key, value)

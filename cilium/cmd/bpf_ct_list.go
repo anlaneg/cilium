@@ -34,6 +34,7 @@ var (
 				ctMaps[i] = m
 			}
 			common.RequireRootPrivilege("cilium bpf ct list")
+			/*列出所有ct*/
 			dumpCt(ctMaps, args[0])
 		},
 	}
@@ -126,6 +127,7 @@ func dumpCt(maps []interface{}, args ...interface{}) {
 	for _, m := range maps {
 		path, err := m.(ctmap.CtMap).Path()
 		if err == nil {
+			/*执行ct map的打开操作*/
 			err = m.(ctmap.CtMap).Open()
 		}
 		if err != nil {

@@ -75,10 +75,10 @@ const (
 )
 
 type customChain struct {
-	name       string
-	table      string
+	name       string	/*chain名称*/
+	table      string	/*表名称*/
 	hook       string
-	feederArgs []string
+	feederArgs []string /*要添加的rule*/
 	ipv6       bool // ip6tables chain in addition to iptables chain
 }
 
@@ -91,7 +91,7 @@ type iptablesInterface interface {
 }
 
 type ipt struct {
-	prog     string
+	prog     string /*程序名称*/
 	ipset    string
 	waitArgs []string
 }
@@ -115,6 +115,7 @@ var (
 	ipset     = &ipt{prog: "ipset"}
 )
 
+/*取程序名称*/
 func (ipt *ipt) getProg() string {
 	return ipt.prog
 }
@@ -124,6 +125,7 @@ func (ipt *ipt) getIpset() string {
 }
 
 func (ipt *ipt) getVersion() (semver.Version, error) {
+	/*取ipt对应的版本号*/
 	b, err := exec.WithTimeout(defaults.ExecTimeout, ipt.prog, "--version").CombinedOutput(log, false)
 	if err != nil {
 		return semver.Version{}, err
@@ -136,6 +138,7 @@ func (ipt *ipt) getVersion() (semver.Version, error) {
 	return versioncheck.Version(vString[1])
 }
 
+/*针对ipt,执行其对应的命令及对应的一组参数*/
 func (ipt *ipt) runProgCombinedOutput(args []string, quiet bool) ([]byte, error) {
 	// Add wait argument to deal with concurrent calls that would fail otherwise
 	iptArgs := make([]string, 0, len(ipt.waitArgs)+len(args))
@@ -145,20 +148,24 @@ func (ipt *ipt) runProgCombinedOutput(args []string, quiet bool) ([]byte, error)
 	return out, err
 }
 
+/*执行ipt,执行其对应的命令及对应的一组参数，不收取输出*/
 func (ipt *ipt) runProg(args []string, quiet bool) error {
 	_, err := ipt.runProgCombinedOutput(args, quiet)
 	return err
 }
 
 func getFeedRule(name, args string) []string {
+	/*为规则添加comment*/
 	ruleTail := []string{"-m", "comment", "--comment", feederDescription + " " + name, "-j", name}
 	if args == "" {
 		return ruleTail
 	}
+	/*将args解析为LIST*/
 	argsList, err := shellwords.Parse(args)
 	if err != nil {
 		log.WithError(err).WithField(logfields.Object, args).Fatal("Unable to parse rule into argument slice")
 	}
+	/*argsList与ruleTail合并*/
 	return append(argsList, ruleTail...)
 }
 
@@ -171,6 +178,7 @@ func skipPodTrafficConntrack(ipv6 bool) bool {
 // KernelHasNetfilter probes whether iptables related modules are present in
 // the kernel and returns true if indeed the case, else false.
 func KernelHasNetfilter() bool {
+	/*是否有netfilter相关的模块*/
 	modulesManager := &modules.ModulesManager{}
 	if err := modulesManager.Init(); err != nil {
 		return true
@@ -186,9 +194,11 @@ func KernelHasNetfilter() bool {
 	return false
 }
 
+/*添加用户自定义的Chain*/
 func (c *customChain) add() error {
 	var err error
 	if option.Config.EnableIPv4 {
+		/*针对c.table添加新的chain*/
 		err = ip4tables.runProg([]string{"-t", c.table, "-N", c.name}, false)
 	}
 	if err == nil && option.Config.EnableIPv6 && c.ipv6 == true {
@@ -197,6 +207,7 @@ func (c *customChain) add() error {
 	return err
 }
 
+/*如果rule以-A/-I开头，则变更为-D,即将原添加的规则变更为删除规则*/
 func reverseRule(rule string) ([]string, error) {
 	if strings.HasPrefix(rule, "-A") {
 		// From: -A POSTROUTING -m comment [...]
@@ -214,6 +225,7 @@ func reverseRule(rule string) ([]string, error) {
 }
 
 func (m *IptablesManager) removeCiliumRules(table string, prog iptablesInterface, match string) {
+	/*显示所有规则*/
 	args := []string{"-t", table, "-S"}
 
 	out, err := prog.runProgCombinedOutput(args, false)
@@ -264,6 +276,7 @@ func (m *IptablesManager) removeCiliumRules(table string, prog iptablesInterface
 	}
 }
 
+/*将c.table表的c.name号chain名称变更为name*/
 func (c *customChain) doRename(prog iptablesInterface, name string, quiet bool) {
 	args := []string{"-t", c.table, "-E", c.name, name}
 	operation := "rename"
@@ -273,6 +286,7 @@ func (c *customChain) doRename(prog iptablesInterface, name string, quiet bool) 
 	}
 }
 
+/*chain名称变更为$name*/
 func (c *customChain) rename(name string, quiet bool) {
 	if option.Config.EnableIPv4 {
 		c.doRename(ip4tables, name, quiet)
@@ -282,6 +296,7 @@ func (c *customChain) rename(name string, quiet bool) {
 	}
 }
 
+/*移除自定义的chain(包含其上所有规则）*/
 func (c *customChain) remove(quiet bool) {
 	doProcess := func(c *customChain, prog iptablesInterface, args []string, operation string, quiet bool) {
 		combinedOutput, err := prog.runProgCombinedOutput(args, true)
@@ -290,8 +305,10 @@ func (c *customChain) remove(quiet bool) {
 		}
 	}
 	doRemove := func(c *customChain, prog iptablesInterface, quiet bool) {
+		/*移除c.table表中c.name号chain下所有的规则*/
 		args := []string{"-t", c.table, "-F", c.name}
 		doProcess(c, prog, args, "flush", quiet)
+		/*移除掉c.table中的c.name号chain*/
 		args = []string{"-t", c.table, "-X", c.name}
 		doProcess(c, prog, args, "delete", quiet)
 	}
@@ -304,13 +321,16 @@ func (c *customChain) remove(quiet bool) {
 }
 
 func (c *customChain) installFeeder() error {
+	/*默认加在结尾处*/
 	installMode := "-A"
 	if option.Config.PrependIptablesChains {
+		/*需要加在前面（未给定rule num时，默认为1）*/
 		installMode = "-I"
 	}
 
 	for _, feedArgs := range c.feederArgs {
 		if option.Config.EnableIPv4 {
+			/*添加rule*/
 			err := ip4tables.runProg(append([]string{"-t", c.table, installMode, c.hook}, getFeedRule(c.name, feedArgs)...), true)
 			if err != nil {
 				return err

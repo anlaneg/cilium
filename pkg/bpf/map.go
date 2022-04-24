@@ -17,7 +17,7 @@ type MapType int
 // This enumeration must be in sync with enum bpf_map_type in <linux/bpf.h>
 const (
 	MapTypeUnspec MapType = iota
-	MapTypeHash
+	MapTypeHash /*hash类型的map*/
 	MapTypeArray
 	MapTypeProgArray
 	MapTypePerfEventArray
@@ -59,6 +59,7 @@ var (
 	supportedMapTypes *probes.MapTypes
 )
 
+/*Maptype对应的字符串形式*/
 func (t MapType) String() string {
 	switch t {
 	case MapTypeHash:
@@ -155,6 +156,7 @@ func GetMapType(t MapType) MapType {
 	case MapTypeLPMTrie:
 		fallthrough
 	case MapTypeLRUHash:
+		/*如需要，将MapTypeLRUHash变更为MapTypeHash*/
 		if !supportedMapTypes.HaveLruHashMapType {
 			return MapTypeHash
 		}

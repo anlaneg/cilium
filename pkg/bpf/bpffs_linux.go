@@ -77,9 +77,12 @@ func mapPathFromMountInfo(name string) string {
 // MapPath returns a path for a BPF map with a given name.
 func MapPath(name string) string {
 	if components.IsCiliumAgent() {
+		/*针对cilium agent,返回map path*/
 		once.Do(lockDown)
+		/*返回$mapRoot/$mapRrefix/name*/
 		return filepath.Join(mapRoot, mapPrefix, name)
 	}
+	/*非cilium对应的map path*/
 	return mapPathFromMountInfo(name)
 }
 

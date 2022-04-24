@@ -14,5 +14,6 @@ var ipCmd = &cobra.Command{
 }
 
 func init() {
+	/*注册ip命令*/
 	rootCmd.AddCommand(ipCmd)
 }

@@ -14,5 +14,6 @@ var bpfEgressCmd = &cobra.Command{
 }
 
 func init() {
+	/*添加bpf egress命令*/
 	bpfCmd.AddCommand(bpfEgressCmd)
 }
