@@ -17,7 +17,7 @@ type MapType int
 // This enumeration must be in sync with enum bpf_map_type in <linux/bpf.h>
 const (
 	MapTypeUnspec MapType = iota
-	MapTypeHash /*hash类型的map*/
+	MapTypeHash           /*hash类型的map*/
 	MapTypeArray
 	MapTypeProgArray
 	MapTypePerfEventArray

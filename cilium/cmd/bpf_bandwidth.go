@@ -14,6 +14,6 @@ var bpfBandwidthCmd = &cobra.Command{
 }
 
 func init() {
-    /*在bpf命令下添加bandwidth*/
+	/*在bpf命令下添加bandwidth*/
 	bpfCmd.AddCommand(bpfBandwidthCmd)
 }

@@ -13,6 +13,6 @@ var bpfTunnelCmd = &cobra.Command{
 }
 
 func init() {
-    /*在bpf下添加tunnel命令*/
+	/*在bpf下添加tunnel命令*/
 	bpfCmd.AddCommand(bpfTunnelCmd)
 }

@@ -91,17 +91,17 @@ func writeSysctl(name string, value string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	/*打开文件*/
 	f, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("could not open the sysctl file %s: %s",
 			path, err)
 	}
-	
+
 	/*完事，关闭，走人*/
 	defer f.Close()
-	
+
 	/*写入内容*/
 	if _, err := io.WriteString(f, value); err != nil {
 		return fmt.Errorf("could not write to the systctl file %s: %s",

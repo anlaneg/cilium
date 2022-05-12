@@ -32,7 +32,7 @@ func init() {
 func getVersion(cmd *cobra.Command, args []string) {
 	// -o argument is set
 	if command.OutputJSON() {
-	    //按json格式进行输出
+		//按json格式进行输出
 		data := struct {
 			Client version.CiliumVersion
 			Daemon version.CiliumVersion

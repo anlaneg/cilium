@@ -17,7 +17,7 @@ import (
 )
 
 var (
-    //配置文件
+	//配置文件
 	cfgFile string
 	/*到对端的client*/
 	client  *clientPkg.Client

@@ -31,7 +31,7 @@ type Map struct {
 }
 
 // NewTunnelMap returns a new tunnel map with the specified name.
-func NewTunnelMap(name string/*map名称*/) *Map {
+func NewTunnelMap(name string /*map名称*/) *Map {
 	/*通过bpf.NewMap构造Map*/
 	return &Map{Map: bpf.NewMap(MapName,
 		bpf.MapTypeHash,

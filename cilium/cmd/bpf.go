@@ -14,6 +14,6 @@ var bpfCmd = &cobra.Command{
 }
 
 func init() {
-    /*在root命令下添加bpf命令*/
+	/*在root命令下添加bpf命令*/
 	rootCmd.AddCommand(bpfCmd)
 }

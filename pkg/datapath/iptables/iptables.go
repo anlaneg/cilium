@@ -75,11 +75,11 @@ const (
 )
 
 type customChain struct {
-	name       string	/*chain名称*/
-	table      string	/*表名称*/
+	name       string /*chain名称*/
+	table      string /*表名称*/
 	hook       string
 	feederArgs []string /*要添加的rule*/
-	ipv6       bool // ip6tables chain in addition to iptables chain
+	ipv6       bool     // ip6tables chain in addition to iptables chain
 }
 
 type iptablesInterface interface {

@@ -24,7 +24,7 @@ var bpfTunnelListCmd = &cobra.Command{
 	Short:   "List tunnel endpoint entries",
 	/*响应bpf tunnel list命令*/
 	Run: func(cmd *cobra.Command, args []string) {
-	    /*必须有root权限*/
+		/*必须有root权限*/
 		common.RequireRootPrivilege("cilium bpf tunnel list")
 
 		/*通过dump “cilium_tunnel_map”名称的map拿到tunnel list*/
@@ -47,7 +47,7 @@ var bpfTunnelListCmd = &cobra.Command{
 }
 
 func init() {
-    /*在bpf tunnel下添加 list命令*/
+	/*在bpf tunnel下添加 list命令*/
 	bpfTunnelCmd.AddCommand(bpfTunnelListCmd)
 	command.AddJSONOutput(bpfTunnelListCmd)
 }

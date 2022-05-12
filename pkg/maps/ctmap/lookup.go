@@ -120,21 +120,21 @@ func createTupleKey(isGlobal bool, remoteAddr, localAddr string, proto u8proto.U
 }
 
 /*获取map对应的名称*/
-func getMapName(mapname string, ipv4 bool/*是否为ipv4*/, proto u8proto.U8proto) string {
+func getMapName(mapname string, ipv4 bool /*是否为ipv4*/, proto u8proto.U8proto) string {
 	if ipv4 {
 		if proto == u8proto.TCP {
-		    /*tcp v4 map名称*/
+			/*tcp v4 map名称*/
 			mapname = MapNameTCP4 + mapname
 		} else {
-		    /*非tcp v4 map名称*/
+			/*非tcp v4 map名称*/
 			mapname = MapNameAny4 + mapname
 		}
 	} else {
 		if proto == u8proto.TCP {
-		    /*tcp v6 map名称*/
+			/*tcp v6 map名称*/
 			mapname = MapNameTCP6 + mapname
 		} else {
-		    /*非tcp v6 map名称*/
+			/*非tcp v6 map名称*/
 			mapname = MapNameAny6 + mapname
 		}
 	}
@@ -146,7 +146,7 @@ func getMapName(mapname string, ipv4 bool/*是否为ipv4*/, proto u8proto.U8prot
 // 'epname' is a 5-digit representation of the endpoint ID if local maps
 // are to be used, or "global" if global maps should be used.
 func Lookup(epname string, remoteAddr, localAddr string, proto u8proto.U8proto, ingress bool) (*CtEntry, error) {
-    /*是否为global*/
+	/*是否为global*/
 	isGlobal := epname == "global"
 
 	key, ipv4, err := createTupleKey(isGlobal, remoteAddr, localAddr, proto, ingress)
@@ -154,17 +154,17 @@ func Lookup(epname string, remoteAddr, localAddr string, proto u8proto.U8proto, 
 		return nil, err
 	}
 
-    /*按协议族及l4协议生成mapname*/
+	/*按协议族及l4协议生成mapname*/
 	mapname := getMapName(epname, ipv4, proto)
 
-    /*在已注册的表中查找此map*/
+	/*在已注册的表中查找此map*/
 	m := bpf.GetMap(mapname)
 	if m == nil {
 		// Open the map and leave it open
 		/*map未注册，尝试按name打开map*/
 		m, err = bpf.OpenMap(mapname)
 		if err != nil {
-		    /*map打开失败*/
+			/*map打开失败*/
 			return nil, fmt.Errorf("Can not open CT map %s: %s", mapname, err)
 		}
 		if isGlobal {

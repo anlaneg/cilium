@@ -31,7 +31,7 @@ import (
 // When mapType is the type HASH_OF_MAPS an innerID is required to point at a
 // map fd which has the same type/keySize/valueSize/maxEntries as expected map
 // entries. For all other mapTypes innerID is ignored and should be zeroed.
-func CreateMap(mapType MapType/*map类型*/, keySize, valueSize, maxEntries, flags, innerID uint32, path string) (int, error) {
+func CreateMap(mapType MapType /*map类型*/, keySize, valueSize, maxEntries, flags, innerID uint32, path string) (int, error) {
 	// This struct must be in sync with union bpf_attr's anonymous struct
 	// used by the BPF_MAP_CREATE command
 	uba := struct {
@@ -42,10 +42,10 @@ func CreateMap(mapType MapType/*map类型*/, keySize, valueSize, maxEntries, fla
 		mapFlags   uint32
 		innerID    uint32
 	}{
-		uint32(mapType),/*map类型*/
+		uint32(mapType), /*map类型*/
 		keySize,
 		valueSize,
-		maxEntries,/*元素数目*/
+		maxEntries, /*元素数目*/
 		flags,
 		innerID,
 	}
@@ -54,7 +54,7 @@ func CreateMap(mapType MapType/*map类型*/, keySize, valueSize, maxEntries, fla
 	if option.Config.MetricsConfig.BPFSyscallDurationEnabled {
 		duration = spanstat.Start()
 	}
-	
+
 	//调用bpf系统调用，创建bpf map
 	ret, _, err := unix.Syscall(
 		unix.SYS_BPF,
@@ -76,7 +76,7 @@ func CreateMap(mapType MapType/*map类型*/, keySize, valueSize, maxEntries, fla
 		}
 	}
 
-    /*返回map对应的fd*/
+	/*返回map对应的fd*/
 	return int(ret), nil
 }
 
@@ -130,10 +130,10 @@ func UpdateElementFromPointers(fd int, mapName string, structPtr unsafe.Pointer,
 // bpf.BPF_NOEXIST to create new element if it didn't exist;
 // bpf.BPF_EXIST to update existing element.
 // Deprecated, use UpdateElementFromPointers
-func UpdateElement(fd int/*map fd*/, mapName string/*map名称*/, key, value unsafe.Pointer, flags uint64) error {
+func UpdateElement(fd int /*map fd*/, mapName string /*map名称*/, key, value unsafe.Pointer, flags uint64) error {
 	uba := bpfAttrMapOpElem{
 		mapFd: uint32(fd),
-		key:   uint64(uintptr(key)),/*key内容*/
+		key:   uint64(uintptr(key)), /*key内容*/
 		value: uint64(uintptr(value)),
 		flags: uint64(flags),
 	}
@@ -294,7 +294,7 @@ type bpfAttrObjOp struct {
 }
 
 // ObjPin stores the map's fd in pathname.
-func ObjPin(fd int, pathname string/*为bpf obj设置的路径名称*/) error {
+func ObjPin(fd int, pathname string /*为bpf obj设置的路径名称*/) error {
 	pathStr, err := unix.BytePtrFromString(pathname)
 	if err != nil {
 		return fmt.Errorf("Unable to convert pathname %q to byte pointer: %w", pathname, err)
@@ -308,7 +308,7 @@ func ObjPin(fd int, pathname string/*为bpf obj设置的路径名称*/) error {
 	if option.Config.MetricsConfig.BPFSyscallDurationEnabled {
 		duration = spanstat.Start()
 	}
-	
+
 	/*通过syscall将map pin到指定路径*/
 	ret, _, errno := unix.Syscall(
 		unix.SYS_BPF,
@@ -331,7 +331,7 @@ func ObjPin(fd int, pathname string/*为bpf obj设置的路径名称*/) error {
 }
 
 // ObjGet reads the pathname and returns the map's fd read.
-func ObjGet(pathname string/*bpf obj对应的路径，通过它查询obj*/) (int, error) {
+func ObjGet(pathname string /*bpf obj对应的路径，通过它查询obj*/) (int, error) {
 	pathStr, err := unix.BytePtrFromString(pathname)
 	if err != nil {
 		return 0, fmt.Errorf("Unable to convert pathname %q to byte pointer: %w", pathname, err)
@@ -344,7 +344,7 @@ func ObjGet(pathname string/*bpf obj对应的路径，通过它查询obj*/) (int
 	if option.Config.MetricsConfig.BPFSyscallDurationEnabled {
 		duration = spanstat.Start()
 	}
-	
+
 	/*通过path查找bpf object fd*/
 	fd, _, errno := unix.Syscall(
 		unix.SYS_BPF,
@@ -457,7 +457,7 @@ func objCheck(fd int, path string, mapType MapType, keySize, valueSize, maxEntri
 		}).Warning("Max entries mismatch for BPF map")
 		mismatch = true
 	}
-	
+
 	/*比对flags*/
 	if info.Flags != flags {
 		scopedLog.WithFields(logrus.Fields{
@@ -485,7 +485,7 @@ func objCheck(fd int, path string, mapType MapType, keySize, valueSize, maxEntri
 }
 
 /*打开或者创建指定类型的bpf map*/
-func OpenOrCreateMap(path string/*为此map绑定的路径*/, mapType MapType/*map的类型*/, keySize, valueSize, maxEntries, flags uint32, innerID uint32, pin bool/*是否pin路径*/) (int, bool, error) {
+func OpenOrCreateMap(path string /*为此map绑定的路径*/, mapType MapType /*map的类型*/, keySize, valueSize, maxEntries, flags uint32, innerID uint32, pin bool /*是否pin路径*/) (int, bool, error) {
 	var fd int
 	var err error
 
@@ -495,7 +495,7 @@ func OpenOrCreateMap(path string/*为此map绑定的路径*/, mapType MapType/*m
 recreate:
 	create := true
 	if pin {
-	    /*指定了pin,先检查路径是否存在，如果不存在，进行创建*/
+		/*指定了pin,先检查路径是否存在，如果不存在，进行创建*/
 		if _, err := os.Stat(path); os.IsNotExist(err) || redo {
 			mapDir := filepath.Dir(path)
 			if _, err = os.Stat(mapDir); os.IsNotExist(err) {
@@ -510,13 +510,13 @@ recreate:
 				}
 			}
 		} else {
-		    /*路径已存在，不必创建*/
+			/*路径已存在，不必创建*/
 			create = false
 		}
 	}
 
 	if create {
-	    //创建bpf map
+		//创建bpf map
 		fd, err = CreateMap(
 			mapType,
 			keySize,
@@ -535,16 +535,16 @@ recreate:
 			}
 		}()
 
-        /*指明新创建了map*/
+		/*指明新创建了map*/
 		isNewMap = true
 
 		if err != nil {
-		    /*指明创建失败*/
+			/*指明创建失败*/
 			return 0, isNewMap, err
 		}
 
 		if pin {
-		    /*为此fd对应的map绑定path*/
+			/*为此fd对应的map绑定path*/
 			err = ObjPin(fd, path)
 			if err != nil {
 				return 0, isNewMap, err
@@ -554,7 +554,7 @@ recreate:
 		return fd, isNewMap, nil
 	}
 
-    /*bpf map存在，不必创建，直接获取其对应的fd*/
+	/*bpf map存在，不必创建，直接获取其对应的fd*/
 	fd, err = ObjGet(path)
 	if err == nil {
 		redo = objCheck(

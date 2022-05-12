@@ -83,7 +83,7 @@ type cacheEntry struct {
 
 type Map struct {
 	MapInfo
-	fd   int /*打开后，map对应的fd信息*/
+	fd   int    /*打开后，map对应的fd信息*/
 	name string /*map名称*/
 	path string /*此map对应的路径，例如/sys/fs/bpf/tc/globals/abc */
 	lock lock.RWMutex
@@ -127,8 +127,8 @@ type Map struct {
 }
 
 // NewMap creates a new Map instance - object representing a BPF map
-func NewMap(name string/*map名称*/, mapType MapType/*map类型*/, mapKey MapKey, keySize int/*key的大小*/,
-	mapValue MapValue, valueSize/*value的大小*/, maxEntries int/*map实体的数目*/, flags uint32, innerID uint32,
+func NewMap(name string /*map名称*/, mapType MapType /*map类型*/, mapKey MapKey, keySize int, /*key的大小*/
+	mapValue MapValue, valueSize /*value的大小*/, maxEntries int /*map实体的数目*/, flags uint32, innerID uint32,
 	dumpParser DumpParser) *Map {
 
 	if size := reflect.TypeOf(mapKey).Elem().Size(); size != uintptr(keySize) {
@@ -325,14 +325,13 @@ func (m *Map) controllerName() string {
 	return fmt.Sprintf("bpf-map-sync-%s", m.name)
 }
 
-
 /*取进程$pid对应的bpf map(fd)对应的元数据信息*/
 func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 
-    /*进程$pid对应的fdinfo位置*/
+	/*进程$pid对应的fdinfo位置*/
 	fdinfoFile := fmt.Sprintf("/proc/%d/fdinfo/%d", pid, fd)
 
-    /*打开此文件*/
+	/*打开此文件*/
 	file, err := os.Open(fdinfoFile)
 	if err != nil {
 		return nil, err
@@ -341,7 +340,7 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 
 	info := &MapInfo{}
 
-    /*遍历此文件，并解析其内容行对应的参数*/
+	/*遍历此文件，并解析其内容行对应的参数*/
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
@@ -368,7 +367,7 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 		return nil, scanner.Err()
 	}
 
-    /*返回读取到的info*/
+	/*返回读取到的info*/
 	return info, nil
 }
 
@@ -378,20 +377,20 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 // the MapInfo.MapKey and MapInfo.MapValues fields as those structures are not
 // stored in the bpf map.
 func OpenMap(name string) (*Map, error) {
-    /*通过给定的名称找到对应的bpf map,并进行初始化*/
+	/*通过给定的名称找到对应的bpf map,并进行初始化*/
 	// Expand path if needed
 	if !path.IsAbs(name) {
 		name = MapPath(name)
 	}
 
-    /*取bpf map对应的fd*/
+	/*取bpf map对应的fd*/
 	fd, err := ObjGet(name)
 	if err != nil {
 		return nil, err
 	}
 
-    /*取bpf map对应的info信息*/
-	info, err := GetMapInfo(os.Getpid()/*当前进程id*/, fd)
+	/*取bpf map对应的info信息*/
+	info, err := GetMapInfo(os.Getpid() /*当前进程id*/, fd)
 	if err != nil {
 		return nil, err
 	}
@@ -405,13 +404,13 @@ func OpenMap(name string) (*Map, error) {
 	}
 
 	m := &Map{
-		MapInfo: *info,/*bpf map元数据相关信息*/
-		fd:      fd,/*bpf map对应的fd*/
-		name:    path.Base(name),/*bpf map pin对应的名称*/
+		MapInfo: *info,           /*bpf map元数据相关信息*/
+		fd:      fd,              /*bpf map对应的fd*/
+		name:    path.Base(name), /*bpf map pin对应的名称*/
 		path:    name,
 	}
 
-    /*注册bpf map*/
+	/*注册bpf map*/
 	registerMap(name, m)
 
 	return m, nil
@@ -475,7 +474,7 @@ func (m *Map) OpenParallel() (bool, error) {
 		}
 	}
 
-    /*打开或创建bpf map，需要pin住*/
+	/*打开或创建bpf map，需要pin住*/
 	return m.openOrCreate(true)
 }
 
@@ -497,7 +496,7 @@ func (m *Map) OpenParallel() (bool, error) {
 //
 // Returns whether the map was deleted and recreated, or an optional error.
 func (m *Map) OpenOrCreate() (bool, error) {
-    /*创建bpf map,且需要pin*/
+	/*创建bpf map,且需要pin*/
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -506,7 +505,7 @@ func (m *Map) OpenOrCreate() (bool, error) {
 
 // CreateUnpinned creates the map without pinning it to the file system.
 func (m *Map) CreateUnpinned() error {
-    /*创建bpf map，但不进行pin*/
+	/*创建bpf map，但不进行pin*/
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -517,7 +516,7 @@ func (m *Map) CreateUnpinned() error {
 // Create is similar to OpenOrCreate, but closes the map after creating or
 // opening it.
 func (m *Map) Create() (bool, error) {
-    /*创建bpf map*/
+	/*创建bpf map*/
 	isNew, err := m.OpenOrCreate()
 	if err != nil {
 		return isNew, err
@@ -526,7 +525,7 @@ func (m *Map) Create() (bool, error) {
 }
 
 /*打开或者创建指定的map，返回 "是否新创建“，”错误信息“*/
-func (m *Map) openOrCreate(pin/*是否需要pin住obj*/ bool) (bool, error) {
+func (m *Map) openOrCreate(pin /*是否需要pin住obj*/ bool) (bool, error) {
 	if m.fd != 0 {
 		/*map已打开*/
 		return false, nil
@@ -543,7 +542,7 @@ func (m *Map) openOrCreate(pin/*是否需要pin住obj*/ bool) (bool, error) {
 		os.Remove(m.path)
 	}
 
-    /*取bpf map类型*/
+	/*取bpf map类型*/
 	mapType := GetMapType(m.MapType)
 	flags := m.Flags | GetPreAllocateMapFlags(mapType)
 	/*创建或打开bpf map*/
