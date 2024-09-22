@@ -11,6 +11,7 @@ all: $(TARGET)
 
 $(TARGET): ../Makefile ../Makefile.defs Makefile
 	@$(ECHO_GO)
+	#生成cilium-agent程序
 	$(QUIET)$(GO_BUILD) -o $(TARGET)
 
 clean:

@@ -10,6 +10,7 @@ SUBDIRS := cilium-docker cilium-cni
 all: $(SUBDIRS)
 
 $(SUBDIRS): force
+	#编译cilium-docker（与docker通信，响应他的请求）及cilium-cni
 	@$(MAKE) $(SUBMAKEOPTS) -C $@ all
 
 clean:

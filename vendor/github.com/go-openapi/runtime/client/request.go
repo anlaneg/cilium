@@ -375,8 +375,10 @@ func getRequestBuffer(r *request) []byte {
 // when there are several values provided for the varargs it will add it (no overriding)
 func (r *request) SetHeaderParam(name string, values ...string) error {
 	if r.header == nil {
+		/*如果header未初始化，则初始化*/
 		r.header = make(http.Header)
 	}
+	/*设置header对应的key*/
 	r.header[http.CanonicalHeaderKey(name)] = values
 	return nil
 }

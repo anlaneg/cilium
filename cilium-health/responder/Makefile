@@ -11,6 +11,7 @@ all: $(TARGET)
 
 $(TARGET):
 	@$(ECHO_GO)
+	#编译cilium-health-responder
 	$(QUIET)$(GO_BUILD) -o $@
 
 clean:

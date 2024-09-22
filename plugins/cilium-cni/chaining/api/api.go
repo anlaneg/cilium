@@ -62,13 +62,16 @@ func Register(name string, p ChainingPlugin) error {
 	defer mutex.Unlock()
 
 	if name == DefaultConfigName {
+		/*不能是预留的名称*/
 		return fmt.Errorf("invalid chain name. '%s' is reserved", DefaultConfigName)
 	}
 
 	if _, ok := chainingPlugins[name]; ok {
+		/*此名称的已存在*/
 		return fmt.Errorf("chaining plugin with name %s already exists", name)
 	}
 
+	/*实现注册*/
 	chainingPlugins[name] = p
 
 	return nil
@@ -76,6 +79,7 @@ func Register(name string, p ChainingPlugin) error {
 
 // Lookup searches for a chaining plugin with a given name and returns it
 func Lookup(name string) ChainingPlugin {
+	/*给定名称，返回chainingPlugin*/
 	mutex.RLock()
 	defer mutex.RUnlock()
 

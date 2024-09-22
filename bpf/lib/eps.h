@@ -89,8 +89,8 @@ ipcache_lookup4(const void *map, __be32 addr, __u32 prefix)
 		.family = ENDPOINT_KEY_IPV4,
 		.ip4 = addr,
 	};
-	key.ip4 &= GET_PREFIX(prefix);
-	return map_lookup_elem(map, &key);
+	key.ip4 &= GET_PREFIX(prefix);/*以prefix格式化key.ipv4*/
+	return map_lookup_elem(map, &key);/*针对map进行查询*/
 }
 
 #ifndef HAVE_LPM_TRIE_MAP_TYPE
@@ -99,16 +99,17 @@ ipcache_lookup4(const void *map, __be32 addr, __u32 prefix)
  * performing a lookup in MAP using LOOKUP_FN to find a provided IP of type
  * IPTYPE.
  */
-#define LPM_LOOKUP_FN(NAME, IPTYPE, PREFIXES, MAP, LOOKUP_FN)		\
+#define LPM_LOOKUP_FN(NAME/*函数名称*/, IPTYPE, PREFIXES, MAP/*map名称*/, LOOKUP_FN/*查询函数*/)		\
 static __always_inline __maybe_unused struct remote_endpoint_info *	\
 NAME(IPTYPE addr)							\
 {									\
-	int prefixes[] = { PREFIXES };					\
+	int prefixes[] = { PREFIXES };/*一组前缀长度*/					\
 	const int size = ARRAY_SIZE(prefixes);				\
 	struct remote_endpoint_info *info;				\
 	int i;								\
 									\
 _Pragma("unroll")							\
+    /*通过不同prefixes执行查询*/\
 	for (i = 0; i < size; i++) {					\
 		info = LOOKUP_FN(&MAP, addr, prefixes[i]);		\
 		if (info != NULL)					\
@@ -129,6 +130,7 @@ LPM_LOOKUP_FN(lookup_ip4_remote_endpoint, __be32, IPCACHE4_PREFIXES,
 #else /* HAVE_LPM_TRIE_MAP_TYPE */
 #define lookup_ip6_remote_endpoint(addr) \
 	ipcache_lookup6(&IPCACHE_MAP, addr, V6_CACHE_KEY_LEN)
+	      /*按32位mask查询addr对应的结果*/
 #define lookup_ip4_remote_endpoint(addr) \
 	ipcache_lookup4(&IPCACHE_MAP, addr, V4_CACHE_KEY_LEN)
 #endif /* HAVE_LPM_TRIE_MAP_TYPE */

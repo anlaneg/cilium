@@ -9,9 +9,11 @@ TARGET := libcilium.so
 
 .PHONY: all $(TARGET) clean install
 
+#用于生成libcilium.so
 all: $(TARGET)
 
 $(TARGET):
+	#通过go编译成.so
 	@$(ECHO_GO)
 	$(QUIET)$(GO_BUILD_WITH_CGO) -o $@.$(VERSION_MAJOR) -buildmode=c-shared
 	$(QUIET)ln -sf $@.$(VERSION_MAJOR) $@ || cp $@.$(VERSION_MAJOR) $@

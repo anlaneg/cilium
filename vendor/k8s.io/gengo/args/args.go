@@ -108,10 +108,12 @@ func (g *GeneratorArgs) AddFlags(fs *pflag.FlagSet) {
 
 // LoadGoBoilerplate loads the boilerplate file passed to --go-header-file.
 func (g *GeneratorArgs) LoadGoBoilerplate() ([]byte, error) {
+	/*加载header file*/
 	b, err := ioutil.ReadFile(g.GoHeaderFilePath)
 	if err != nil {
 		return nil, err
 	}
+	/*变更文件中的YEAR变量为当前时间*/
 	b = bytes.Replace(b, []byte("YEAR"), []byte(strconv.Itoa(time.Now().UTC().Year())), -1)
 
 	if g.GeneratedByCommentTemplate != "" {

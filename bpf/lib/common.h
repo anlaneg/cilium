@@ -122,7 +122,7 @@ static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
 {
 	void *data = ctx_data(ctx);
 	void *data_end = ctx_data_end(ctx);
-	struct ethhdr *eth = data;
+	struct ethhdr *eth = data;/*指向以太头*/
 
 	if (ETH_HLEN == 0) {
 		/* The packet is received on L2-less device. Determine L3
@@ -135,8 +135,10 @@ static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
 	//报文长度小于以太头，则直接返回false
 	if (data + ETH_HLEN > data_end)
 		return false;
+
 	//提取l3类型
 	*proto = eth->h_proto;
+
 	//只考虑2型以太型
 	if (bpf_ntohs(*proto) < ETH_P_802_3_MIN)
 		return false; /* non-Ethernet II unsupported */
@@ -144,9 +146,9 @@ static __always_inline bool validate_ethertype(struct __ctx_buff *ctx,
 }
 
 static __always_inline __maybe_unused bool
-____revalidate_data_pull(struct __ctx_buff *ctx, void **data_, void **data_end_,
-			 void **l3, const __u32 l3_len, const bool pull,
-			 __u8 eth_hlen)
+____revalidate_data_pull(struct __ctx_buff *ctx, void **data_/*出参，报文起始位置*/, void **data_end_/*出参，报文结束位置*/,
+			 void **l3/*出参，l3层起始位置*/, const __u32 l3_len/*三层头长度*/, const bool pull,
+			 __u8 eth_hlen/*二层头长度*/)
 {
 	const __u64 tot_len = eth_hlen + l3_len;
 	void *data_end;
@@ -159,6 +161,7 @@ ____revalidate_data_pull(struct __ctx_buff *ctx, void **data_, void **data_end_,
 	data_end = ctx_data_end(ctx);
 	data = ctx_data(ctx);
 	if (data + tot_len > data_end)
+	    /*数据有误，退出*/
 		return false;
 
 	/* Verifier workaround: pointer arithmetic on pkt_end prohibited. */
@@ -199,7 +202,7 @@ __revalidate_data_pull(struct __ctx_buff *ctx, void **data, void **data_end,
  * Returns true if 'ctx' is long enough for an IP header of the provided type,
  * false otherwise.
  */
-#define revalidate_data(ctx, data, data_end, ip)			\
+#define revalidate_data(ctx, data/*出参，数据起始位置*/, data_end/*出参，数据终止位置*/, ip/*出参，ip起始位置*/)			\
 	__revalidate_data_pull(ctx, data, data_end, (void **)ip, sizeof(**ip), false)
 
 /* Macros for working with L3 cilium defined IPV6 addresses */
@@ -692,12 +695,12 @@ struct ipv4_ct_tuple {
 	 * these field names are correct for reply direction traffic.
 	 */
 	__be32		daddr;/*目的地址*/
-	__be32		saddr;
+	__be32		saddr;/*源地址*/
 	/* The order of dport+sport must not be changed!
 	 * These field names are correct for original direction traffic.
 	 */
-	__be16		dport;
-	__be16		sport;
+	__be16		dport;/*目的端口*/
+	__be16		sport;/*源端口*/
 	__u8		nexthdr;/*4层协议*/
 	__u8		flags;/*报文方向*/
 } __packed;

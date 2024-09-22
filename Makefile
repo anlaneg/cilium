@@ -109,6 +109,7 @@ define generate_k8s_api_deepcopy_deepequal_client
 endef
 
 define generate_k8s_protobuf
+	#执行./tools/go-to-protobuf并传入参数，这些参数均会被此项目的Generator对象处理
 	PATH="$(PWD)/tools:$(PATH)" ./tools/go-to-protobuf \
 		--apimachinery-packages='-k8s.io/apimachinery/pkg/util/intstr,$\
                                 -k8s.io/apimachinery/pkg/api/resource,$\
@@ -124,11 +125,13 @@ define generate_k8s_protobuf
 	    --go-header-file "$(PWD)/hack/custom-boilerplate.go.txt"
 endef
 
+#build目标，依赖于所有子目录被编译
 build: $(SUBDIRS) ## Builds all the components for Cilium by executing make in the respective sub directories.
 
 build-container: ## Builds components required for cilium-agent container.
 	for i in $(SUBDIRS_CILIUM_CONTAINER); do $(MAKE) $(SUBMAKEOPTS) -C $$i all; done
 
+#所有子目录，通过-C进入目录后，进行编译
 $(SUBDIRS): force ## Execute default make target(make all) for the provided subdirectory.
 	@ $(MAKE) $(SUBMAKEOPTS) -C $@ all
 
@@ -371,6 +374,7 @@ generate-operator-api: api/v1/operator/openapi.yaml ## Generate cilium-operator 
 generate-hubble-api: api/v1/flow/flow.proto api/v1/peer/peer.proto api/v1/observer/observer.proto api/v1/relay/relay.proto ## Generate hubble proto Go sources.
 	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C api/v1
 
+#生成k8s的api代码
 generate-k8s-api: ## Generate Cilium k8s API client, deepcopy and deepequal Go sources.
 	$(call generate_k8s_protobuf,$\
 	github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1$(comma)$\
@@ -528,11 +532,14 @@ kind-image:
 
 precheck: check-go-version logging-subsys-field ## Peform build precheck for the source code.
 ifeq ($(SKIP_K8S_CODE_GEN_CHECK),"false")
+	#执行代码生成
 	@$(ECHO_CHECK) contrib/scripts/check-k8s-code-gen.sh
 	$(QUIET) contrib/scripts/check-k8s-code-gen.sh
 endif
+	#执行代码format检查
 	@$(ECHO_CHECK) contrib/scripts/check-fmt.sh
 	$(QUIET) contrib/scripts/check-fmt.sh
+	#log调用中添加换行符问题检查
 	@$(ECHO_CHECK) contrib/scripts/check-log-newlines.sh
 	$(QUIET) contrib/scripts/check-log-newlines.sh
 	@$(ECHO_CHECK) contrib/scripts/check-missing-tags-in-tests.sh

@@ -330,8 +330,10 @@ struct {
 static __always_inline __maybe_unused void
 ctx_store_meta(struct xdp_md *ctx __maybe_unused, const __u64 off, __u32 datum)
 {
+    /*采用zero查询cilium_xdp_scratch表*/
 	__u32 zero = 0, *data_meta = map_lookup_elem(&cilium_xdp_scratch, &zero);
 
+	/*设置data_meta[off]位置*/
 	if (always_succeeds(data_meta))
 		data_meta[off] = datum;
 	build_bug_on((off + 1) * sizeof(__u32) > META_PIVOT);
@@ -340,8 +342,10 @@ ctx_store_meta(struct xdp_md *ctx __maybe_unused, const __u64 off, __u32 datum)
 static __always_inline __maybe_unused __u32
 ctx_load_meta(const struct xdp_md *ctx __maybe_unused, const __u64 off)
 {
+    /*采用zero查询cilium_xdp_scratch表*/
 	__u32 zero = 0, *data_meta = map_lookup_elem(&cilium_xdp_scratch, &zero);
 
+	/*返回data_meta[off]位置*/
 	if (always_succeeds(data_meta))
 		return data_meta[off];
 	build_bug_on((off + 1) * sizeof(__u32) > META_PIVOT);

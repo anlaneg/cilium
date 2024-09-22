@@ -24,6 +24,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Display status of daemon",
 	Run: func(cmd *cobra.Command, args []string) {
+		/*cilium状态显示*/
 		statusDaemon()
 	},
 }
@@ -38,6 +39,7 @@ var (
 
 func init() {
 	rootCmd.AddCommand(statusCmd)
+	/*初始化参数*/
 	statusCmd.Flags().BoolVar(&statusDetails.AllAddresses, "all-addresses", false, "Show all allocated addresses, not just count")
 	statusCmd.Flags().BoolVar(&statusDetails.AllControllers, "all-controllers", false, "Show all controllers, not just failing")
 	statusCmd.Flags().BoolVar(&statusDetails.AllNodes, "all-nodes", false, "Show all nodes, not just localhost")
@@ -69,6 +71,7 @@ func statusDaemon() {
 	}
 	params := daemon.NewGetHealthzParamsWithTimeout(timeout)
 	params.SetBrief(&brief)
+	/*获取daemon对应的状态信息*/
 	if resp, err := client.Daemon.GetHealthz(params); err != nil {
 		if brief {
 			fmt.Fprintf(os.Stderr, "%s\n", "cilium: daemon unreachable")

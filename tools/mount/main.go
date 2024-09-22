@@ -16,6 +16,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	/*挂载点*/
 	cgroupMountPoint := os.Args[1]
 	// This program is executed by an init container so we purposely don't
 	// exit with any error codes. In case of errors, the function will log warnings,

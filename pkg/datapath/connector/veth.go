@@ -32,14 +32,16 @@ func SetupVethRemoteNs(netNs ns.NetNS, srcIfName, dstIfName string) (int, int, e
 // fields such as mac, NodeMac, ifIndex and ifName. Returns a pointer for the created
 // veth, a pointer for the temporary link, the name of the temporary link and error if
 // something fails.
-func SetupVeth(id string, mtu int, ep *models.EndpointChangeRequest) (*netlink.Veth, *netlink.Link, string, error) {
+func SetupVeth(id string, mtu int, ep/*出参，对端link信息*/ *models.EndpointChangeRequest) (*netlink.Veth, *netlink.Link, string, error) {
 	if id == "" {
 		return nil, nil, "", fmt.Errorf("invalid: empty ID")
 	}
 
+	/*由id产生ifname，及peer ifname*/
 	lxcIfName := Endpoint2IfName(id)
 	tmpIfName := Endpoint2TempIfName(id)
 
+	/*创建link,并使linkup*/
 	veth, link, err := SetupVethWithNames(lxcIfName, tmpIfName, mtu, ep)
 	return veth, link, tmpIfName, err
 }
@@ -48,7 +50,7 @@ func SetupVeth(id string, mtu int, ep *models.EndpointChangeRequest) (*netlink.V
 // fields such as mac, NodeMac, ifIndex and ifName. Returns a pointer for the created
 // veth, a pointer for the temporary link, the name of the temporary link and error if
 // something fails.
-func SetupVethWithNames(lxcIfName, tmpIfName string, mtu int, ep *models.EndpointChangeRequest) (*netlink.Veth, *netlink.Link, error) {
+func SetupVethWithNames(lxcIfName, tmpIfName string, mtu int, ep *models.EndpointChangeRequest/*出参，对端的mac等信息*/) (*netlink.Veth, *netlink.Link, error) {
 	var (
 		epHostMAC, epLXCMAC mac.MAC
 		err                 error
@@ -72,19 +74,21 @@ func SetupVethWithNames(lxcIfName, tmpIfName string, mtu int, ep *models.Endpoin
 
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name:         lxcIfName,
-			HardwareAddr: net.HardwareAddr(epHostMAC),
+			Name:         lxcIfName,/*接口名称*/
+			HardwareAddr: net.HardwareAddr(epHostMAC),/*host端mac*/
 			TxQLen:       1000,
 		},
-		PeerName:         tmpIfName,
-		PeerHardwareAddr: net.HardwareAddr(epLXCMAC),
+		PeerName:         tmpIfName,/*对端接口名*/
+		PeerHardwareAddr: net.HardwareAddr(epLXCMAC),/*对端mac*/
 	}
 
+	/*添加veth接口*/
 	if err := netlink.LinkAdd(veth); err != nil {
 		return nil, nil, fmt.Errorf("unable to create veth pair: %s", err)
 	}
 	defer func() {
 		if err != nil {
+			/*如果err不为nil,则删除veth*/
 			if err = netlink.LinkDel(veth); err != nil {
 				log.WithError(err).WithField(logfields.Veth, veth.Name).Warn("failed to clean up veth")
 			}
@@ -106,6 +110,7 @@ func SetupVethWithNames(lxcIfName, tmpIfName string, mtu int, ep *models.Endpoin
 		return nil, nil, fmt.Errorf("unable to lookup veth peer just created: %s", err)
 	}
 
+	/*设置对端mtu*/
 	if err = netlink.LinkSetMTU(peer, mtu); err != nil {
 		return nil, nil, fmt.Errorf("unable to set MTU to %q: %s", tmpIfName, err)
 	}
@@ -115,10 +120,12 @@ func SetupVethWithNames(lxcIfName, tmpIfName string, mtu int, ep *models.Endpoin
 		return nil, nil, fmt.Errorf("unable to lookup veth just created: %s", err)
 	}
 
+	/*设置本端mtu*/
 	if err = netlink.LinkSetMTU(hostVeth, mtu); err != nil {
 		return nil, nil, fmt.Errorf("unable to set MTU to %q: %s", lxcIfName, err)
 	}
 
+	/*设置link up*/
 	if err = netlink.LinkSetUp(veth); err != nil {
 		return nil, nil, fmt.Errorf("unable to bring up veth pair: %s", err)
 	}

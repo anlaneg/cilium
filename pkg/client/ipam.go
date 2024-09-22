@@ -44,7 +44,9 @@ func (c *Client) IPAMAllocateIP(ip, owner string) error {
 
 // IPAMReleaseIP releases a IP address back to the pool.
 func (c *Client) IPAMReleaseIP(ip string) error {
+	/*构造param,填充ip,timeout*/
 	params := ipam.NewDeleteIpamIPParams().WithIP(ip).WithTimeout(api.ClientTimeout)
+	/*执行ip移除*/
 	_, err := c.Ipam.DeleteIpamIP(params)
 	return Hint(err)
 }

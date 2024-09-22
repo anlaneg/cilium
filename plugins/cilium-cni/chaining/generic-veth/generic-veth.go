@@ -23,6 +23,7 @@ import (
 type GenericVethChainer struct{}
 
 func (f *GenericVethChainer) ImplementsAdd() bool {
+	/*标明实现了add逻辑*/
 	return true
 }
 
@@ -54,6 +55,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 		netNs                                               ns.NetNS
 	)
 
+	/*打开参数约定的netns*/
 	netNs, err = ns.GetNS(pluginCtx.Args.Netns)
 	if err != nil {
 		err = fmt.Errorf("failed to open netns %q: %s", pluginCtx.Args.Netns, err)
@@ -61,7 +63,9 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 	}
 	defer netNs.Close()
 
+	/*在netns中执行以下命令*/
 	if err = netNs.Do(func(_ ns.NetNS) error {
+			/*获取所有links*/
 		links, err := netlink.LinkList()
 		if err != nil {
 			return err
@@ -70,10 +74,12 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 		for _, link := range links {
 			pluginCtx.Logger.Debugf("Found interface in container %+v", link.Attrs())
 
+			/*忽略掉非veth，后面实际只处理了首个veth*/
 			if link.Type() != "veth" {
 				continue
 			}
 
+			/*取veth对应的Mac地址*/
 			vethLXCMac = link.Attrs().HardwareAddr.String()
 
 			veth, ok := link.(*netlink.Veth)
@@ -81,6 +87,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 				return fmt.Errorf("link %s is not a veth interface", vethHostName)
 			}
 
+			/*取对端index*/
 			peerIndex, err = netlink.VethPeerIndex(veth)
 			if err != nil {
 				return fmt.Errorf("unable to retrieve index of veth peer %s: %s", vethHostName, err)
@@ -88,6 +95,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 			if err == nil && len(addrs) > 0 {
+				/*取首个ipv4*/
 				vethIP = addrs[0].IPNet.IP.String()
 			} else if err != nil {
 				pluginCtx.Logger.WithError(err).WithFields(logrus.Fields{
@@ -96,6 +104,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			addrsv6, err := netlink.AddrList(link, netlink.FAMILY_V6)
 			if err == nil && len(addrsv6) > 0 {
+				/*取首个ipv6*/
 				vethIPv6 = addrsv6[0].IPNet.IP.String()
 			} else if err != nil {
 				pluginCtx.Logger.WithError(err).WithFields(logrus.Fields{
@@ -107,6 +116,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 		return fmt.Errorf("no link found inside container")
 	}); err != nil {
+		/*内容执行有错误，直接返回*/
 		return
 	}
 
@@ -120,6 +130,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 	vethHostName = peer.Attrs().Name
 	vethHostIdx = peer.Attrs().Index
 
+	/*如果获取内容不合适，报错返回*/
 	switch {
 	case vethHostName == "":
 		err = errors.New("unable to determine name of veth pair on the host side")
@@ -138,6 +149,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 	var disabled = false
 	ep := &models.EndpointChangeRequest{
 		Addressing: &models.AddressPair{
+			/*各ipv4,ipv6地址*/
 			IPV4: vethIP,
 			IPV6: vethIPv6,
 		},
@@ -169,6 +181,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 		},
 	}
 
+	/*创建endpoint*/
 	err = pluginCtx.Client.EndpointCreate(ep)
 	if err != nil {
 		pluginCtx.Logger.WithError(err).WithFields(logrus.Fields{
@@ -186,6 +199,7 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 }
 
 func (f *GenericVethChainer) ImplementsDelete() bool {
+	/*标明实现了delete逻辑*/
 	return true
 }
 
@@ -198,5 +212,6 @@ func (f *GenericVethChainer) Delete(ctx context.Context, pluginCtx chainingapi.P
 }
 
 func init() {
+	/*插件注册*/
 	chainingapi.Register("generic-veth", &GenericVethChainer{})
 }

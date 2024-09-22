@@ -29,13 +29,17 @@ import (
 var g = protobuf.New()
 
 func init() {
+	//初始化flag.ComandLine，引入klog需要的参数
 	klog.InitFlags(nil)
+	//初始化flag.CommandLine,引入protobuf需要的参数
 	g.BindFlags(flag.CommandLine)
 	goflag.Set("logtostderr", "true")
 	flag.CommandLine.AddGoFlagSet(goflag.CommandLine)
 }
 
 func main() {
+	/*执行命令行解析及填充相应变量*/
 	flag.Parse()
+	/*调用protoc生成go代码*/
 	protobuf.Run(g)
 }

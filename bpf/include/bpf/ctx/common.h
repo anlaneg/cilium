@@ -13,16 +13,19 @@
 #define __ctx_skb		1
 #define __ctx_xdp		2
 
+/*报文起始地址*/
 static __always_inline void *ctx_data(const struct __ctx_buff *ctx)
 {
 	return (void *)(unsigned long)ctx->data;
 }
 
+/*data_meta起始地址*/
 static __always_inline void *ctx_data_meta(const struct __ctx_buff *ctx)
 {
 	return (void *)(unsigned long)ctx->data_meta;
 }
 
+/*报文终止地址*/
 static __always_inline void *ctx_data_end(const struct __ctx_buff *ctx)
 {
 	return (void *)(unsigned long)ctx->data_end;

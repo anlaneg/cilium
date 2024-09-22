@@ -48,6 +48,7 @@ func (a *Client) DeleteIpamIP(params *DeleteIpamIPParams) (*DeleteIpamIPOK, erro
 		params = NewDeleteIpamIPParams()
 	}
 
+	/*向此http请求删除ipam*/
 	result, err := a.transport.Submit(&runtime.ClientOperation{
 		ID:                 "DeleteIpamIP",
 		Method:             "DELETE",
@@ -70,7 +71,7 @@ func (a *Client) DeleteIpamIP(params *DeleteIpamIPParams) (*DeleteIpamIPOK, erro
 	// unexpected success response
 	// safeguard: normally, absent a default response, unknown success responses return an error above: so this is a codegen issue
 	msg := fmt.Sprintf("unexpected success response for DeleteIpamIP: API contract not enforced by server. Client expected to get an error, but got: %T", result)
-	panic(msg)
+	panic(msg) /*非预期结果，panic*/
 }
 
 /*

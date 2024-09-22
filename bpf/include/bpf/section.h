@@ -7,6 +7,7 @@
 #include "compiler.h"
 
 #ifndef __section_tail
+/*将id,key拼接成如下的section name: "$id/$key"*/
 # define __section_tail(ID, KEY)	__section(__stringify(ID) "/" __stringify(KEY))
 #endif
 

@@ -611,6 +611,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	__u16 proxy_port = 0;
 	bool from_l7lb = false;
 
+	/*提取报文起始位置，报文终止位置，ip头起始地址*/
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
@@ -620,12 +621,14 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	tuple.daddr = ip4->daddr;
 	tuple.saddr = ip4->saddr;
 
+	/*到ipv4的负载偏移量*/
 	l4_off = l3_off + ipv4_hdrlen(ip4);
 
 	/* Determine the destination category for policy fallback. */
 	if (1) {
 		struct remote_endpoint_info *info;
 
+		/*以不同的prefix查询IPCACHE_MAP*/
 		info = lookup_ip4_remote_endpoint(tuple.daddr);
 		if (info && info->sec_label) {
 			*dst_id = info->sec_label;
@@ -646,6 +649,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 			*dst_id = WORLD_ID;
 		}
 
+		/*日志输出*/
 		cilium_dbg(ctx, info ? DBG_IP_ID_MAP_SUCCEED4 : DBG_IP_ID_MAP_FAILED4,
 			   tuple.daddr, *dst_id);
 	}
@@ -1904,6 +1908,7 @@ int handle_to_container(struct __ctx_buff *ctx)
 	__u16 proto;
 	int ret;
 
+	/*检查ctx是否为合法的ethertype,如果时，返回三层协议号，例如0x800指ip*/
 	if (!validate_ethertype(ctx, &proto)) {
 		ret = DROP_UNSUPPORTED_L2;
 		goto out;
@@ -1946,7 +1951,7 @@ int handle_to_container(struct __ctx_buff *ctx)
 	switch (proto) {
 #if defined(ENABLE_ARP_PASSTHROUGH) || defined(ENABLE_ARP_RESPONDER)
 	case bpf_htons(ETH_P_ARP):
-		ret = CTX_ACT_OK;
+		ret = CTX_ACT_OK;/*arp放通*/
 		break;
 #endif
 #ifdef ENABLE_IPV6

@@ -47,6 +47,7 @@ func replaceQdisc(ifName string) error {
 		QdiscType:  "clsact",
 	}
 
+	/*执行ingress/egress队列替换，如无创建，有创建，则修改 tc qdisc replace $qdisc*/
 	if err = netlink.QdiscReplace(qdisc); err != nil {
 		return fmt.Errorf("netlink: Replacing qdisc for %s failed: %s", ifName, err)
 	} else {
@@ -69,13 +70,14 @@ func replaceQdisc(ifName string) error {
 // For example, this is the case with from-netdev and to-netdev. If eth0:to-netdev
 // gets its program and maps replaced and unpinned, its eth0:from-netdev counterpart
 // will miss tail calls (and drop packets) until it has been replaced as well.
-func replaceDatapath(ctx context.Context, ifName, objPath, progSec, progDirection string, xdp bool, xdpMode string) (func(), error) {
+func replaceDatapath(ctx context.Context, ifName/*接口名称*/, objPath/*obj文件位置*/, progSec/*bpf程序段名称*/, progDirection string/*方向，ingress或egress*/, xdp bool, xdpMode string) (func(), error) {
 	var (
 		loaderProg string
 		args       []string
 	)
 
 	if !xdp {
+		/*如果非xdp模式，确保ingress/egress队列存在*/
 		if err := replaceQdisc(ifName); err != nil {
 			return nil, fmt.Errorf("Failed to replace Qdisc for %s: %s", ifName, err)
 		}
@@ -89,10 +91,12 @@ func replaceDatapath(ctx context.Context, ifName, objPath, progSec, progDirectio
 
 	// FIXME: replace exec with native call
 	if xdp {
+		/*xdp模式，通过ip命令下发bpf程序*/
 		loaderProg = "ip"
 		args = []string{"-force", "link", "set", "dev", ifName, xdpMode,
 			"obj", objPath, "sec", progSec}
 	} else {
+		/*非xdp模式，通过tc命令下发bpf filter替换*/
 		loaderProg = "tc"
 
 		tcPrio := strconv.Itoa(option.Config.TCFilterPriority)

@@ -1214,6 +1214,7 @@ int to_host(struct __ctx_buff *ctx)
 	ctx_change_type(ctx, PACKET_HOST);
 #endif
 #ifdef ENABLE_HOST_FIREWALL
+	/*取l3协议号*/
 	if (!validate_ethertype(ctx, &proto)) {
 		ret = DROP_UNSUPPORTED_L2;
 		goto out;
@@ -1224,6 +1225,7 @@ int to_host(struct __ctx_buff *ctx)
 	switch (proto) {
 # if defined ENABLE_ARP_PASSTHROUGH || defined ENABLE_ARP_RESPONDER
 	case bpf_htons(ETH_P_ARP):
+	        /*arp放通*/
 		ret = CTX_ACT_OK;
 		break;
 # endif
@@ -1238,6 +1240,7 @@ int to_host(struct __ctx_buff *ctx)
 		break;
 # endif
 	default:
+	    /*其它协议丢弃*/
 		ret = DROP_UNKNOWN_L3;
 		break;
 	}

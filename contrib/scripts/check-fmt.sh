@@ -11,6 +11,7 @@ diff="$(find . ! \( -path './contrib' -prune \) \
         -type f -name '*.go' | grep -Ev "(pkg/k8s/apis/cilium.io/v2/client/bindata.go)" | \
         xargs gofmt -d -l -s )"
 
+#执行代码format检查不通过，执行输出
 if [ -n "$diff" ]; then
 	echo "Unformatted Go source code:"
 	echo "$diff"

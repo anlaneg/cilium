@@ -31,6 +31,7 @@ const (
 type Client struct {
 	updater proxylib.PolicyUpdater
 	mutex   lock.Mutex
+	/*instance的node id*/
 	nodeId  string
 	path    string
 	conn    *grpc.ClientConn
@@ -136,6 +137,7 @@ func (c *Client) Run(connected func()) (err error) {
 	//
 	conn, err := grpc.Dial(unixPath, grpc.WithInsecure())
 	if err != nil {
+		/*与unixpath连接失败，报错*/
 		return fmt.Errorf("NPDS: Client %s grpc.Dial() on %s failed: %s", c.nodeId, c.path, err)
 	}
 	client := cilium.NewNetworkPolicyDiscoveryServiceClient(conn)

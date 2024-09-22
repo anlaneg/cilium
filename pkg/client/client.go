@@ -110,6 +110,8 @@ func NewClient(host string) (*Client, error) {
 	if host == "" {
 		host = DefaultSockPath()
 	}
+	
+	/*取协议前缀*/
 	tmp := strings.SplitN(host, "://", 2)
 	if len(tmp) != 2 {
 		return nil, fmt.Errorf("invalid host format '%s'", host)
@@ -125,6 +127,7 @@ func NewClient(host string) (*Client, error) {
 		host = tmp[1]
 	}
 
+	/*构造http client*/
 	transport := configureTransport(nil, tmp[0], host)
 	httpClient := &http.Client{Transport: transport}
 	clientTrans := runtime_client.NewWithClient(tmp[1], clientapi.DefaultBasePath,

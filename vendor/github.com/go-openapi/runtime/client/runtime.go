@@ -363,6 +363,7 @@ func (r *Runtime) EnableConnectionReuse() {
 func (r *Runtime) Submit(operation *runtime.ClientOperation) (interface{}, error) {
 	params, readResponse, auth := operation.Params, operation.Reader, operation.AuthInfo
 
+	/*构造request对象*/
 	request, err := newRequest(operation.Method, operation.PathPattern, params)
 	if err != nil {
 		return nil, err
@@ -449,6 +450,7 @@ func (r *Runtime) Submit(operation *runtime.ClientOperation) (interface{}, error
 		client = r.client
 	}
 	req = req.WithContext(ctx)
+	/*执行请求*/
 	res, err := client.Do(req) // make requests, by default follows 10 redirects before failing
 	if err != nil {
 		return nil, err

@@ -31,8 +31,11 @@ type PolicyUpdater interface {
 }
 
 type Instance struct {
+	/*自动增长的instance编号*/
 	id           uint64
+	/*被打开的次数*/
 	openCount    uint64
+	/*对应的node id*/
 	nodeID       string
 	accessLogger AccessLogger
 	policyClient PolicyClient
@@ -51,8 +54,10 @@ var (
 
 func NewInstance(nodeID string, accessLogger AccessLogger) *Instance {
 
+	/*instance增加，变更instanceID*/
 	instanceId++
 
+	/*未指定nodeID,则使用默认的nodeID*/
 	if nodeID == "" {
 		nodeID = fmt.Sprintf("host~127.0.0.2~libcilium-%d~localdomain", instanceId)
 	}
@@ -64,6 +69,8 @@ func NewInstance(nodeID string, accessLogger AccessLogger) *Instance {
 		nodeID:       nodeID,
 		accessLogger: accessLogger,
 	}
+	
+	//设置空的policy map
 	ins.setPolicyMap(newPolicyMap())
 
 	return ins
@@ -80,23 +87,28 @@ func OpenInstance(nodeID string, xdsPath string, newPolicyClient func(path, node
 	for id, old := range instances {
 		oldXdsPath := ""
 		if old.policyClient != nil {
+			/*取xdspath*/
 			oldXdsPath = old.policyClient.Path()
 		}
 		oldAccessLogPath := ""
 		if old.accessLogger != nil {
+			/*取access log path*/
 			oldAccessLogPath = old.accessLogger.Path()
 		}
 		if (nodeID == "" || old.nodeID == nodeID) && xdsPath == oldXdsPath && accessLogPath == oldAccessLogPath {
+			/*要打开的instance与map中存放的一致：一样的nodeId,一样的accessLogpath,一样的xdspath*/
 			old.openCount++
 			logrus.Debugf("Opened existing library instance %d, open count: %d", id, old.openCount)
 			return id
 		}
 	}
 
-	ins := NewInstance(nodeID, newAccessLogger(accessLogPath))
+	/*未在map instances中查询到此instance,这里进行创建*/
+	ins := NewInstance(nodeID, newAccessLogger(accessLogPath)/*通过传入的回调，创建AccessLogger*/)
 	// policy client needs the instance so we set it after instance has been created
-	ins.policyClient = newPolicyClient(xdsPath, ins.nodeID, ins)
+	ins.policyClient = newPolicyClient(xdsPath, ins.nodeID, ins)/*通过传入的回调，创建policy client*/
 
+	/*以自动索引为key,设置此Instance*/
 	instances[instanceId] = ins
 
 	logrus.Debugf("Opened new library instance %d", instanceId)
@@ -104,6 +116,7 @@ func OpenInstance(nodeID string, xdsPath string, newPolicyClient func(path, node
 	return instanceId
 }
 
+/*给定instance id返回对应的Instance对象*/
 func FindInstance(id uint64) *Instance {
 	mutex.RLock()
 	defer mutex.RUnlock()

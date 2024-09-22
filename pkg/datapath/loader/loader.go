@@ -200,10 +200,10 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 	directions := make([]string, 2, nbInterfaces)
 	objPaths := make([]string, 2, nbInterfaces)
 	interfaceNames := make([]string, 2, nbInterfaces)
-	symbols[0], symbols[1] = symbolToHostEp, symbolFromHostEp
-	directions[0], directions[1] = dirIngress, dirEgress
-	objPaths[0], objPaths[1] = objPath, objPath
-	interfaceNames[0], interfaceNames[1] = ep.InterfaceName(), ep.InterfaceName()
+	symbols[0], symbols[1] = symbolToHostEp, symbolFromHostEp /*同一个section*/
+	directions[0], directions[1] = dirIngress, dirEgress /*两个方向*/
+	objPaths[0], objPaths[1] = objPath, objPath /*同一个obj*/
+	interfaceNames[0], interfaceNames[1] = ep.InterfaceName(), ep.InterfaceName() /*同一个接口*/
 
 	if datapathHasMultipleMasterDevices() {
 		if _, err := netlink.LinkByName(defaults.SecondHostDevice); err != nil {
@@ -254,6 +254,7 @@ func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, o
 		}
 	}
 
+	/*为接口ingress/egress 更换objPath对应的bpf代码，通过tc下发*/
 	for i, interfaceName := range interfaceNames {
 		symbol := symbols[i]
 		finalize, err := replaceDatapath(ctx, interfaceName, objPaths[i], symbol, directions[i], false, "")
@@ -283,6 +284,7 @@ func datapathHasMultipleMasterDevices() bool {
 	return option.Config.DatapathMode != datapathOption.DatapathModeIpvlan
 }
 
+/*编译装载bpf_host.o*/
 func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs *directoryInfo) error {
 	// Replace the current program
 	objPath := path.Join(dirs.Output, endpointObj)
@@ -369,8 +371,9 @@ func (l *Loader) replaceNetworkDatapath(ctx context.Context, interfaces []string
 	if err := compileNetwork(ctx); err != nil {
 		log.WithError(err).Fatal("failed to compile encryption programs")
 	}
+	/*针对配置的encryptInterface加载bpf_network.o*/
 	for _, iface := range option.Config.EncryptInterface {
-		finalize, err := replaceDatapath(ctx, iface, networkObj, symbolFromNetwork, dirIngress, false, "")
+		finalize, err := replaceDatapath(ctx, iface, networkObj, symbolFromNetwork, dirIngress/*存ingress方向*/, false, "")
 		if err != nil {
 			log.WithField(logfields.Interface, iface).WithError(err).Fatal("Load encryption network failed")
 		}

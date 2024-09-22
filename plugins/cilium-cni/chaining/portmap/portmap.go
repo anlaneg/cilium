@@ -30,5 +30,6 @@ func (p *portmapChainer) Delete(ctx context.Context, pluginCtx chainingapi.Plugi
 }
 
 func init() {
+	/*注册portmap插件件，不支持以下回调*/
 	chainingapi.Register("portmap", &portmapChainer{})
 }

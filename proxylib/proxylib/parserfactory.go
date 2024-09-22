@@ -93,10 +93,12 @@ var parserFactories map[string]ParserFactory = make(map[string]ParserFactory)
 // RegisterParserFactory adds a protocol parser factory to the map of known parsers.
 // This is called from parser init() functions while we are still single-threaded
 func RegisterParserFactory(name string, parserFactory ParserFactory) {
+	/*为指定L7 protocol注册ParserFactory*/
 	logrus.Debugf("proxylib: Registering L7 parser: %v", name)
 	parserFactories[name] = parserFactory
 }
 
 func GetParserFactory(name string) ParserFactory {
+	/*返回L7 protocol对应的ParserFactory*/
 	return parserFactories[name]
 }

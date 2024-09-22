@@ -55,8 +55,11 @@ func NewConnection(instance *Instance, proto string, connectionId uint64, ingres
 	// Find the parser for the proto
 	parserFactory := GetParserFactory(proto)
 	if parserFactory == nil {
+		/*遇到不认识的协议*/
 		return UNKNOWN_PARSER, nil
 	}
+	
+	/*取目的地址中包含的port信息*/
 	_, port, err := net.SplitHostPort(dstAddr)
 	if err != nil {
 		return INVALID_ADDRESS, nil
@@ -68,18 +71,20 @@ func NewConnection(instance *Instance, proto string, connectionId uint64, ingres
 
 	connection := &Connection{
 		Instance:   instance,
-		Id:         connectionId,
-		Ingress:    ingress,
+		Id:         connectionId,/*设置connect id*/
+		Ingress:    ingress,/*是否ingress方向*/
 		SrcId:      srcId,
 		DstId:      dstId,
 		SrcAddr:    srcAddr,
 		DstAddr:    dstAddr,
-		Port:       uint32(dstPort),
+		Port:       uint32(dstPort),/*目的port*/
 		PolicyName: policyName,
 		ParserName: proto,
 		OrigBuf:    origBuf,
 		ReplyBuf:   replyBuf,
 	}
+	
+	/*创建 protocol对应的parser*/
 	connection.Parser = parserFactory.Create(connection)
 	if connection.Parser == nil {
 		// Parser rejected the new connection based on the connection metadata

@@ -79,9 +79,11 @@ func newLibnetworkRoute(route route.Route) api.StaticRoute {
 func NewDriver(ciliumSockPath, dockerHostPath string) (Driver, error) {
 
 	if ciliumSockPath == "" {
+		/*使用默认socket path*/
 		ciliumSockPath = client.DefaultSockPath()
 	}
 
+	/*创建http client*/
 	scopedLog := log.WithField("ciliumSockPath", ciliumSockPath)
 	c, err := client.NewClient(ciliumSockPath)
 	if err != nil {
@@ -106,6 +108,7 @@ func NewDriver(ciliumSockPath, dockerHostPath string) (Driver, error) {
 			} else {
 				scopedLog.Info("Waiting for cilium daemon to start up...")
 			}
+			/*sleep，等待连接成功*/
 			time.Sleep(time.Duration(tries) * time.Second)
 		} else {
 			if res.Status.Addressing == nil || (res.Status.Addressing.IPV4 == nil && res.Status.Addressing.IPV6 == nil) {
@@ -223,6 +226,7 @@ func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
 			}
 		}
 
+		/*ipv6 gateway ip地址*/
 		driver.gatewayIPv6 = connector.IPv6Gateway(driver.conf.Addressing)
 	}
 
@@ -243,15 +247,21 @@ func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
 // socket path.
 func (driver *driver) Listen(socket string) error {
 	router := mux.NewRouter()
+	/*指定router在未找到handler时的调用*/
 	router.NotFoundHandler = http.HandlerFunc(notFound)
 
 	handleMethod := func(method string, h http.HandlerFunc) {
+		/*router.Methods会新建一个route,并将其加入到router中，
+		然后返回此route，并调用它的methods方法。
+		设置它的path,及handle function
+		*/
 		router.Methods("POST").Path(fmt.Sprintf("/%s", method)).HandlerFunc(h)
 	}
 
+	/*注册各方法对应的处理函数*/
 	handleMethod("Plugin.Activate", driver.handshake)
 	handleMethod("NetworkDriver.GetCapabilities", driver.capabilities)
-	handleMethod("NetworkDriver.CreateNetwork", driver.createNetwork)
+	handleMethod("NetworkDriver.CreateNetwork", driver.createNetwork)/*空实现*/
 	handleMethod("NetworkDriver.DeleteNetwork", driver.deleteNetwork)
 	handleMethod("NetworkDriver.CreateEndpoint", driver.createEndpoint)
 	handleMethod("NetworkDriver.DeleteEndpoint", driver.deleteEndpoint)
@@ -265,10 +275,13 @@ func (driver *driver) Listen(socket string) error {
 	handleMethod("IpamDriver.RequestAddress", driver.requestAddress)
 	handleMethod("IpamDriver.ReleaseAddress", driver.releaseAddress)
 
+	/*监听unix socket*/
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
 	}
+	
+	/*执行http服务*/
 	return http.Serve(listener, router)
 }
 
@@ -301,6 +314,7 @@ type handshakeResp struct {
 }
 
 func (driver *driver) handshake(w http.ResponseWriter, r *http.Request) {
+	/*向对端回写支持的driver*/
 	err := json.NewEncoder(w).Encode(&handshakeResp{
 		[]string{"NetworkDriver", "IpamDriver"},
 	})
@@ -326,22 +340,26 @@ func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
 
 func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 	var create api.CreateNetworkRequest
+	/*解析请求的内容*/
 	err := json.NewDecoder(r.Body).Decode(&create)
 	if err != nil {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	log.WithField(logfields.Request, logfields.Repr(&create)).Debug("Network Create Called")
+	/*响应空串*/
 	emptyResponse(w)
 }
 
 func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 	var delete api.DeleteNetworkRequest
+	/*解析请求的内容*/
 	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	log.WithField(logfields.Request, logfields.Repr(&delete)).Debug("Delete network request")
+	/*响应空串*/
 	emptyResponse(w)
 }
 
@@ -363,10 +381,13 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	log.WithField(logfields.Request, logfields.Repr(&create)).Debug("Create endpoint request")
 
+	/*即没有ipv4，也没ipv6地址，报错*/
 	if create.Interface.Address == "" && create.Interface.AddressIPv6 == "" {
 		sendError(w, "No IPv4 or IPv6 address provided (required)", http.StatusBadRequest)
 		return
 	}
+	
+	/*endpoint id必须满足合适的样式*/
 	if !endpointIDRx.MatchString(create.EndpointID) {
 		sendError(w, "Invalid endpoint ID", http.StatusBadRequest)
 		return
@@ -375,11 +396,11 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	endpoint := &models.EndpointChangeRequest{
 		SyncBuildEndpoint: true,
 		State:             models.EndpointStateWaitingForIdentity,
-		DockerEndpointID:  create.EndpointID,
-		DockerNetworkID:   create.NetworkID,
+		DockerEndpointID:  create.EndpointID,/*endpoint id*/
+		DockerNetworkID:   create.NetworkID,/*网络id*/
 		Addressing: &models.AddressPair{
-			IPV6: create.Interface.AddressIPv6,
-			IPV4: create.Interface.Address,
+			IPV6: create.Interface.AddressIPv6,/*接口ipv6地址*/
+			IPV4: create.Interface.Address,/*接口ipv4地址*/
 		},
 	}
 
@@ -397,6 +418,7 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	switch driver.conf.DatapathMode {
 	case datapathOption.DatapathModeVeth:
 		var veth *netlink.Veth
+		/*生成veth接口，并置为up*/
 		veth, _, _, err = connector.SetupVeth(create.EndpointID, int(driver.conf.DeviceMTU), endpoint)
 		defer removeLinkOnErr(veth)
 	case datapathOption.DatapathModeIpvlan:

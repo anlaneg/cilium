@@ -53,6 +53,7 @@ type Generator struct {
 	DropEmbeddedFields   string
 }
 
+//生成Generator对象
 func New() *Generator {
 	sourceTree := args.DefaultSourceTree()
 	common := args.GeneratorArgs{
@@ -83,19 +84,25 @@ func New() *Generator {
 	}
 }
 
+//为generator对应的flagset引入参数
 func (g *Generator) BindFlags(flag *flag.FlagSet) {
+	//生成的文件将包含此文件中的内容，如注释言，year会被更新为当前时间
 	flag.StringVarP(&g.Common.GoHeaderFilePath, "go-header-file", "h", g.Common.GoHeaderFilePath, "File containing boilerplate header text. The string YEAR will be replaced with the current 4-digit year.")
 	flag.BoolVar(&g.Common.VerifyOnly, "verify-only", g.Common.VerifyOnly, "If true, only verify existing output, do not write anything.")
+	//
 	flag.StringVarP(&g.Packages, "packages", "p", g.Packages, "comma-separated list of directories to get input types from. Directories prefixed with '-' are not generated, directories prefixed with '+' only create types with explicit IDL instructions.")
+	//
 	flag.StringVar(&g.APIMachineryPackages, "apimachinery-packages", g.APIMachineryPackages, "comma-separated list of directories to get apimachinery input types from which are needed by any API. Directories prefixed with '-' are not generated, directories prefixed with '+' only create types with explicit IDL instructions.")
 	flag.StringVarP(&g.OutputBase, "output-base", "o", g.OutputBase, "Output base; defaults to $GOPATH/src/")
 	flag.StringVar(&g.VendorOutputBase, "vendor-output-base", g.VendorOutputBase, "The vendor/ directory to look for packages in; defaults to $PWD/vendor/.")
+	//
 	flag.StringSliceVar(&g.ProtoImport, "proto-import", g.ProtoImport, "The search path for the core protobuf .protos, required; defaults $GOPATH/src/k8s.io/kubernetes/vendor/github.com/gogo/protobuf/protobuf.")
 	flag.StringVar(&g.Conditional, "conditional", g.Conditional, "An optional Golang build tag condition to add to the generated Go code")
 	flag.BoolVar(&g.Clean, "clean", g.Clean, "If true, remove all generated files for the specified Packages.")
 	flag.BoolVar(&g.OnlyIDL, "only-idl", g.OnlyIDL, "If true, only generate the IDL for each package.")
 	flag.BoolVar(&g.KeepGogoproto, "keep-gogoproto", g.KeepGogoproto, "If true, the generated IDL will contain gogoprotobuf extensions which are normally removed")
 	flag.BoolVar(&g.SkipGeneratedRewrite, "skip-generated-rewrite", g.SkipGeneratedRewrite, "If true, skip fixing up the generated.pb.go file (debugging only).")
+	//
 	flag.StringVar(&g.DropEmbeddedFields, "drop-embedded-fields", g.DropEmbeddedFields, "Comma-delimited list of embedded Go types to omit from generated protobufs")
 }
 
@@ -108,20 +115,25 @@ func Run(g *Generator) {
 	b := parser.New()
 	b.AddBuildTags("proto")
 
+	/*解析g.DropEmbeddedFields，列出omitTypes*/
 	omitTypes := map[types.Name]struct{}{}
 	for _, t := range strings.Split(g.DropEmbeddedFields, ",") {
 		name := types.Name{}
 		if i := strings.LastIndex(t, "."); i != -1 {
+			/*t包含了.,区分出package,name*/
 			name.Package, name.Name = t[:i], t[i+1:]
 		} else {
+			/*不包含'.',全为name*/
 			name.Name = t
 		}
+		/*name长度不合适，报错*/
 		if len(name.Name) == 0 {
 			log.Fatalf("--drop-embedded-types requires names in the form of [GOPACKAGE.]TYPENAME: %v", t)
 		}
 		omitTypes[name] = struct{}{}
 	}
 
+	//加载go文件内容前缀
 	boilerplate, err := g.Common.LoadGoBoilerplate()
 	if err != nil {
 		log.Fatalf("Failed loading boilerplate (consider using the go-header-file flag): %v", err)
@@ -133,12 +145,15 @@ func Run(g *Generator) {
 
 	var packages []string
 	if len(g.APIMachineryPackages) != 0 {
+		/*此参数被给定的话，将按逗号拆分后，逐个添加到Packages数组中*/
 		packages = append(packages, strings.Split(g.APIMachineryPackages, ",")...)
 	}
 	if len(g.Packages) != 0 {
+		/*此参数被给定，将按逗号拆分，并逐个加入到packages数组中，且排在api machinery packages后面*/
 		packages = append(packages, strings.Split(g.Packages, ",")...)
 	}
 	if len(packages) == 0 {
+		/*以上两个参数至少指定一个*/
 		log.Fatalf("Both apimachinery-packages and packages are empty. At least one package must be specified.")
 	}
 
@@ -152,13 +167,17 @@ func Run(g *Generator) {
 			d = d[1:]
 			outputPackage = false
 		}
+		/*package名称规范化*/
 		name := protoSafePackage(d)
 		parts := strings.SplitN(d, "=", 2)
 		if len(parts) > 1 {
+			/*如果有‘=’号，更新d变量*/
 			d = parts[0]
 			name = parts[1]
 		}
-		p := newProtobufPackage(d, name, generateAllTypes, omitTypes)
+		/*创建对象*/
+		p := newProtobufPackage(d/*package路径*/, name/*package名称*/, generateAllTypes, omitTypes)
+		/*合并boilerplate,P.HeaderText 更新HeaderText*/
 		header := append([]byte{}, boilerplate...)
 		header = append(header, p.HeaderText...)
 		p.HeaderText = header
@@ -305,7 +324,7 @@ func Run(g *Generator) {
 		}
 
 		// format and simplify the generated file
-		cmd = exec.Command("gofmt", "-s", "-w", outputPath)
+		cmd = exec.Command("gofmt", "-s", "-w", outputPath) /*对生成的go文件进行格式化*/
 		out, err = cmd.CombinedOutput()
 		if len(out) > 0 {
 			log.Print(string(out))

@@ -205,6 +205,7 @@ func (l *Loader) reinitializeIPSec(ctx context.Context) error {
 			}
 		}
 
+		/*加载bpf_network.o*/
 		if err := l.replaceNetworkDatapath(ctx, interfaces); err != nil {
 			return fmt.Errorf("failed to load encryption program: %w", err)
 		}
@@ -212,11 +213,14 @@ func (l *Loader) reinitializeIPSec(ctx context.Context) error {
 	return nil
 }
 
-func (l *Loader) reinitializeXDPLocked(ctx context.Context, extraCArgs []string) error {
+func (l *Loader) reinitializeXDPLocked(ctx context.Context, extraCArgs []string/*xdp编译代码需要额外参数*/) error {
+	/*先移除，如果有的话*/
 	maybeUnloadObsoleteXDPPrograms(option.Config.Devices, option.Config.XDPMode)
 	if option.Config.XDPMode == option.XDPModeDisabled {
+		/*如果disable xdp,则直接返回*/
 		return nil
 	}
+	/*遍历所有配置的设备，编译并为设备加载xdp程序bpf_xdp.c*/
 	for _, dev := range option.Config.Devices {
 		if err := compileAndLoadXDPProg(ctx, dev, option.Config.XDPMode, extraCArgs); err != nil {
 			return err

@@ -12,6 +12,7 @@ all: $(TARGET) $(SUBDIRS)
 
 $(TARGET):
 	@$(ECHO_GO)
+	#生成cilium-health程序
 	$(QUIET)$(GO_BUILD) -o $@
 
 clean:
@@ -31,6 +32,7 @@ install-bash-completion:
 
 
 $(SUBDIRS): force
+	#针对其子目录进行编译
 	@ $(MAKE) $(SUBMAKEOPTS) -C $@ all
 
 .PHONY: force

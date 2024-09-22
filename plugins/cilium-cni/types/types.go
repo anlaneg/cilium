@@ -21,6 +21,7 @@ import (
 
 // NetConf is the Cilium specific CNI network configuration
 type NetConf struct {
+	/*cni相关的netconf*/
 	cniTypes.NetConf
 	MTU          int                    `json:"mtu"`
 	Args         Args                   `json:"args"`
@@ -80,6 +81,7 @@ func ReadNetConf(path string) (*NetConf, error) {
 // LoadNetConf unmarshals a Cilium network configuration from JSON and returns
 // a NetConf together with the CNI version
 func LoadNetConf(bytes []byte) (*NetConf, error) {
+	/*json串解析到NetConf*/
 	n := &NetConf{}
 	if err := json.Unmarshal(bytes, n); err != nil {
 		return nil, fmt.Errorf("failed to load netconf: %s", err)

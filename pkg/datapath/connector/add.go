@@ -26,9 +26,11 @@ const (
 
 // Endpoint2IfName returns the host interface name for the given endpointID.
 func Endpoint2IfName(endpointID string) string {
+	/*对id生成sum256*/
 	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(endpointID)))
 	// returned string length should be < unix.IFNAMSIZ
 	truncateLength := uint(unix.IFNAMSIZ - len(temporaryInterfacePrefix) - 1)
+	/*添加host前缀*/
 	return hostInterfacePrefix + truncateString(sum, truncateLength)
 }
 

@@ -52,6 +52,7 @@ connected to a Docker network of type "cilium".`,
 			log.WithError(err).Fatal("Unable to create cilium-net driver")
 		} else {
 			log.WithField(logfields.Path, driverSock).Info("Listening for events from Docker")
+			/*监听并处理来自docker的http请求*/
 			if err := d.Listen(driverSock); err != nil {
 				log.Fatal(err)
 			}
@@ -72,6 +73,7 @@ func init() {
 	flags.BoolVarP(&debug, "debug", "D", false, "Enable debug messages")
 	flags.StringVar(&ciliumAPI, "cilium-api", "", "URI to server-side API")
 	flags.StringVar(&dockerHostPath, "docker-host-path", "unix:///var/run/docker.sock", "Docker socket")
+	/*指明插件路径*/
 	flags.StringVar(&pluginPath, "docker-plugins", "/run/docker/plugins",
 		"Path to Docker plugins directory")
 }
@@ -85,12 +87,15 @@ func initConfig() {
 }
 
 func createPluginSock() {
+	/*合并路径，产生driverSock*/
 	driverSock = filepath.Join(pluginPath, "cilium.sock")
 
+	/*创建pluginPath对应的目录*/
 	if err := os.MkdirAll(pluginPath, 0755); err != nil && !os.IsExist(err) {
 		log.WithError(err).Fatal("Could not create net plugin path directory")
 	}
 
+	/*driverSock存在，执行删除*/
 	if _, err := os.Stat(driverSock); err == nil {
 		log.WithField(logfields.Path, driverSock).Debug("socket file already exists, unlinking the old file handle.")
 		os.RemoveAll(driverSock)

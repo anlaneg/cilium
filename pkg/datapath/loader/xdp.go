@@ -33,11 +33,13 @@ func xdpModeToFlag(xdpMode string) uint32 {
 
 // maybeUnloadObsoleteXDPPrograms removes bpf_xdp.o from previously used devices.
 func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode string) {
+	/*取系统所有link*/
 	links, err := netlink.LinkList()
 	if err != nil {
 		log.WithError(err).Warn("Failed to list links for XDP unload")
 	}
 
+	/*遍历所有link,移除挂在这些设备上的bpf_xdp.o*/
 	for _, link := range links {
 		linkxdp := link.Attrs().Xdp
 		if linkxdp == nil || !linkxdp.Attached {
@@ -68,6 +70,7 @@ func maybeUnloadObsoleteXDPPrograms(xdpDevs []string, xdpMode string) {
 
 // xdpCompileArgs derives compile arguments for bpf_xdp.c.
 func xdpCompileArgs(xdpDev string, extraCArgs []string) ([]string, error) {
+	//构造xdpDev对应的link对象
 	link, err := netlink.LinkByName(xdpDev)
 	if err != nil {
 		return nil, err
@@ -75,14 +78,15 @@ func xdpCompileArgs(xdpDev string, extraCArgs []string) ([]string, error) {
 
 	args := []string{
 		fmt.Sprintf("-DSECLABEL=%d", identity.ReservedIdentityWorld),
-		fmt.Sprintf("-DNODE_MAC={.addr=%s}", mac.CArrayString(link.Attrs().HardwareAddr)),
+		fmt.Sprintf("-DNODE_MAC={.addr=%s}", mac.CArrayString(link.Attrs().HardwareAddr)),/*取link的mac地址*/
 		"-DCALLS_MAP=cilium_calls_xdp",
 	}
+	/*合入额外的args*/
 	args = append(args, extraCArgs...)
 	if option.Config.EnableNodePort {
 		args = append(args, []string{
-			fmt.Sprintf("-DTHIS_MTU=%d", link.Attrs().MTU),
-			fmt.Sprintf("-DNATIVE_DEV_IFINDEX=%d", link.Attrs().Index),
+			fmt.Sprintf("-DTHIS_MTU=%d", link.Attrs().MTU),/*link的mtu*/
+			fmt.Sprintf("-DNATIVE_DEV_IFINDEX=%d", link.Attrs().Index),/*link的ifindex*/
 			"-DDISABLE_LOOPBACK_LB",
 		}...)
 	}
@@ -91,7 +95,7 @@ func xdpCompileArgs(xdpDev string, extraCArgs []string) ([]string, error) {
 }
 
 // compileAndLoadXDPProg compiles bpf_xdp.c for the given XDP device and loads it.
-func compileAndLoadXDPProg(ctx context.Context, xdpDev, xdpMode string, extraCArgs []string) error {
+func compileAndLoadXDPProg(ctx context.Context, xdpDev/*xdp关联的接口名称*/, xdpMode string, extraCArgs []string/*代码编译时的额外选项*/) error {
 	args, err := xdpCompileArgs(xdpDev, extraCArgs)
 	if err != nil {
 		return fmt.Errorf("failed to derive XDP compile extra args: %w", err)
@@ -104,12 +108,13 @@ func compileAndLoadXDPProg(ctx context.Context, xdpDev, xdpMode string, extraCAr
 		State:   option.Config.StateDir,
 	}
 	prog := &progInfo{
-		Source:     xdpProg,
-		Output:     xdpObj,
-		OutputType: outputObject,
+		Source:     xdpProg,/*输入文件*/
+		Output:     xdpObj,/*输出的文件名称*/
+		OutputType: outputObject,/*输出为obj类型*/
 		Options:    args,
 	}
 
+	/*编译文件并生成obj*/
 	if err := compile(ctx, prog, dirs); err != nil {
 		return err
 	}
@@ -117,7 +122,9 @@ func compileAndLoadXDPProg(ctx context.Context, xdpDev, xdpMode string, extraCAr
 		return err
 	}
 
+	/*构造生成的目标位置*/
 	objPath := path.Join(dirs.Output, prog.Output)
+	/*将此bpf程序下发给接口xdpDev*/
 	finalize, err := replaceDatapath(ctx, xdpDev, objPath, symbolFromHostNetdevEp, "", true, xdpMode)
 	if err != nil {
 		return err

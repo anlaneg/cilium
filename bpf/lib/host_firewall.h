@@ -351,7 +351,7 @@ ipv4_host_policy_ingress(struct __ctx_buff *ctx, __u32 *src_id,
 	void *data, *data_end;
 	struct iphdr *ip4;
 
-	if (!revalidate_data(ctx, &data, &data_end, &ip4))
+	if (!revalidate_data(ctx, &data/*报文起始位置*/, &data_end/*报文结束位置*/, &ip4/*ipv4头部*/))
 		return DROP_INVALID;
 
 	/* Retrieve destination identity. */

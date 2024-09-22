@@ -170,7 +170,7 @@ static __always_inline bool ct_entry_alive(const struct ct_entry *entry)
 static __always_inline __u8 __ct_lookup(const void *map, struct __ctx_buff *ctx,
 					const void *tuple, int action, int dir,
 					struct ct_state *ct_state,
-					bool is_tcp, union tcp_flags seen_flags,
+					bool is_tcp/*是否tcp报文*/, union tcp_flags seen_flags,
 					__u32 *monitor)
 {
 	struct ct_entry *entry;
@@ -178,6 +178,7 @@ static __always_inline __u8 __ct_lookup(const void *map, struct __ctx_buff *ctx,
 
 	relax_verifier();
 
+	/*通过tuple查询ct entry*/
 	entry = map_lookup_elem(map, tuple);
 	if (entry) {
 		cilium_dbg(ctx, DBG_CT_MATCH, entry->lifetime, entry->rev_nat_index);
@@ -606,7 +607,7 @@ ct_is_reply4(const void *map, struct __ctx_buff *ctx, int off,
 }
 
 /* Offset must point to IPv4 header */
-static __always_inline int ct_lookup4(const void *map,
+static __always_inline int ct_lookup4(const void *map/*ct对应的map*/,
 				      struct ipv4_ct_tuple *tuple,
 				      struct __ctx_buff *ctx, int off, enum ct_dir dir,
 				      struct ct_state *ct_state, __u32 *monitor)
@@ -669,6 +670,7 @@ static __always_inline int ct_lookup4(const void *map,
 		break;
 
 	case IPPROTO_TCP:
+	    /*加载srcport,dstport*/
 		err = ipv4_ct_extract_l4_ports(ctx, off, dir, tuple, &has_l4_header);
 		if (err < 0)
 			return err;
@@ -676,9 +678,11 @@ static __always_inline int ct_lookup4(const void *map,
 		action = ACTION_CREATE;
 
 		if (has_l4_header) {
+		    /*加载tcp flags*/
 			if (ctx_load_bytes(ctx, off + 12, &tcp_flags, 2) < 0)
 				return DROP_CT_INVALID_HDR;
 
+			/*如果有fin/rst标记，则报文在做close*/
 			if (unlikely(tcp_flags.value & (TCP_FLAG_RST|TCP_FLAG_FIN)))
 				action = ACTION_CLOSE;
 		}

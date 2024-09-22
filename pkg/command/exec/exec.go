@@ -33,6 +33,7 @@ scan:
 // combinedOutput is the core implementation of catching deadline exceeded
 // options and logging errors, with an optional set of filtered outputs.
 func combinedOutput(ctx context.Context, cmd *exec.Cmd, filters []string, scopedLog *logrus.Entry, verbose bool) ([]byte, error) {
+	/*执行cmd,返回其对应的标准输出，错误输出*/
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		scopedLog.WithError(err).WithField("cmd", cmd.Args).Error("Command execution failed")

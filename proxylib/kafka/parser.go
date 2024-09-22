@@ -40,6 +40,7 @@ var kafkaParserFactory *KafkaParserFactory
 
 func init() {
 	logrus.Info("init(): Registering kafkaParserFactory")
+	/*注册kafka对应的kafkaParserFactory*/
 	RegisterParserFactory(parserName, kafkaParserFactory)
 	RegisterL7RuleParser(parserName, KafkaRuleParser)
 }
@@ -48,14 +49,17 @@ type KafkaParser struct {
 	connection *Connection
 }
 
+/*实现Create接口，创建Kafka parser*/
 func (pf *KafkaParserFactory) Create(connection *Connection) interface{} {
 	p := KafkaParser{connection: connection}
 	return &p
 }
 
+/*实现OnData接口*/
 func (p *KafkaParser) OnData(reply bool, reader *Reader) (OpType, int) {
 	length := reader.Length()
 	if length == 0 {
+		/*数据长度为0，返回NOP*/
 		return NOP, 0
 	}
 

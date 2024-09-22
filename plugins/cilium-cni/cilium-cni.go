@@ -76,6 +76,7 @@ type CmdState struct {
 }
 
 func main() {
+	/*注册cni函数，只处理add,del两个命令，支持4个版本*/
 	skel.PluginMain(cmdAdd,
 		nil,
 		cmdDel,
@@ -107,6 +108,7 @@ func ipv4IsEnabled(ipam *models.IPAMResponse) bool {
 	return true
 }
 
+/*释放指定ip*/
 func releaseIP(client *client.Client, ip string) {
 	if ip != "" {
 		if err := client.IPAMReleaseIP(ip); err != nil {
@@ -126,6 +128,8 @@ func addIPConfigToLink(ip addressing.CiliumIP, routes []route.Route, link netlin
 	if ip.IsIPv6() {
 		addr.Flags = unix.IFA_F_NODAD
 	}
+	
+	/*为指定link配置ip地址*/
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		return fmt.Errorf("failed to add addr to %q: %v", ifName, err)
 	}
@@ -177,6 +181,7 @@ func configureIface(ipam *models.IPAMResponse, ifName string, state *CmdState) (
 	}
 
 	if ipv4IsEnabled(ipam) {
+		/*按口配置ip地址*/
 		if err := addIPConfigToLink(state.IP4, state.IP4routes, l, ifName); err != nil {
 			return "", fmt.Errorf("error configuring IPv4: %s", err.Error())
 		}
@@ -293,6 +298,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		netNs    ns.NetNS
 	)
 
+	/*解析stdinData生成netconf*/
 	n, err = types.LoadNetConf(args.StdinData)
 	if err != nil {
 		err = fmt.Errorf("unable to parse CNI configuration \"%s\": %s", args.StdinData, err)
@@ -367,6 +373,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 	defer netNs.Close()
 
+	/*移除netns中指定Ifname*/
 	if err = netns.RemoveIfFromNetNSIfExists(netNs, args.IfName); err != nil {
 		err = fmt.Errorf("failed removing interface %q from namespace %q: %s",
 			args.IfName, args.Netns, err)
@@ -429,6 +436,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			peer      *netlink.Link
 			tmpIfName string
 		)
+		/*配置并使能veth接口*/
 		veth, peer, tmpIfName, err = connector.SetupVeth(ep.ContainerID, int(conf.DeviceMTU), ep)
 		if err != nil {
 			err = fmt.Errorf("unable to set up veth on host side: %s", err)
@@ -442,6 +450,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			}
 		}()
 
+		/*将peer置入到指定netns中*/
 		if err = netlink.LinkSetNsFd(*peer, int(netNs.Fd())); err != nil {
 			err = fmt.Errorf("unable to move veth pair '%v' to netns: %s", peer, err)
 			return
@@ -476,6 +485,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	res := &cniTypesVer.Result{}
 
+	/*ipv6/ipv4均没有开启ipam*/
 	if !ipv6IsEnabled(ipam) && !ipv4IsEnabled(ipam) {
 		err = fmt.Errorf("IPAM did not provide IPv4 or IPv6 address")
 		return
@@ -516,6 +526,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		}
 	}
 
+	/*配置接口*/
 	var macAddrStr string
 	if err = netNs.Do(func(_ ns.NetNS) error {
 		if ipv6IsEnabled(ipam) {

@@ -25,6 +25,7 @@ endif
 # BUILD_PERMUTATIONS_DEP is a dummy file dependency that ensures all targets
 # are rebuilt when the 'build_all' target is run.
 BUILD_PERMUTATIONS_DEP := .rebuild_all
+#LIB 首先包含了bpf目录下所有.h文件 及 .rebuild_all目标
 LIB := $(shell find $(ROOT_DIR)/bpf -name '*.h') $(BUILD_PERMUTATIONS_DEP)
 BPF_C := $(patsubst %.o,%.c,$(BPF))
 BPF_ASM := $(patsubst %.o,%.s,$(BPF))

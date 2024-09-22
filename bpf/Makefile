@@ -11,6 +11,7 @@ BPF_SIMPLE = bpf_network.o bpf_alignchecker.o
 BPF_SIMPLE_C = $(patsubst %.o,%.c,${BPF_SIMPLE})
 BPF_SIMPLE_LL = $(patsubst %.o,%.ll,${BPF_SIMPLE})
 BPF_TEST=tests/bpf_ct_tests.o
+#需要生成的各bpf程序
 BPF = bpf_lxc.o bpf_overlay.o bpf_sock.o bpf_host.o bpf_xdp.o $(BPF_SIMPLE)
 
 TARGET=cilium-probe-kernel-hz
@@ -24,6 +25,7 @@ all: $(TARGET) bpf_all
 bpf_all: $(BPF) subdirs
 
 build_all: force
+	#生成BUILD_PERMUTATIONS_DEP文件
 	@touch $(BUILD_PERMUTATIONS_DEP)
 	@$(ECHO_CHECK)/*.c BUILD_PERMUTATIONS=1
 	$(QUIET) $(MAKE) $(SUBMAKEOPTS) bpf_all BUILD_PERMUTATIONS=1
@@ -281,6 +283,7 @@ MAX_LXC_OPTIONS+= -DENABLE_VTEP=1
 endif
 endif
 
+#bpf_lxc.ll由bpf_lxc.c与$(LIB)生成
 bpf_lxc.ll: bpf_lxc.c $(LIB)
 	$(QUIET) set -e; \
 	if [ $(BUILD_PERMUTATIONS) != "" ]; then \

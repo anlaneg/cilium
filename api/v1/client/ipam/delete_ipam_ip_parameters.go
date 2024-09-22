@@ -82,6 +82,7 @@ func (o *DeleteIpamIPParams) WithTimeout(timeout time.Duration) *DeleteIpamIPPar
 
 // SetTimeout adds the timeout to the delete ipam IP params
 func (o *DeleteIpamIPParams) SetTimeout(timeout time.Duration) {
+	/*设置Timeout*/
 	o.timeout = timeout
 }
 
@@ -115,6 +116,7 @@ func (o *DeleteIpamIPParams) WithIP(ip string) *DeleteIpamIPParams {
 
 // SetIP adds the ip to the delete ipam IP params
 func (o *DeleteIpamIPParams) SetIP(ip string) {
+	/*设置ip地址*/
 	o.IP = ip
 }
 

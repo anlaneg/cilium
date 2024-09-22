@@ -423,6 +423,7 @@ func init() {
 // InitFlags is for explicitly initializing the flags.
 func InitFlags(flagset *flag.FlagSet) {
 	if flagset == nil {
+		//取默认flagset
 		flagset = flag.CommandLine
 	}
 

@@ -2,4 +2,5 @@
 
 SCRIPTPATH="$( cd "$(dirname "$0")" ; pwd -P )"
 
+#通过k8s.io/code-generator进行代码生成
 GO111MODULE=off go run "${SCRIPTPATH}/../vendor/k8s.io/code-generator/cmd/go-to-protobuf" $@

@@ -46,14 +46,17 @@ func strcpy(str string) string {
 // cgo export restrictions we can't use the go type in the prototype.
 //export OnNewConnection
 func OnNewConnection(instanceId uint64, proto string, connectionId uint64, ingress bool, srcId, dstId uint32, srcAddr, dstAddr, policyName string, origBuf, replyBuf *[]byte) C.FilterResult {
+	/*取给定的instance*/
 	instance := FindInstance(instanceId)
 	if instance == nil {
 		return C.FILTER_INVALID_INSTANCE
 	}
 
+	/*创建connection*/
 	err, conn := NewConnection(instance, strcpy(proto), connectionId, ingress, srcId, dstId, strcpy(srcAddr), strcpy(dstAddr), strcpy(policyName), origBuf, replyBuf)
 	if err == nil {
 		mutex.Lock()
+		/*注册此conn*/
 		connections[connectionId] = conn
 		mutex.Unlock()
 		return C.FILTER_OK
@@ -89,13 +92,14 @@ func OnNewConnection(instanceId uint64, proto string, connectionId uint64, ingre
 func OnData(connectionId uint64, reply, endStream bool, data *[][]byte, filterOps *[][2]int64) C.FilterResult {
 	// Find the connection
 	mutex.RLock()
+	/*取此connect id对应的connect*/
 	connection, ok := connections[connectionId]
 	mutex.RUnlock()
 	if !ok {
 		return C.FILTER_UNKNOWN_CONNECTION
 	}
 
-	return C.FilterResult(connection.OnData(reply, endStream, data, filterOps))
+	return C.FilterResult(connection.OnData(reply, endStream, data, filterOps)/*触发onData回调*/)
 }
 
 // Make this more general connection event callback
@@ -113,6 +117,7 @@ func Close(connectionId uint64) {
 // Zero return value indicates an error.
 //export OpenModule
 func OpenModule(params [][2]string, debug bool) uint64 {
+	/*params是一个key,value格式，key只能是以下几种*/
 	var accessLogPath, xdsPath, nodeID string
 	for i := range params {
 		key := params[i][0]
@@ -126,6 +131,7 @@ func OpenModule(params [][2]string, debug bool) uint64 {
 		case "node-id":
 			nodeID = value
 		default:
+			/*遇到不认识的key,返回0*/
 			return 0
 		}
 	}

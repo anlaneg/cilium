@@ -183,8 +183,8 @@ func GetBPFCPU() string {
 // progLDFlags determines the loader flags for the specified prog and paths.
 func progLDFlags(prog *progInfo, dir *directoryInfo) []string {
 	return []string{
-		fmt.Sprintf("-filetype=%s", prog.OutputType),
-		"-o", path.Join(dir.Output, prog.Output),
+		fmt.Sprintf("-filetype=%s", prog.OutputType),/*生成的文件类型*/
+		"-o", path.Join(dir.Output, prog.Output),/*输出路径及目标*/
 	}
 }
 
@@ -232,6 +232,7 @@ func compileAndLink(ctx context.Context, prog *progInfo, dir *directoryInfo, deb
 	linkArgs = append(linkArgs, "-mcpu="+GetBPFCPU())
 	linkArgs = append(linkArgs, progLDFlags(prog, dir)...)
 
+	/*执行连接器命令*/
 	linkCmd := exec.CommandContext(ctx, linker, linkArgs...)
 	linkCmd.Stdin = compilerStdout
 	if err := compileCmd.Start(); err != nil {
@@ -309,13 +310,16 @@ func compile(ctx context.Context, prog *progInfo, dir *directoryInfo) (err error
 		"args":   args,
 	}).Debug("Launching compiler")
 	if prog.OutputType == outputSource {
+		/*提供参数，执行编译程序，获取其标准错误输出*/
 		compileCmd := exec.CommandContext(ctx, compiler, args...)
 		_, err = compileCmd.CombinedOutput(log, true)
 	} else {
 		switch prog.OutputType {
 		case outputObject:
+			/*输出格式为Obj时*/
 			err = compileAndLink(ctx, prog, dir, true, args...)
 		case outputAssembly:
+			/*输出格式为汇编时*/
 			err = compileAndLink(ctx, prog, dir, false, args...)
 		default:
 			log.Fatalf("Unhandled progInfo.OutputType %s", prog.OutputType)
